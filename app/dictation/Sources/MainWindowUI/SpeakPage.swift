@@ -407,7 +407,7 @@ struct SpeakSplit: NSViewControllerRepresentable {
     }
 }
 
-final class SpeakSplitController: NSSplitViewController {
+final class SpeakSplitController: ListDetailSplitController {
     static let listWidth: ClosedRange<CGFloat> = 180...300
     static let detailMinimum: CGFloat = 340
     /// The voice panel's width when open, and the text's width the window keeps for it (what the text had before the panel).
@@ -418,23 +418,10 @@ final class SpeakSplitController: NSSplitViewController {
 
     init(model: MainWindowModel) {
         self.model = model
-        super.init(nibName: nil, bundle: nil)
-        splitView.isVertical = true
-        splitView.dividerStyle = .thin
-        let list = NSHostingController(rootView: SpeakClipsColumn(model: model).environment(\.locale, L10nBundle.locale))
-        let detail = NSHostingController(rootView: SpeakDetailColumn(model: model).environment(\.locale, L10nBundle.locale))
-        list.sizingOptions = []
-        detail.sizingOptions = []
-        let listItem = NSSplitViewItem(viewController: list)
-        listItem.minimumThickness = Self.listWidth.lowerBound
-        listItem.maximumThickness = Self.listWidth.upperBound
-        listItem.canCollapse = false
-        listItem.holdingPriority = NSLayoutConstraint.Priority(NSLayoutConstraint.Priority.defaultLow.rawValue + 10)
-        let detailItem = NSSplitViewItem(viewController: detail)
-        detailItem.minimumThickness = Self.detailMinimum
-        detailItem.canCollapse = false
-        addSplitViewItem(listItem)
-        addSplitViewItem(detailItem)
+        super.init(list: NSHostingController(rootView: SpeakClipsColumn(model: model).environment(\.locale, L10nBundle.locale)),
+                   detail: NSHostingController(rootView: SpeakDetailColumn(model: model).environment(\.locale, L10nBundle.locale)),
+                   listLimits: Self.listWidth, detailMinimum: Self.detailMinimum,
+                   position: { 220 })
         // The voice panel is the system's inspector pane: collapsed until the toolbar button opens it (Advanced only).
         let panel = NSHostingController(rootView: VoicePanel(model: model).environment(\.locale, L10nBundle.locale))
         panel.sizingOptions = []
@@ -526,19 +513,12 @@ final class SpeakSplitController: NSSplitViewController {
     }
 
 
-    @available(*, unavailable) required init?(coder: NSCoder) { fatalError("not used") }
-
-    private var placed = false
-
     override func viewDidLayout() {
-        super.viewDidLayout()
         if PanelWindow.shouldMakeRoom(panelOpen: panelItem.map { !$0.isCollapsed } ?? false, grewBy: grewBy, checked: roomChecked,
                                       hasWindow: view.window != nil, width: view.bounds.width) {
             roomChecked = true
             makeRoom(animate: false)
         }
-        guard !placed, splitView.bounds.width >= Self.listWidth.lowerBound + MainWindowSpec.splitDividerWidth + Self.detailMinimum else { return }
-        placed = true
-        splitView.setPosition(220, ofDividerAt: 0)
+        super.viewDidLayout()
     }
 }
