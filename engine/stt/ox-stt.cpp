@@ -14,7 +14,9 @@
 //          the fact. Term lines may carry spoken forms ("GitHub<TAB>Гитхаб<TAB>Гит хаб"; a numeric second
 //          field is the weight): the model writes a Latin name in Cyrillic when it is said inside Russian
 //          speech, so every spoken form is boosted too and, after the decode, replaced by the written form on
-//          whole words only ("text" is mapped, "text_raw" is as decoded). CLI only: --serve, /transcribe and the session routes decode without terms.
+//          whole words only ("text" is mapped, "text_raw" is as decoded). --boost-alpha is 0..100 (the weights
+//          of a term line too); a larger or non-finite number is refused, not clamped, because an infinite bias would
+//          corrupt every decode step. The server takes the list per request instead, see below.
 //
 //   ox-stt --serve -m <parakeet model> --port <port> [--vad <silero VAD model>]
 //          [-t threads] [-ng] [--chunk-s 30] [-v]
@@ -22,8 +24,15 @@
 //            GET  /health      -> 200 {"status":"ok"}
 //            POST /transcribe  -> body is a 16 kHz mono WAV sent as Content-Type: audio/wav with a
 //                                 Content-Length; 200 with the same JSON the CLI prints
+//                                 Optional header X-Ox-Terms: base64url (no padding, at most 4 KB) of
+//                                 {"alpha":2,"terms":["OxSay\t1\tоксей","Devin"]} (terms_wire.h): the same term
+//                                 lines as --terms-stdin, boosted for this request only; a missing, malformed or
+//                                 oversize header means an unboosted decode, never an error, and term text is
+//                                 never logged. With a boost on the JSON also carries "tokens" and "text_raw".
 //          with --vad, streaming dictation sessions:
-//            POST /sessions              -> {"id":<32 lowercase hex>}; application/json, body ignored;
+//            POST /sessions              -> {"id":<32 lowercase hex>}; application/json; an optional JSON body
+//                                 (at most 16 KB) carries the same {"alpha","terms"} list, fixed for the session
+//                                 and its finish re-decode; a malformed body means no boost, never a refusal;
 //                                 429 "at most 4 sessions", 500 "failed to init VAD context",
 //                                 500 "no entropy"; when nothing has decoded for 60 s or more it also
 //                                 queues a one-second silent decode ahead of the session's

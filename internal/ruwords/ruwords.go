@@ -76,13 +76,29 @@ func (c *Checker) word(w string) bool {
 	if !cyr {
 		return false
 	}
-	// the dictionary spells ё as е in none of its entries; try both
-	for _, f := range []string{w, strings.ReplaceAll(w, "ё", "е")} {
+	// ё and е are one letter to the decoder; and a transliteration doubles consonants the word does not
+	// («соннет» for «сонет»), which the decoder writes back the way it hears it — so a form that is a word
+	// once its doubled letters are single is the word.
+	ye := strings.ReplaceAll(w, "ё", "е")
+	for _, f := range []string{w, ye, undouble(ye)} {
 		if c.gs.Spell(f) || c.gs.Spell(title(f)) {
 			return true
 		}
 	}
 	return false
+}
+
+// undouble collapses every run of one repeated letter to a single letter.
+func undouble(w string) string {
+	var b strings.Builder
+	var prev rune
+	for _, r := range w {
+		if r != prev {
+			b.WriteRune(r)
+		}
+		prev = r
+	}
+	return b.String()
 }
 
 func title(w string) string {
