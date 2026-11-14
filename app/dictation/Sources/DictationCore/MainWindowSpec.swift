@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The main window's sidebar sections, in sidebar order: Voiceover, Voices, Dictation, Meetings, Transcribe,
+/// The main window's sidebar sections, in sidebar order: Voiceover, Voices, Dictation, Meetings, Transcribe, Glossary,
 /// then Models (Advanced mode only) and Settings, which the sidebar draws apart at the bottom. A section is
 /// listed only once something real is behind it (`MainWindowSpec.liveSections`).
 public enum MainSection: String, CaseIterable, Equatable, Identifiable {
@@ -10,6 +10,7 @@ public enum MainSection: String, CaseIterable, Equatable, Identifiable {
     case dictation
     case meetings
     case transcribe
+    case glossary
     case models
     case settings
 
@@ -22,6 +23,7 @@ public enum MainSection: String, CaseIterable, Equatable, Identifiable {
         case .dictation: return .sectionDictation
         case .meetings: return .sectionMeetings
         case .transcribe: return .sectionTranscribe
+        case .glossary: return .sectionGlossary
         case .models: return .sectionModels
         case .settings: return .sectionSettings
         }
@@ -49,7 +51,7 @@ public enum AdvancedMode {
 public enum MainWindowSpec {
     /// Sections that have real content on this build. Each section task adds its own case here (one line);
     /// a new case lands unlisted, which is the safe side of a forgotten flag.
-    public static let liveSections: Set<MainSection> = [.speak, .meetings, .dictation, .voices, .transcribe, .settings]
+    public static let liveSections: Set<MainSection> = [.speak, .meetings, .dictation, .voices, .transcribe, .glossary, .settings]
     /// The switch is drawn only once something behind it differs: since the Advanced voice panel on Озвучка it does.
     public static let showsAdvancedSwitch = true
     /// The sidebar's column width. Its maximum is what the window floor must leave room for.
