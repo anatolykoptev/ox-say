@@ -16,7 +16,8 @@ import (
 	"github.com/anatolykoptev/ox-say/internal/daemon"
 )
 
-const vocabUsage = "usage: ox-say vocab add <heard> <meant> [--context <sentence>] | ls | ok <id> | rm <id>"
+const vocabUsage = "usage: ox-say vocab add <heard> <meant> [--context <sentence>] | ls | ok <id> | rm <id> | edit <id> <meant> | purge <id>\n" +
+	"ok, rm, edit and purge are owner-only: they ask a person at a terminal. purge deletes the pair for good (rm keeps a rejected tombstone)."
 
 // vocabIn and vocabTTY are the test seams for the person check: production
 // reads the answer from stdin and insists both stdin and stdout are real
@@ -44,6 +45,10 @@ func cmdVocab(args []string, stdout, stderr io.Writer) int {
 		return cmdVocabSet(args[1:], "approve", stdout, stderr)
 	case "rm":
 		return cmdVocabSet(args[1:], "reject", stdout, stderr)
+	case "edit":
+		return cmdVocabEdit(args[1:], stdout, stderr)
+	case "purge":
+		return cmdVocabPurge(args[1:], stdout, stderr)
 	}
 	outln(stderr, vocabUsage)
 	return 2
@@ -124,9 +129,9 @@ func ownerToken() (string, error) {
 	return strings.TrimSpace(string(raw)), nil
 }
 
-// vocabSet POSTs an owner-only action with the owner bearer.
-func vocabSet(url, token string) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader("{}"))
+// vocabOwnerCall sends an owner-only request with the owner bearer.
+func vocabOwnerCall(method, url, token, body string) ([]byte, error) {
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -210,9 +215,75 @@ func cmdVocabSet(args []string, action string, stdout, stderr io.Writer) int {
 			filepath.Join(config.Home(), daemon.OwnerTokenFile), err)
 		return 1
 	}
-	body, err := vocabSet(daemonURL()+"/v1/glossary/"+url.PathEscape(args[0])+"/"+action, tok)
+	body, err := vocabOwnerCall(http.MethodPost, daemonURL()+"/v1/glossary/"+url.PathEscape(args[0])+"/"+action, tok, "{}")
 	if err != nil {
 		return failDaemon(stderr, err)
 	}
 	return printPairBody(stdout, stderr, body)
+}
+
+// vocabOwnerGate is the shared start of the owner verbs that change or remove
+// a pair: refuse without a terminal, show the pair, ask y/N, read the bearer.
+// ok is false when the command ended here, with its exit code.
+func vocabOwnerGate(id, verb, question string, stdout, stderr io.Writer) (tok string, code int, ok bool) {
+	if !vocabTTY(vocabIn, stdout) {
+		fmt.Fprintf(stderr, "ox-say: vocab %s asks a person — run it at a terminal (stdin and stdout both)\n", verb)
+		return "", 2, false
+	}
+	p, err := vocabFind(id)
+	if err != nil {
+		return "", failDaemon(stderr, err), false
+	}
+	printPair(stdout, p)
+	fmt.Fprintf(stdout, "%s [y/N] ", question)
+	if !vocabConfirmed(vocabIn) {
+		fmt.Fprintf(stdout, "left %s\n", p.Status)
+		return "", 1, false
+	}
+	tok, err = ownerToken()
+	if err != nil {
+		fmt.Fprintf(stderr, "ox-say: cannot read %s (the daemon writes it on start): %v\n",
+			filepath.Join(config.Home(), daemon.OwnerTokenFile), err)
+		return "", 1, false
+	}
+	return tok, 0, true
+}
+
+// cmdVocabEdit gives a pair a different meant form. Owner-only, like ok and rm.
+func cmdVocabEdit(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 2 {
+		outln(stderr, vocabUsage)
+		return 2
+	}
+	tok, code, ok := vocabOwnerGate(args[0], "edit", "Change it to “"+args[1]+"”?", stdout, stderr)
+	if !ok {
+		return code
+	}
+	reqBody, err := json.Marshal(map[string]string{"meant": args[1]})
+	if err != nil {
+		fmt.Fprintln(stderr, "ox-say:", err)
+		return 1
+	}
+	body, err := vocabOwnerCall(http.MethodPost, daemonURL()+"/v1/glossary/"+url.PathEscape(args[0])+"/edit", tok, string(reqBody))
+	if err != nil {
+		return failDaemon(stderr, err)
+	}
+	return printPairBody(stdout, stderr, body)
+}
+
+// cmdVocabPurge deletes a pair for good, with no tombstone. Owner-only.
+func cmdVocabPurge(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		outln(stderr, vocabUsage)
+		return 2
+	}
+	tok, code, ok := vocabOwnerGate(args[0], "purge", "Delete it for good?", stdout, stderr)
+	if !ok {
+		return code
+	}
+	if _, err := vocabOwnerCall(http.MethodDelete, daemonURL()+"/v1/glossary/"+url.PathEscape(args[0]), tok, ""); err != nil {
+		return failDaemon(stderr, err)
+	}
+	fmt.Fprintf(stdout, "deleted %s\n", args[0])
+	return 0
 }

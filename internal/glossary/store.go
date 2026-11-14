@@ -205,6 +205,51 @@ func (s *Store) Approve(id string) (Pair, error) { return s.setStatus(id, Active
 // Reject stops a pair from applying and keeps it as a tombstone.
 func (s *Store) Reject(id string) (Pair, error) { return s.setStatus(id, Rejected) }
 
+// Edit replaces the meant form of a pair. It keeps the id, the heard form and
+// the sightings, and re-runs the same validation as Add. An active pair stays
+// active and a candidate stays a candidate; a rejected one comes back as a
+// candidate, because the owner has just chosen a new meaning for it.
+func (s *Store) Edit(id, meant string) (Pair, error) {
+	meant = strings.TrimSpace(meant)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pairs, err := s.load()
+	if err != nil {
+		return Pair{}, err
+	}
+	i := slices.IndexFunc(pairs, func(p Pair) bool { return p.ID == id })
+	if i < 0 {
+		return Pair{}, ErrNotFound
+	}
+	if err := validate(pairs[i].Heard, meant); err != nil {
+		return Pair{}, err
+	}
+	pairs[i].Meant = meant
+	if pairs[i].Status == Rejected {
+		pairs[i].Status = Candidate
+	}
+	if err := s.save(pairs); err != nil {
+		return Pair{}, err
+	}
+	return pairs[i], nil
+}
+
+// Purge removes a pair entirely, with no tombstone: an agent may file the
+// same heard form again as a fresh candidate. Reject is the way to keep it out.
+func (s *Store) Purge(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pairs, err := s.load()
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(pairs, func(p Pair) bool { return p.ID == id })
+	if i < 0 {
+		return ErrNotFound
+	}
+	return s.save(slices.Delete(pairs, i, i+1))
+}
+
 func validate(heard, meant string) error {
 	switch {
 	case heard == "" || meant == "":

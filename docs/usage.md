@@ -17,6 +17,8 @@ ox-say vocab add "Воксей" "OxSay" --context "сделай Воксей р�
 ox-say vocab ls                         # pairs: candidate, active or rejected
 ox-say vocab ok 1a2b3c4d                # you approve it: it applies from now on
 ox-say vocab rm 1a2b3c4d                # reject it; filing it again will not bring it back
+ox-say vocab edit 1a2b3c4d "OxSay"      # you change what it means (owner-only; a rejected pair becomes a candidate)
+ox-say vocab purge 1a2b3c4d             # you delete it for good, no tombstone (owner-only)
 ox-say produce script.txt -v narrator --preset reels   # a whole voiceover from a script (see "Long-form voiceover")
 ox-say transcribe meeting.wav           # speech-to-text
 ox-say transcribe -e whisper --srt talk.mp4 > talk.srt

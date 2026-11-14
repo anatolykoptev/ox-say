@@ -163,3 +163,63 @@ func TestMalformedFileIsNotOverwritten(t *testing.T) {
 		t.Fatalf("file changed to %q", raw)
 	}
 }
+
+// Edit keeps id, heard and sightings, re-validates meant like Add, and turns a
+// rejected pair back into a candidate.
+// Mutation: store.go Edit, drop the `validate(...)` call -> RED (5-word meant accepted).
+func TestEditRevalidatesAndKeepsStatus(t *testing.T) {
+	s := newTestStore(t)
+	p, _ := s.Add("окс сей", "OxSay", "сделай окс сей релиз")
+	s.Add("окс сей", "OxSay", "открой окс сей план")
+	if _, err := s.Approve(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Edit(p.ID, "one two three four five"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("5-word meant: err = %v, want ErrInvalid", err)
+	}
+	if _, err := s.Edit(p.ID, "окс сей рулит"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("meant containing heard: err = %v, want ErrInvalid", err)
+	}
+	if _, err := s.Edit("ffffffff", "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown id: err = %v, want ErrNotFound", err)
+	}
+	got, err := s.Edit(p.ID, " OxPulse ")
+	if err != nil || got.Meant != "OxPulse" || got.Status != Active || got.ID != p.ID || got.Heard != "окс сей" || len(got.Sightings) != 2 || got.Seen != 2 {
+		t.Fatalf("edit active = %+v, %v", got, err)
+	}
+	if _, err := s.Reject(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = s.Edit(p.ID, "OxSay"); err != nil || got.Status != Candidate {
+		t.Fatalf("edit rejected = %+v, %v; want candidate", got, err)
+	}
+	c, _ := s.Add("гит хаб", "GitHub", "")
+	if got, err = s.Edit(c.ID, "Git Hub"); err != nil || got.Status != Candidate {
+		t.Fatalf("edit candidate = %+v, %v; want candidate", got, err)
+	}
+	if list, _ := s.List(); len(list) != 2 {
+		t.Fatalf("list = %+v", list)
+	}
+}
+
+// Purge removes the pair with no tombstone, so the same heard form can be
+// filed again as a fresh candidate.
+// Mutation: store.go Purge, set the status to Rejected instead of removing -> RED.
+func TestPurgeRemovesWithoutTombstone(t *testing.T) {
+	s := newTestStore(t)
+	p, _ := s.Add("окс сей", "OxSay", "")
+	keep, _ := s.Add("гит хаб", "GitHub", "")
+	if err := s.Purge("ffffffff"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown id: err = %v", err)
+	}
+	if err := s.Purge(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := s.List()
+	if len(list) != 1 || list[0].ID != keep.ID {
+		t.Fatalf("list after purge = %+v, want only %s", list, keep.ID)
+	}
+	if again, err := s.Add("окс сей", "Other", ""); err != nil || again.Status != Candidate || again.Seen != 1 {
+		t.Fatalf("refile after purge = %+v, %v; want a fresh candidate", again, err)
+	}
+}
