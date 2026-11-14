@@ -138,7 +138,7 @@ func (s *Store) checkWithinCap(ctx context.Context, wav, refText string) (text, 
 	transcript := joinWords(words)
 	if transcript == "" {
 		if silentClip(wav) {
-			return "", "", "", &InputError{"voices: no speech found in the clip"}
+			return "", "", "", &InputError{"voices: no speech found in the clip — check that the microphone is not muted and its input volume is up"}
 		}
 		slog.Warn("voice add: speech-to-text returned no words for the clip; keeping ref_text as given")
 		return refText, "", "", nil

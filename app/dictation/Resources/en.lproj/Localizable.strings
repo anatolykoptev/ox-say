@@ -713,6 +713,7 @@
 "voice.record.blocked_meeting" = "A meeting is being recorded, so the microphone is busy. Record your voice when it ends.";
 "voice.record.blocked_dictation" = "Dictation is recording — record your voice when it ends.";
 "voice.record.meeting_started" = "A meeting recording started, so your recording was stopped and not saved.";
+"voice.record.silent" = "The recording came back silent — check that the microphone is not muted and its input volume is up.";
 "voice.record.seconds" = "%@ s";
 "voice.record.meter_label" = "Microphone level";
 "voice.record.play" = "Play your recording";
