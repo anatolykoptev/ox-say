@@ -29,16 +29,49 @@ func (d *Daemon) initGlossary() {
 	d.ownerToken = ownerToken(d.Cfg.Home, d.log)
 }
 
-// ownerToken loads $home/owner.token, generating it on first start. A token
-// that cannot be read or written leaves "" — the owner routes then deny
-// every call: a daemon that cannot prove the owner answers 403, never 200.
+// ownerToken loads $home/owner.token, generating it on first start. A file
+// is accepted only as the daemon writes it — 64 lowercase hex chars, one
+// trailing newline allowed, and a mode with no group/other bits. A valid
+// token at a wider mode is tightened and kept; anything else is replaced
+// atomically. A token that cannot be read or written leaves "" — the owner
+// routes then deny every call: a daemon that cannot prove the owner
+// answers 403, never 200.
 func ownerToken(home string, log *slog.Logger) string {
 	path := filepath.Join(home, OwnerTokenFile)
 	if raw, err := os.ReadFile(path); err == nil {
-		if tok := strings.TrimSpace(string(raw)); tok != "" {
-			return tok
+		tok := strings.TrimSuffix(string(raw), "\n")
+		if !validOwnerToken(tok) {
+			log.Warn("glossary: the owner token file is not valid; a new one is generated")
+			return writeOwnerToken(home, path, log)
+		}
+		if st, err := os.Stat(path); err != nil || st.Mode().Perm()&0o077 != 0 {
+			if err := os.Chmod(path, 0o600); err != nil {
+				log.Warn("glossary: the owner token mode could not be tightened; a new one is generated", slog.Any("error", err))
+				return writeOwnerToken(home, path, log)
+			}
+		}
+		return tok
+	}
+	return writeOwnerToken(home, path, log)
+}
+
+// validOwnerToken reports whether tok is a bearer the daemon would have
+// written: exactly 64 lowercase hex characters.
+func validOwnerToken(tok string) bool {
+	if len(tok) != 64 {
+		return false
+	}
+	for i := 0; i < len(tok); i++ {
+		if c := tok[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
 		}
 	}
+	return true
+}
+
+// writeOwnerToken stores a fresh bearer atomically at mode 0600. Any
+// failure returns "": empty fails closed in ownerOK.
+func writeOwnerToken(home, path string, log *slog.Logger) string {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		log.Warn("glossary: the owner token could not be generated; approve and reject stay closed", slog.Any("error", err))

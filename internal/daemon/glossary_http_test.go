@@ -165,6 +165,108 @@ func TestGlossaryStatusIsOwnerOnly(t *testing.T) {
 	}
 }
 
+// The owner bearer is accepted only as the daemon writes it: 64 lowercase
+// hex and a mode with no group/other bits (one trailing newline is fine).
+// A wider mode is tightened and kept, wrong content is regenerated
+// atomically at 0600 with a single Warn that never carries the value, and
+// a home that cannot be written fails closed — ownerOK denies every call.
+// Mutation: glossary_http.go ownerToken, return any non-empty trimmed
+// content -> RED (the short file is used as the bearer).
+func TestOwnerTokenFile(t *testing.T) {
+	valid := strings.Repeat("a1", 32)
+	put := func(t *testing.T, home, data string, mode os.FileMode) string {
+		t.Helper()
+		path := filepath.Join(home, OwnerTokenFile)
+		if err := os.WriteFile(path, []byte(data), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	mode := func(t *testing.T, path string) os.FileMode {
+		t.Helper()
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Mode().Perm()
+	}
+	read := func(t *testing.T, path string) string {
+		t.Helper()
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(raw))
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		home := t.TempDir()
+		path := put(t, home, valid+"\n", 0o600)
+		if tok := ownerToken(home, slog.New(&msgLog{})); tok != valid {
+			t.Fatalf("tok = %q, want the file's own token", tok)
+		}
+		if got := mode(t, path); got != 0o600 {
+			t.Fatalf("mode = %o, want 0600", got)
+		}
+	})
+
+	t.Run("world-readable gets tightened", func(t *testing.T) {
+		home := t.TempDir()
+		path := put(t, home, valid+"\n", 0o644)
+		if tok := ownerToken(home, slog.New(&msgLog{})); tok != valid {
+			t.Fatalf("tok = %q, want the file's own token kept", tok)
+		}
+		if got := mode(t, path); got != 0o600 {
+			t.Fatalf("mode = %o, want 0600", got)
+		}
+	})
+
+	for name, data := range map[string]string{
+		"short":     "abc\n",
+		"non-hex":   strings.Repeat("z", 64) + "\n",
+		"uppercase": strings.Repeat("AB", 32) + "\n",
+	} {
+		t.Run(name+" is regenerated", func(t *testing.T) {
+			home := t.TempDir()
+			path := put(t, home, data, 0o600)
+			h := &msgLog{}
+			tok := ownerToken(home, slog.New(h))
+			if len(tok) != 64 || tok == strings.TrimSpace(data) {
+				t.Fatalf("tok = %q, want a fresh 64-hex token", tok)
+			}
+			if got := read(t, path); got != tok {
+				t.Fatalf("file = %q, tok = %q", got, tok)
+			}
+			if got := mode(t, path); got != 0o600 {
+				t.Fatalf("mode = %o, want 0600", got)
+			}
+			if n := h.count("glossary: the owner token file is not valid; a new one is generated"); n != 1 {
+				t.Fatalf("warnings = %d, want 1", n)
+			}
+		})
+	}
+
+	t.Run("unwritable home fails closed", func(t *testing.T) {
+		home := t.TempDir()
+		if err := os.Chmod(home, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(home, 0o700) })
+		if tok := ownerToken(home, slog.New(&msgLog{})); tok != "" {
+			t.Fatalf("tok = %q, want empty", tok)
+		}
+		d := &Daemon{}
+		req := httptest.NewRequest(http.MethodPost, "/v1/glossary/x/approve", nil)
+		req.Header.Set("Authorization", "Bearer "+strings.Repeat("a1", 32))
+		if d.ownerOK(req) {
+			t.Fatal("ownerOK passed without a token")
+		}
+	})
+}
+
 // A broken glossary costs the corrections, never the text, and warns once per job, not once per line.
 // Mutation: glossary_http.go corrector, call d.glossaryPairs() inside the returned closure -> RED (3 warnings).
 func TestCorrectorLoadsOnceAndFailsOpen(t *testing.T) {
