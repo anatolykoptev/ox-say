@@ -752,8 +752,10 @@ func TestDaemonStartupReapsAnOrphanedTrialChild(t *testing.T) {
 	t.Run("a start-token mismatch is left alone", func(t *testing.T) {
 		dir := t.TempDir()
 		t.Setenv("OXSAY_FAKE_LLM", "1")
-		orphan := exec.Command(os.Args[0], "--port", strconv.Itoa(testutil.FreePort(t)))
-		orphan.Env = os.Environ()
+		port, sock := boundLoopbackFile(t)
+		orphan := exec.Command(os.Args[0], "--port", strconv.Itoa(port))
+		orphan.Env = append(os.Environ(), "OXSAY_FAKE_LISTENER_FD=3")
+		orphan.ExtraFiles = []*os.File{sock}
 		if err := orphan.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -797,7 +799,7 @@ func TestDaemonStartupReapsAnOrphanedTrialChild(t *testing.T) {
 func TestNotesModelTrialChildStopsWhenIdle(t *testing.T) {
 	dir := t.TempDir()
 	d, _ := trialDaemon(t, dir, func(c *config.Config) { c.NotesIdleStop = 300 * time.Millisecond })
-	sup, err := d.newNotesTrialSupervisor(ownGGUF(t, dir, nil))
+	sup, err := d.newNotesTrialSupervisor(ownGGUF(t, dir, nil), inheritFreshPort(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -857,7 +859,7 @@ func TestTheTrialChildGetsTheFittingPlan(t *testing.T) {
 		dir := t.TempDir()
 		d, _ := trialDaemon(t, dir, func(c *config.Config) { c.GPUMemory = config.GPUMemoryUnified })
 		fakeBudget(t, ampleLimitMiB, othersMiB)
-		sup, err := d.newNotesTrialSupervisor(ownGGUF(t, dir, nil))
+		sup, err := d.newNotesTrialSupervisor(ownGGUF(t, dir, nil), inheritFreshPort(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -888,7 +890,7 @@ func TestTheTrialChildGetsTheFittingPlan(t *testing.T) {
 	t.Run("discrete memory", func(t *testing.T) {
 		dir := t.TempDir()
 		d, _ := trialDaemon(t, dir, func(c *config.Config) { c.GPUMemory = config.GPUMemoryDiscrete })
-		sup, err := d.newNotesTrialSupervisor(ownGGUF(t, dir, nil))
+		sup, err := d.newNotesTrialSupervisor(ownGGUF(t, dir, nil), inheritFreshPort(t))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -442,7 +442,7 @@ func runFakeLLM(args []string) int {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(raw)
 	})
-	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	ln, err := fakeListener(port)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "fake-llm: listen:", err)
 		return 2
@@ -635,7 +635,7 @@ func runFakeSTTServe(args []string) int {
 		fmt.Fprintln(w, "{}")
 	})
 
-	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	ln, err := fakeListener(port)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "fake-stt serve: listen:", err)
 		return 2
@@ -870,7 +870,7 @@ func runFakeChild() int {
 		}()
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(*port))
+	ln, err := fakeListener(*port)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "fake-child: listen:", err)
 		return 2
@@ -882,6 +882,21 @@ func runFakeChild() int {
 func envMS(key string) time.Duration {
 	v, _ := strconv.Atoi(os.Getenv(key))
 	return time.Duration(v) * time.Millisecond
+}
+
+// fakeListener is the socket a fake child serves. When
+// OXSAY_FAKE_LISTENER_FD names an inherited descriptor — the parent bound
+// the socket and handed it over through the child's ExtraFiles — the fake
+// serves that, so the port was never free for a parallel test to take in
+// the pick-then-bind window (#443). Otherwise the fake binds the port
+// itself, the pre-#443 behaviour.
+func fakeListener(port int) (net.Listener, error) {
+	if fd, err := strconv.Atoi(os.Getenv("OXSAY_FAKE_LISTENER_FD")); err == nil && fd > 0 {
+		f := os.NewFile(uintptr(fd), "inherited-listener")
+		defer func() { _ = f.Close() }()
+		return net.FileListener(f)
+	}
+	return net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
 }
 
 // FreePorts returns n pairwise distinct free loopback TCP ports. All n
@@ -1172,8 +1187,13 @@ func runFakeVox(args []string) int {
 		}
 		_, _ = w.Write(SilentWAV(secs))
 	})
-	srv := &http.Server{Addr: fmt.Sprintf("%s:%d", sc.Host, sc.Port), Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	if err := srv.ListenAndServe(); err != nil {
+	ln, err := fakeListener(sc.Port)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake-vox:", err)
+		return 1
+	}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	if err := srv.Serve(ln); err != nil {
 		fmt.Fprintln(os.Stderr, "fake-vox:", err)
 		return 1
 	}

@@ -13,7 +13,6 @@ import (
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
-	"github.com/anatolykoptev/ox-say/internal/testutil"
 )
 
 func shortDeadline(t *testing.T, d time.Duration) {
@@ -207,7 +206,7 @@ func voxFixtureTuned(t *testing.T, tune func(*engine.Config)) (d *Daemon, logPat
 		c.GPUMemory = config.GPUMemoryUnified
 		c.VoxCPM2Bin = os.Args[0]
 		c.VoxCPM2Model = model
-		c.VoxCPM2Port = testutil.FreePort(t)
+		c.VoxCPM2Port = boundLoopback(t)
 		c.Lang = "en"
 	}, nil, nil, tune)
 	return d, logPath

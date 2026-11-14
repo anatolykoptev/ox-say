@@ -13,7 +13,6 @@ import (
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
-	"github.com/anatolykoptev/ox-say/internal/testutil"
 )
 
 // stopLog collects the engine names the arbiter's stop path was asked to stop.
@@ -52,7 +51,7 @@ func notesRoomDaemon(t *testing.T, limitMiB, voiceMiB, restMiB uint64) (*Daemon,
 		c.NotesBin = os.Args[0]
 		c.VoxCPM2Bin = os.Args[0]
 		c.VoxCPM2Model = voxModel
-		c.VoxCPM2Port = testutil.FreePort(t)
+		c.VoxCPM2Port = boundLoopback(t)
 		p := filepath.Join(c.ModelsDir(), "Qwen3.5-9B-Q4_K_M.gguf")
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)

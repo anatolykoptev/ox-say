@@ -198,6 +198,9 @@ func TestInstallWithAnEnvPinOutsideTheModelsDirFetchesThere(t *testing.T) {
 func TestNotesServerArgsWriteAPrivateKeyPerSpawn(t *testing.T) {
 	cfg := testCfg(t, t.TempDir())
 	cfg.NotesModel = "/m/notes.gguf"
+	// notesPrepare's port probe needs a port that is actually free; the
+	// fixture's is held bound for the whole test (#443).
+	cfg.NotesPort = testutil.FreePort(t)
 	if err := notesPrepare(cfg); err != nil {
 		t.Fatal(err)
 	}

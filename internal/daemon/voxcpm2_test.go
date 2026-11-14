@@ -36,7 +36,7 @@ func newVoxTestDaemon(t *testing.T, dir string, edit func(*config.Config)) *Daem
 		c.GPUMemory = config.GPUMemoryUnified
 		c.VoxCPM2Bin = os.Args[0]
 		c.VoxCPM2Model = model
-		c.VoxCPM2Port = testutil.FreePort(t)
+		c.VoxCPM2Port = boundLoopback(t)
 		if edit != nil {
 			edit(c)
 		}

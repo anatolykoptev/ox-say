@@ -234,6 +234,13 @@ func notesPrepare(cfg *config.Config) error {
 		return fmt.Errorf("notes: port %d %s; set OX_SAY_NOTES_PORT to a free port", cfg.NotesPort, notesPortTaken)
 	}
 	_ = ln.Close()
+	return notesPrepareKey(cfg)
+}
+
+// notesPrepareKey is notesPrepare's key half, split so a test that hands the
+// child an already-bound socket (#443) runs the same key work without the
+// port probe — the held socket is itself the proof nothing else took it.
+func notesPrepareKey(cfg *config.Config) error {
 	keyPath := filepath.Join(cfg.RunDir(), notesKeyFile)
 	if err := writeNotesKey(keyPath); err != nil {
 		return fmt.Errorf("notes: cannot write the server key: %w", err)
@@ -336,11 +343,15 @@ func notesVerifyAuth(ctx context.Context, baseURL string) error {
 
 // newLLMSupervisor builds the notes server's supervisor. The child holds
 // 4-7 GB while loaded, so a short idle stop returns it to zero between meetings.
-func newLLMSupervisor(d *Daemon) (*engine.Supervisor, error) {
+func newLLMSupervisor(d *Daemon, tune func(*engine.Config)) (*engine.Supervisor, error) {
 	if d.Cfg.UnifiedMemory() {
 		notesGPUWarmup(notesBinPath(d.Cfg)) // Metal's total, off the spawn path
 	}
-	return engine.New(notesEngineConfig(d.Cfg, d.log, d.notesSpawnPlan))
+	ec := notesEngineConfig(d.Cfg, d.log, d.notesSpawnPlan)
+	if tune != nil {
+		tune(&ec)
+	}
+	return engine.New(ec)
 }
 
 // notesEngineConfig is the notes supervisor's configuration; tests tune it.

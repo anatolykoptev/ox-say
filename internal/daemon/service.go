@@ -194,7 +194,7 @@ type Daemon struct {
 // New builds the supervisor (reaping any orphaned engine) and the voice
 // store, and wires voice replay into engine startup.
 func New(cfg *config.Config, logger *slog.Logger) (*Daemon, error) {
-	return newDaemon(cfg, logger, nil, nil, nil)
+	return newDaemon(cfg, logger, nil, nil, nil, nil)
 }
 
 // sttStartupTimeout bounds the resident STT server's start budget. Passing
@@ -242,8 +242,8 @@ func STTServeArgs(cfg *config.Config, port int) []string {
 
 // newDaemon is New plus engine.Config tuning hooks for tests — tune for
 // the TTS supervisor, tuneSTT for the STT server's, tuneVox for the voxcpm2
-// child's.
-func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox func(*engine.Config)) (*Daemon, error) {
+// child's, tuneLLM for the notes server's.
+func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox, tuneLLM func(*engine.Config)) (*Daemon, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -342,7 +342,7 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 	// A Config literal (tests) names no notes binary: no supervisor, and the
 	// notes engine reports itself unavailable in /status.
 	if cfg.NotesBin != "" {
-		if d.LLMSup, err = newLLMSupervisor(d); err != nil {
+		if d.LLMSup, err = newLLMSupervisor(d, tuneLLM); err != nil {
 			sup.Shutdown()
 			if d.STTSup != nil {
 				d.STTSup.Shutdown()
@@ -377,7 +377,7 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 	if cfg.NotesBin != "" {
 		// A reaper that cannot be built must not keep the daemon down: the
 		// next check reaps the orphan the same way.
-		if tsup, err := d.newNotesTrialSupervisor(""); err != nil {
+		if tsup, err := d.newNotesTrialSupervisor("", nil); err != nil {
 			logger.Warn("own notes model: the orphaned trial child could not be looked for", "error", err)
 		} else {
 			tsup.Shutdown()
