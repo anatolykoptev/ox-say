@@ -51,9 +51,16 @@ Glossary routes (the heard → meant pairs applied to recognised text):
 | Route | Description |
 |-------|-------------|
 | `GET /v1/glossary` | `{"pairs":[…]}` — every pair: `id`, `heard`, `meant`, `status` (`candidate`/`active`/`rejected`), `sightings` (hashes only), `seen`, `added` |
-| `POST /v1/glossary` | `{"heard","meant","context"}` — file a pair. The context must contain the heard form and only its hash is kept; `409` when the heard form already maps to another term, `400` on an invalid pair |
-| `POST /v1/glossary/<id>/approve` | Make the pair active (also reactivates a rejected one) |
-| `POST /v1/glossary/<id>/reject` | Stop the pair applying; it stays as a tombstone a later `add` cannot reactivate |
+| `POST /v1/glossary` | `{"heard","meant","context"}` — file a pair. The context must contain the heard form and only its hash is kept; `409` when the heard form already maps to another term, `400` on an invalid pair (heard: 1–4 words; meant: ≤ 4 words, ≤ 60 chars, letters/digits/spaces and `. - + _ ' #` only) |
+| `POST /v1/glossary/<id>/approve` | Make the pair active (also reactivates a rejected one). Owner-only — `403` without `Authorization: Bearer <owner token>` |
+| `POST /v1/glossary/<id>/reject` | Stop the pair applying; it stays as a tombstone a later `add` cannot reactivate. Owner-only — `403` without `Authorization: Bearer <owner token>` |
+
+Approve and reject are owner-only. The daemon creates `$OX_SAY_HOME/owner.token` on first start
+(32 random bytes, hex, mode 0600) and the two routes compare the `Authorization: Bearer` value against
+it in constant time. The owner settles pairs through `ox-say vocab ok|rm`, which runs only at a
+terminal, shows the pair, and sends the token after a bare `y`. This keeps an agent from approving its
+own filings by mistake — it is a guard against our own tools acting eagerly, not against a hostile
+local process, which could read the token file anyway.
 
 Active pairs apply to dictation responses (streaming sessions), `/v1/audio/transcriptions`,
 `/v1/transcripts` when read (the stored document stays raw, so rejecting a pair restores the

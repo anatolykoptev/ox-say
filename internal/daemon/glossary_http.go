@@ -1,16 +1,59 @@
 package daemon
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/anatolykoptev/ox-say/internal/glossary"
 	"github.com/anatolykoptev/ox-say/internal/stt"
+	"github.com/anatolykoptev/ox-say/internal/vproject"
 )
 
-func (d *Daemon) initGlossary() { d.Glossary = glossary.NewStore(d.Cfg.Home) }
+// OwnerTokenFile is the file under $OX_SAY_HOME holding the bearer the
+// owner-only glossary routes require: 32 random bytes, hex, created once at
+// mode 0600. The CLI reads it to send with the person's approval; an agent
+// on the API cannot mint one — the route only compares, it never issues.
+const OwnerTokenFile = "owner.token"
+
+func (d *Daemon) initGlossary() {
+	d.Glossary = glossary.NewStore(d.Cfg.Home)
+	d.ownerToken = ownerToken(d.Cfg.Home, d.log)
+}
+
+// ownerToken loads $home/owner.token, generating it on first start. A token
+// that cannot be read or written leaves "" — the owner routes then deny
+// every call: a daemon that cannot prove the owner answers 403, never 200.
+func ownerToken(home string, log *slog.Logger) string {
+	path := filepath.Join(home, OwnerTokenFile)
+	if raw, err := os.ReadFile(path); err == nil {
+		if tok := strings.TrimSpace(string(raw)); tok != "" {
+			return tok
+		}
+	}
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		log.Warn("glossary: the owner token could not be generated; approve and reject stay closed", slog.Any("error", err))
+		return ""
+	}
+	tok := hex.EncodeToString(b[:])
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		log.Warn("glossary: the owner token could not be written; approve and reject stay closed", slog.Any("error", err))
+		return ""
+	}
+	if err := vproject.WriteAtomic(path, []byte(tok+"\n"), 0o600); err != nil {
+		log.Warn("glossary: the owner token could not be written; approve and reject stay closed", slog.Any("error", err))
+		return ""
+	}
+	return tok
+}
 
 // glossaryRoutes registers the glossary. None is interactive: filing a pair
 // must not make the voiceover producer yield. There is no hard delete: a
@@ -65,8 +108,20 @@ func (d *Daemon) handleGlossaryAdd(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
+// ownerOK reports whether the request carries the owner bearer. Approve and
+// reject settle a pair — the owner's call, made at a terminal through
+// `ox-say vocab`; an agent files candidates, it never settles them.
+func (d *Daemon) ownerOK(r *http.Request) bool {
+	tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return ok && d.ownerToken != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(d.ownerToken)) == 1
+}
+
 func (d *Daemon) handleGlossaryStatus(approve bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !d.ownerOK(r) {
+			writeErr(w, http.StatusForbidden, "approving or rejecting a pair is owner-only — run `ox-say vocab` at a terminal")
+			return
+		}
 		set := d.Glossary.Reject
 		if approve {
 			set = d.Glossary.Approve

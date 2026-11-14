@@ -66,6 +66,10 @@ type Daemon struct {
 	Transcripts *transcripts.Store
 	// Glossary holds the user's heard → meant pairs ($OX_SAY_HOME/glossary.json).
 	Glossary *glossary.Store
+	// ownerToken is the bearer the owner-only glossary routes check, loaded
+	// or created at start from $OX_SAY_HOME/owner.token (mode 0600). Empty
+	// fails closed: nothing approves or rejects.
+	ownerToken string
 	// meetCancel and meetDone stop and await StartMeetings' goroutines.
 	meetCancel context.CancelFunc
 	meetDone   chan struct{}

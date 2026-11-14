@@ -7,7 +7,8 @@ require (
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/yuin/goldmark v1.8.6
-	golang.org/x/sys v0.43.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/term v0.47.0
 	golang.org/x/text v0.43.0
 )
 

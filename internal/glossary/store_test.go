@@ -97,6 +97,24 @@ func TestAddRefusesASecondMeaning(t *testing.T) {
 	}
 }
 
+// meant lands verbatim in transcripts and subtitles: it is a short term,
+// not text — at most four words and sixty characters of letters, digits,
+// spaces and . - + _ ' #; anything else is refused.
+// Mutation: store.go validate, delete the meant rune check -> RED ("a;b" is filed).
+func TestAddValidatesMeantIsATerm(t *testing.T) {
+	s := newTestStore(t)
+	for i, m := range []string{"a\nb", "a\tb", "a;b", "a=b", "a(b)", "a/b", "a🙂b", "one two three four five"} {
+		if _, err := s.Add("voksei", m, ""); !errors.Is(err, ErrInvalid) {
+			t.Errorf("meant %q (%d): err = %v, want ErrInvalid", m, i, err)
+		}
+	}
+	for i, m := range []string{"C++", "C#", "it's", "a.b", "foo_bar", "a-b", "one two three four", "Москва"} {
+		if _, err := s.Add("voksei"+string(rune('a'+i)), m, ""); err != nil {
+			t.Errorf("meant %q: err = %v, want filed", m, err)
+		}
+	}
+}
+
 // Mutation: store.go validate, delete the containsSeq check -> RED ("сей" → "Окс Сей" would grow on every pass).
 func TestAddValidates(t *testing.T) {
 	s := newTestStore(t)

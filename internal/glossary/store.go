@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/anatolykoptev/ox-say/internal/vproject"
@@ -218,6 +219,18 @@ func validate(heard, meant string) error {
 	hw := words(heard)
 	if len(hw) == 0 || len(hw) > maxWords {
 		return fmt.Errorf("%w: heard must be 1 to %d words", ErrInvalid, maxWords)
+	}
+	// meant lands verbatim in transcripts and subtitles, so it is a term,
+	// not text: as few words as a heard form and only word characters plus
+	// the punctuation a term legitimately carries — never a newline or a
+	// control character.
+	if len(strings.Fields(meant)) > maxWords {
+		return fmt.Errorf("%w: meant must be at most %d words", ErrInvalid, maxWords)
+	}
+	for _, r := range meant {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune(" .-+_'#", r) {
+			return fmt.Errorf("%w: meant may carry only letters, digits, spaces and . - + _ ' #", ErrInvalid)
+		}
 	}
 	// A case-only pair ("github" → "GitHub") is idempotent; any other meant form
 	// that contains the heard words would change again on every pass.
