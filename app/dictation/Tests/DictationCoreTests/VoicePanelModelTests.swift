@@ -265,7 +265,7 @@ extension VoicePanelModelTests {
 }
 
 extension VoicePanelModelTests {
-    /// 198 sidebar + 180 list + 340 text + 260 panel and two dividers is 980: more than the 801 floor, which is why the window grows.
+    /// 198 sidebar + 180 list + 340 text + 260 panel and two dividers is 980: more than the 802 floor, which is why the window grows.
     /// (The app's panel is 300 wide at least, which makes it 1020; the numbers here are the function's own arithmetic.)
     /// Mutation: VoicePanelModel.swift, drop the `(panelOpen ? divider + panel : 0)` term -> RED.
     func testTheOpenPanelNeedsMoreThanTheWindowFloor() {

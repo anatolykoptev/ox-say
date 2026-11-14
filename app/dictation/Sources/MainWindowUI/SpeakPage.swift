@@ -390,7 +390,7 @@ extension SpeakProjectDetail {
 
 /// The clips and the detail side by side in a native split view. The list is 180...300 wide (ideal 220) and keeps its
 /// width while the window grows; the detail never drops under 340. With the widest sidebar (240) that is 761, inside
-/// the window floor (801).
+/// the window floor (802).
 struct SpeakSplit: NSViewControllerRepresentable {
     @ObservedObject var model: MainWindowModel
     /// The voice panel (Advanced) is open: the third pane of the split.
