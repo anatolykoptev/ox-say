@@ -783,6 +783,9 @@ final class SpeakSource {
             try await voiceover.followAndWait(id: id)
             return try await client.chunks(id: id)
         }, onFailure: { [weak self] in
+            // A level picked on another project while this change was in flight wins: the restore runs only while the
+            // panel still shows the target this change was accepted with.
+            guard self?.model.data.speak.panel.loudness == target else { return }
             self?.model.data.speak.panel.loudness = previous
             self?.savePanel()
         })

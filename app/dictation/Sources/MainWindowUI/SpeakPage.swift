@@ -231,7 +231,7 @@ struct SpeakDetailColumn: View {
         case .editing(let problem):
             HStack {
                 // Saved panel values change what «Озвучить» makes: said once, and a click shows them.
-                if VoicePanelModel.ownSettingsOn(panel: model.data.speak.panel, engine: model.data.speak.engine, advanced: model.advanced) {
+                if VoicePanelModel.ownSettingsOn(panel: model.data.speak.panel, engine: model.data.speak.engine, advanced: model.advanced, reel: model.data.speak.reel) {
                     Button(L10nKey.speakPanelOwnSettings.text) { model.speakPanelShown.wrappedValue = true }
                         .buttonStyle(.link).font(.callout)
                 }

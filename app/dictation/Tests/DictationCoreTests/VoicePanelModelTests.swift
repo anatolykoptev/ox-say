@@ -51,6 +51,25 @@ final class VoicePanelModelTests: XCTestCase {
         XCTAssertEqual(VoicePanelModel.pauseValue(-1), 0)
     }
 
+    /// #507.5: the slider's position is the square root of the seconds, so the first part of its track covers the short
+    /// pauses the ear still hears apart and the ends still land exactly on 0 and 10.
+    /// Mutation: VoicePanelModel.swift, `pauseFromSlider` -> `return position` (linear) -> RED.
+    func testThePauseSliderIsFinerBelowOneSecond() {
+        XCTAssertEqual(VoicePanelModel.pauseFromSlider(0), 0)
+        XCTAssertEqual(VoicePanelModel.pauseFromSlider(10), 10)
+        XCTAssertEqual(VoicePanelModel.pauseFromSlider(5), 2.5)
+        XCTAssertLessThan(VoicePanelModel.pauseFromSlider(0.5), 0.05, "the first part of the track is for the grid's first step")
+        XCTAssertEqual(VoicePanelModel.pauseFromSlider(-1), 0)
+        XCTAssertEqual(VoicePanelModel.pauseFromSlider(99), 10)
+        XCTAssertEqual(VoicePanelModel.pauseFromSlider(.nan), 0)
+        for s in stride(from: 0.0, through: 10.0, by: 0.25) {
+            XCTAssertEqual(VoicePanelModel.pauseFromSlider(VoicePanelModel.pauseSlider(s)), s, accuracy: 1e-9, "round trip at \(s) s")
+        }
+        XCTAssertEqual(VoicePanelModel.pauseSlider(-3), 0)
+        XCTAssertEqual(VoicePanelModel.pauseSlider(42), 10)
+        XCTAssertEqual(VoicePanelModel.pauseSlider(.nan), 0)
+    }
+
     func testSeedAndTakesStayInTheDaemonsRanges() {
         XCTAssertEqual(VoicePanelModel.seed(-5), 0)
         XCTAssertEqual(VoicePanelModel.seed(5_000_000_000), 4_294_967_295)
@@ -331,6 +350,21 @@ extension VoicePanelModelTests {
         XCTAssertTrue(VoicePanelModel.ownSettingsOn(panel: VoicePanelSettings(seed: 4), engine: .fast, advanced: true))
         XCTAssertTrue(VoicePanelModel.ownSettingsOn(panel: VoicePanelSettings(loudness: .reels), engine: .fast, advanced: true))
         XCTAssertFalse(VoicePanelModel.ownSettingsOn(panel: studioOnly, engine: .studio, advanced: false))
+    }
+
+    /// #507.3: a new reel keeps its preset's loudness and takes (`presetWins`), so a saved level or take count alone does
+    /// not change the voicing and must not announce «свои настройки»; the sound finish, the delivery and the pinned sound
+    /// still count.
+    /// Mutation: VoicePanelModel.swift, `reel` left out of `ownSettingsOn` -> RED.
+    func testAReelCountsOnlyThePanelValuesThePresetDoesNotWin() {
+        XCTAssertFalse(VoicePanelModel.ownSettingsOn(panel: VoicePanelSettings(loudness: .underMusic), engine: .studio, advanced: true, reel: true))
+        XCTAssertFalse(VoicePanelModel.ownSettingsOn(panel: VoicePanelSettings(takes: 2), engine: .studio, advanced: true, reel: true))
+        XCTAssertFalse(VoicePanelModel.ownSettingsOn(panel: VoicePanelSettings(loudness: .reels, takes: 1), engine: .studio, advanced: true, reel: true))
+        XCTAssertTrue(VoicePanelModel.ownSettingsOn(panel: VoicePanelSettings(loudness: .underMusic), engine: .studio, advanced: true, reel: false),
+                      "the same level counts off the reel")
+        XCTAssertTrue(VoicePanelModel.ownSettingsOn(panel: VoicePanelSettings(quality: .draft), engine: .studio, advanced: true, reel: true))
+        XCTAssertTrue(VoicePanelModel.ownSettingsOn(panel: VoicePanelSettings(copiesRecording: true), engine: .studio, advanced: true, reel: true))
+        XCTAssertTrue(VoicePanelModel.ownSettingsOn(panel: VoicePanelSettings(seed: 3), engine: .studio, advanced: true, reel: true))
     }
 
     /// Mutation: VoicePanelModel.swift, `mayGrow` returns true -> RED.

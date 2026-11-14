@@ -150,6 +150,20 @@ public enum VoicePanelModel {
     /// The pause slider's range: the whole of what the daemon takes, so a stored pause is never shown as something else.
     public static let pauseRange: ClosedRange<Double> = 0 ... 10
 
+    /// The slider's position for a pause in seconds, and back: the position is the square root of the seconds (the same
+    /// 0...10 range), so the first part of the track covers the short pauses the ear still hears apart.
+    public static func pauseSlider(_ seconds: Double) -> Double {
+        guard !seconds.isNaN else { return 0 }
+        let s = min(pauseRange.upperBound, max(pauseRange.lowerBound, seconds))
+        return (s * pauseRange.upperBound).squareRoot()
+    }
+
+    public static func pauseFromSlider(_ position: Double) -> Double {
+        guard !position.isNaN else { return 0 }
+        let p = min(pauseRange.upperBound, max(pauseRange.lowerBound, position))
+        return p * p / pauseRange.upperBound
+    }
+
     /// Pause after a phrase: 0 clears, otherwise 0.05...10 s on the 0.05 grid (a value between 0 and 0.05 would be refused).
     /// NaN is no pause.
     public static func pauseValue(_ seconds: Double) -> Double {
@@ -179,12 +193,13 @@ public enum VoicePanelModel {
 
     /// Whether the saved panel values change this voicing: the engine reads only its own (the fast voice a level and a pinned
     /// sound), and nothing counts while Advanced is off. The page says so once, next to «Озвучить».
-    public static func ownSettingsOn(panel: VoicePanelSettings, engine: SpeakEngine, advanced: Bool) -> Bool {
+    /// `reel` (a new reel being voiced): the preset's own loudness and takes win, so they do not count.
+    public static func ownSettingsOn(panel: VoicePanelSettings, engine: SpeakEngine, advanced: Bool, reel: Bool = false) -> Bool {
         guard advanced else { return false }
         switch engine {
         case .fast: return panel.loudness != nil || panel.seed != nil
         case .studio:
-            return panel.loudness != nil || panel.quality != nil || panel.copiesRecording || panel.seed != nil || panel.takes != nil
+            return (panel.loudness != nil && !reel) || panel.quality != nil || panel.copiesRecording || panel.seed != nil || (panel.takes != nil && !reel)
         }
     }
 
