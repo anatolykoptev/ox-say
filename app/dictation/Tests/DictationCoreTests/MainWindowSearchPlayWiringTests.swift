@@ -234,6 +234,21 @@ final class MainWindowSearchPlayWiringTests: XCTestCase {
         }
     }
 
+    /// #424 — a first detail read that lands while its row moved on (processing → done, a title saved) left the
+    /// stale state on screen: `DetailRead.needed` refuses to start a second read while the first is in flight, and
+    /// the settled row then stops the polling that would have read it again. After each landing the landed detail
+    /// is compared with the live row and one more read runs when the row moved.
+    /// Mutation: MainWindowSource.loadDetail, delete the `DetailRead.needed(row: row, shown: detail.info …)` check -> RED.
+    func testAReadThatLandedBehindTheRowReadsOnceMore() throws {
+        let load = flat(try body(try window(), of: "private func loadDetail(_ id: String) {"))
+        XCTAssertTrue(load.contains("model.data.details[id] = detail"), "the landed detail is applied")
+        XCTAssertTrue(load.contains("let row = model.data.meetings.first(where: { $0.id == id })"), "the LIVE row, not the landed detail")
+        XCTAssertTrue(load.contains("DetailRead.needed(row: row, shown: detail.info, failed: false) { again = true }"),
+                      "the landed detail is compared with the row, which may have moved during the read")
+        XCTAssertTrue(load.contains("if again { loadDetail(id) } else { model.data.detailLoading.remove(id) }"),
+                      "the rerun path and the stale-landing path share the one more read")
+    }
+
     /// Search: typing goes through the core's state machine; the effects cancel the stale request and drop an answer
     /// that arrives after the cancel.
     /// Mutation: MainWindowSource.searchEvent, `searchRequest?.cancel()` in .cancelInFlight deleted -> RED; or the

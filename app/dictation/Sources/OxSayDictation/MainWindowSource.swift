@@ -600,11 +600,17 @@ final class MainWindowSource {
             let result = await service.detail(id: id)
             let outcome = detailReads.finish(id, token: token)
             guard outcome.apply else { return } // given up (the meeting was deleted): nothing of it lands
+            var again = outcome.rerun
             switch result {
-            case .success(let detail): model.data.details[id] = detail
+            case .success(let detail):
+                model.data.details[id] = detail
+                // The row may have moved while this read ran — the list's own reads land a newer state, and a
+                // settled row then stops the polling that would read the stale landing again. One more read.
+                if !again, let row = model.data.meetings.first(where: { $0.id == id }),
+                   DetailRead.needed(row: row, shown: detail.info, failed: false) { again = true }
             case .failure(let failure): model.data.detailError[id] = failure.sentence
             }
-            if outcome.rerun { loadDetail(id) } else { model.data.detailLoading.remove(id) }
+            if again { loadDetail(id) } else { model.data.detailLoading.remove(id) }
         }
     }
 
