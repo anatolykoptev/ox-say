@@ -104,15 +104,16 @@ func (d *Daemon) voxRefLimit() float64 {
 
 // checkVoxReference refuses a reference clip the VoxCPM2 encoder cannot take
 // (voxMaxRefSeconds): past its window the engine answers HTTP 500. The words
-// are for the person who added the voice.
+// are for the person who added the voice, so they quote the engine's window,
+// not the applied limit: a test that lowers d.voxRefMax to trip the add-path
+// check must not put the seam's value into the message (#143.9).
 func (d *Daemon) checkVoxReference(seconds float64) error {
-	limit := d.voxRefLimit()
-	if seconds <= limit {
+	if seconds <= d.voxRefLimit() {
 		return nil
 	}
 	return &requestError{fmt.Sprintf(
 		"this voice's recording is %.0f seconds long, and the studio voice engine can learn from at most %d seconds. Add the voice again from a shorter clip",
-		seconds, int(limit))}
+		seconds, voxMaxRefSeconds)}
 }
 
 // UpdateVoice changes a voice's preferred engine, default style and/or display
