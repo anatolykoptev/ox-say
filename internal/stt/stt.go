@@ -100,6 +100,10 @@ type Options struct {
 	MaxAudio     time.Duration // audio past this is not decoded; 0 → DefaultMaxAudio
 	MaxQueue     int           // callers allowed to wait; 0 → DefaultMaxQueue
 
+	// Boost is the glossary term list pushed into the decoder for this one request (parakeet only; see Boost).
+	// The zero value decodes without boosting.
+	Boost Boost
+
 	// Server, when non-nil, acquires the resident ox-stt server: it returns
 	// its base URL plus a release func the caller runs once the response
 	// body is read. A nil Server means CLI only. The daemon wires it to the
@@ -338,7 +342,13 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 		args = append(args, "-ng")
 	}
 
-	out, err := oneshot.Run(ctx, opts.Bin, args, oneshot.Options{StderrTail: stderrTail})
+	oo := oneshot.Options{StderrTail: stderrTail}
+	if engine == "parakeet" && opts.Boost.Active() {
+		// the terms are the user's glossary text: stdin, never argv
+		args = append(args, "--terms-stdin", "--boost-alpha", strconv.FormatFloat(opts.Boost.Alpha, 'g', -1, 64))
+		oo.Stdin = strings.NewReader(opts.Boost.Stdin())
+	}
+	out, err := oneshot.Run(ctx, opts.Bin, args, oo)
 	if err != nil {
 		if timedOut() {
 			return nil, &TimeoutError{After: timeout}
@@ -397,6 +407,9 @@ func transcribeServer(ctx context.Context, wav string, opts Options) (*Result, e
 	// ox-stt's httplib caps a form-urlencoded body at 8 KB; a raw WAV body
 	// under its own content type is unlimited.
 	req.Header.Set("Content-Type", "audio/wav")
+	if h := opts.Boost.Header(); h != "" {
+		req.Header.Set("X-Ox-Terms", h)
+	}
 	resp, err := serverHTTP.Do(req)
 	if err != nil {
 		release()

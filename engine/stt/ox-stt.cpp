@@ -69,6 +69,7 @@
 
 #include "../common/wav_reader.h"
 #include "boost.h"
+#include "terms_wire.h"
 #include "edge_pad.h"
 #include "redecode.h"
 #include "segmenter.h"
@@ -384,32 +385,76 @@ bool decode_parakeet(parakeet_context * ctx, const args & a, const std::vector<f
     return true;
 }
 
+// One request's boost: the graph, the spoken->written speller built from the same terms, and alpha. Empty
+// (graph == nullptr) means decode without boosting.
+struct boost_plan {
+    std::shared_ptr<const oxstt::boost::graph> graph;
+    std::shared_ptr<const oxstt::boost::speller> sp;
+    float alpha = 0.0f;
+};
+
+// Builds a plan from parsed wire terms. Fail-open: no terms, alpha 0 or a list nothing of which the
+// vocabulary can spell give an empty plan; diagnostics carry counts and line numbers, never term text.
+boost_plan make_plan(parakeet_context * ctx, const std::vector<oxstt::boost::term> & terms, float alpha) {
+    boost_plan p;
+    if (!(alpha > 0.0f) || terms.empty()) return p;
+    oxstt::boost::vocab_view v;
+    v.n_vocab = parakeet_n_vocab(ctx);
+    v.piece   = [ctx](int i) { return parakeet_token_to_str(ctx, i); };
+    std::vector<std::string> skipped;
+    p.graph = oxstt::boost::graph::build(terms, v, oxstt::boost::params{}, &skipped);
+    fputs(oxstt::boost::skip_report(skipped).c_str(), stderr);
+    p.sp    = std::make_shared<const oxstt::boost::speller>(terms);
+    p.alpha = alpha;
+    return p;
+}
+
+// The last list built: an unchanged list (same text, same alpha) reuses its graph. One entry is enough, the
+// daemon sends the same glossary with every request until the glossary file changes.
+struct plan_cache {
+    std::mutex mu;
+    std::string key;
+    boost_plan plan;
+};
+
+// Wire (session body or header) -> plan. nullptr wire (nothing sent) and every refusal give an empty plan.
+boost_plan plan_from_wire(parakeet_context * ctx, plan_cache & pc, const oxstt::boost::wire * w) {
+    if (!w) return {};
+    const std::string key = std::to_string(w->alpha) + "\n" + w->lines;
+    {
+        std::lock_guard<std::mutex> l(pc.mu);
+        if (!pc.key.empty() && pc.key == key) return pc.plan;
+    }
+    std::string perr;
+    const std::vector<oxstt::boost::term> terms = oxstt::boost::parse_terms(w->lines, perr);
+    if (!perr.empty()) fprintf(stderr, "ox-stt: terms: %s", perr.c_str());  // line numbers only
+    boost_plan p = make_plan(ctx, terms, w->alpha);
+    std::lock_guard<std::mutex> l(pc.mu);
+    pc.key = key;
+    pc.plan = p;
+    return p;
+}
+
+// Spoken -> written after a boosted decode (text_raw keeps the decode as it came).
+void apply_plan(result & r, const boost_plan & p) {
+    if (!p.graph) return;
+    for (const segment & sg : r.segments) {
+        r.text_raw += (r.text_raw.empty() ? "" : " ") + sg.text;
+    }
+    for (segment & sg : r.segments) sg.text = p.sp->map(sg.text);
+    for (word & w : r.words) w.w = p.sp->map(w.w);
+}
+
 bool run_parakeet(const args & a, const std::vector<float> & x, result & r, std::string & err,
                   const std::vector<oxstt::boost::term> & terms = {}) {
     parakeet_context * ctx = load_parakeet(a, err);
     if (!ctx) {
         return false;
     }
-    std::shared_ptr<const oxstt::boost::graph> graph;
-    if (a.boost_alpha > 0.0f && !terms.empty()) {
-        oxstt::boost::vocab_view v;
-        v.n_vocab = parakeet_n_vocab(ctx);
-        v.piece   = [ctx](int i) { return parakeet_token_to_str(ctx, i); };
-        std::vector<std::string> skipped;
-        graph = oxstt::boost::graph::build(terms, v, oxstt::boost::params{}, &skipped);
-        fputs(oxstt::boost::skip_report(skipped).c_str(), stderr);
-    }
+    const boost_plan plan = make_plan(ctx, terms, a.boost_alpha);
     const auto t_dec = std::chrono::steady_clock::now();
-    const bool ok = decode_parakeet(ctx, a, x, r, err, graph, a.boost_alpha);
-    if (ok && graph) {
-        // Spoken -> written, on whole words only (boost.h map_spoken). The raw text stays in "text_raw".
-        for (const segment & sg : r.segments) {
-            r.text_raw += (r.text_raw.empty() ? "" : " ") + sg.text;
-        }
-        const oxstt::boost::speller sp(terms);
-        for (segment & sg : r.segments) sg.text = sp.map(sg.text);
-        for (word & w : r.words) w.w = sp.map(w.w);
-    }
+    const bool ok = decode_parakeet(ctx, a, x, r, err, plan.graph, plan.alpha);
+    if (ok) apply_plan(r, plan);
     if (a.verbose) {
         fprintf(stderr, "ox-stt: decode_ms=%.1f\n",
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_dec).count());
@@ -671,6 +716,7 @@ struct session {
     uint64_t           audio_base = 0;
     uint64_t           vad_pos = 0;      // samples already run through VAD
     std::vector<float> re_pcm;       // the whole recording while a finish re-decode stays possible
+    boost_plan         plan;        // this session's boost, fixed at creation (a glossary edit mid-dictation cannot change it)
     bool               re_dropped = false;  // re_pcm freed past --redecode-max-s: never re-decode
     double             dec_ms_sum = 0.0;    // decode time (not the decode_mu wait) of this session's segments
     double             dec_s_sum = 0.0;     // audio seconds of those segments (redecode_fits input)
@@ -827,6 +873,7 @@ int serve(const args & a) {
     // Session store + the single background decode worker (FIFO across sessions).
     // Lock order, everywhere: sessions_mu < session.mu < jobs_mu — never nested
     // the other way, and no lock is held across a decode or a wait.
+    plan_cache                                          terms_cache;
     std::mutex                                          sessions_mu;
     std::unordered_map<std::string, std::shared_ptr<session>> sessions;
     std::mutex                                          jobs_mu;
@@ -985,7 +1032,8 @@ int serve(const args & a) {
                 std::lock_guard<std::mutex> dl(decode_mu);
                 last_decode.store(now_s());
                 const auto dt0 = std::chrono::steady_clock::now();
-                ok = decode_parakeet(ctx, a, j.pcm, r, derr);
+                ok = decode_parakeet(ctx, a, j.pcm, r, derr, j.sess->plan.graph, j.sess->plan.alpha);
+                if (ok) apply_plan(r, j.sess->plan);
                 dec_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - dt0).count();
             }
             last_decode.store(now_s());
@@ -1122,12 +1170,23 @@ int serve(const args & a) {
             return;
         }
         const auto t0 = std::chrono::steady_clock::now();
+        // Per-request boost list (X-Ox-Terms): refused or malformed means an unboosted decode, never an error.
+        boost_plan plan;
+        if (req.has_header("X-Ox-Terms")) {
+            oxstt::boost::wire tw;
+            if (oxstt::boost::parse_header(req.get_header_value("X-Ox-Terms"), tw)) {
+                plan = plan_from_wire(ctx, terms_cache, &tw);
+            } else {
+                fprintf(stderr, "ox-stt: X-Ox-Terms refused (malformed or over 4 KB); decoding without boost\n");
+            }
+        }
         result r;
         bool ok;
         {
             std::lock_guard<std::mutex> lock(decode_mu);
             last_decode.store(now_s());
-            ok = decode_parakeet(ctx, a, x, r, err);
+            ok = decode_parakeet(ctx, a, x, r, err, plan.graph, plan.alpha);
+            if (ok) apply_plan(r, plan);
         }
         last_decode.store(now_s());
         const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -1148,8 +1207,18 @@ int serve(const args & a) {
         return it == sessions.end() ? nullptr : it->second;
     };
 
-    srv.Post("/sessions", [&](const httplib::Request &, httplib::Response & res) {
+    srv.Post("/sessions", [&](const httplib::Request & req, httplib::Response & res) {
         std::shared_ptr<session> s = std::make_shared<session>();
+        // The body optionally carries the boost list (terms_wire.h); an empty body is today's session. A
+        // refused body means no boosting for this session, never a refused session.
+        if (!req.body.empty()) {
+            oxstt::boost::wire tw;
+            if (oxstt::boost::parse_wire(req.body, tw)) {
+                s->plan = plan_from_wire(ctx, terms_cache, &tw);
+            } else {
+                fprintf(stderr, "ox-stt: session terms refused (malformed or over 16 KB); decoding without boost\n");
+            }
+        }
         // the VAD context is built before taking the lock: init reads the
         // model file and would serialize every session route behind
         // sessions_mu. A rejected session frees it via ~session.
@@ -1429,7 +1498,8 @@ int serve(const args & a) {
             {
                 std::lock_guard<std::mutex> dl(decode_mu);
                 last_decode.store(now_s());
-                rok = decode_parakeet(ctx, a, re_pcm, rr, rerr);
+                rok = decode_parakeet(ctx, a, re_pcm, rr, rerr, s->plan.graph, s->plan.alpha);
+                if (rok) apply_plan(rr, s->plan);
             }
             last_decode.store(now_s());
             const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(

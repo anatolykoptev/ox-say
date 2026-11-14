@@ -86,6 +86,31 @@ func TestLoadDefaults(t *testing.T) {
 	if c.STTServer != "on" || c.STTPort != DefaultSTTPort || c.STTIdleStop != DefaultSTTIdleStop*time.Second {
 		t.Fatalf("stt server defaults: %+v", c)
 	}
+	if c.STTBoostAlpha != 2 {
+		t.Fatalf("boost alpha default = %v, want 2", c.STTBoostAlpha)
+	}
+}
+
+// OX_SAY_STT_BOOST_ALPHA: 0..100, 0 turns decoder boosting off; anything else (NaN, inf, negative, over the
+// cap, junk) refuses to start rather than send the decoder an infinite bias.
+func TestSTTBoostAlpha(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want float64
+		ok   bool
+	}{
+		{"", 2, true}, {"0", 0, true}, {"1.5", 1.5, true}, {"100", 100, true},
+		{"101", 0, false}, {"-1", 0, false}, {"nan", 0, false}, {"inf", 0, false}, {"1e100", 0, false}, {"x", 0, false},
+	} {
+		t.Setenv("OX_SAY_STT_BOOST_ALPHA", tc.in)
+		c, err := Load(nil)
+		if tc.ok != (err == nil) {
+			t.Fatalf("alpha %q: err = %v", tc.in, err)
+		}
+		if tc.ok && c.STTBoostAlpha != tc.want {
+			t.Fatalf("alpha %q = %v, want %v", tc.in, c.STTBoostAlpha, tc.want)
+		}
+	}
 }
 
 // The resident STT server's own knobs: on|off, a port that must not collide
@@ -298,6 +323,7 @@ func TestEnvKeysAllLoaded(t *testing.T) {
 		{"OX_SAY_STT_SERVER", "off", "off", func(c *Config) string { return c.STTServer }},
 		{"OX_SAY_STT_PORT", "18096", "18096", func(c *Config) string { return strconv.Itoa(c.STTPort) }},
 		{"OX_SAY_STT_IDLE_STOP_SECS", "66", "1m6s", func(c *Config) string { return c.STTIdleStop.String() }},
+		{"OX_SAY_STT_BOOST_ALPHA", "3.5", "3.5", func(c *Config) string { return strconv.FormatFloat(c.STTBoostAlpha, 'g', -1, 64) }},
 		{"OX_SAY_VOXCPM2_BIN", "/tmp/oxk-4917/audiocpp-x", "/tmp/oxk-4917/audiocpp-x", func(c *Config) string { return c.VoxCPM2Bin }},
 		{"OX_SAY_VOXCPM2_MODEL", "/tmp/oxk-4917/vox-x.gguf", "/tmp/oxk-4917/vox-x.gguf", func(c *Config) string { return c.VoxCPM2Model }},
 		{"OX_SAY_VOXCPM2_PORT", "18097", "18097", func(c *Config) string { return strconv.Itoa(c.VoxCPM2Port) }},

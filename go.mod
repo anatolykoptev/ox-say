@@ -13,6 +13,7 @@ require (
 )
 
 require (
+	github.com/client9/gospell v0.9.2 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect

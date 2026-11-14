@@ -28,7 +28,7 @@ const (
 // voices.ErrNoTranscriber (a definitive "cannot"); every other failure is
 // returned as is (busy, timeout, server down: transient).
 func (d *Daemon) voiceWords(ctx context.Context, wavPath string) ([]voices.Word, error) {
-	res, err := d.Transcribe(ctx, TranscribeInput{AudioPath: wavPath})
+	res, err := d.Transcribe(ctx, TranscribeInput{AudioPath: wavPath, NoBoost: true})
 	if err != nil {
 		var me *stt.ModelError
 		if errors.As(err, &me) {

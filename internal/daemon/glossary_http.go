@@ -201,14 +201,22 @@ func (d *Daemon) invalidateGlossary() {
 // Any problem means no corrections and one Warn per distinct file state,
 // never a failed recognition.
 func (d *Daemon) glossaryPairs() []glossary.Pair {
+	pairs, _ := d.glossaryPairsGen()
+	return pairs
+}
+
+// glossaryPairsGen is glossaryPairs plus a generation that moves on every
+// reload from disk — the key of whatever is derived from the pairs (the
+// decoder boost list), safe against a same-size rewrite under one mtime tick.
+func (d *Daemon) glossaryPairsGen() ([]glossary.Pair, uint64) {
 	if d.Glossary == nil {
-		return nil
+		return nil, 0
 	}
 	k := d.glossaryFileKey()
 	d.glMu.Lock()
 	defer d.glMu.Unlock()
 	if d.glSet && k == d.glKey {
-		return d.glPairs
+		return d.glPairs, d.glGen
 	}
 	pairs, err := d.activePairs()
 	if err != nil {
@@ -219,7 +227,8 @@ func (d *Daemon) glossaryPairs() []glossary.Pair {
 		pairs = nil
 	}
 	d.glSet, d.glKey, d.glPairs = true, k, pairs
-	return pairs
+	d.glGen++
+	return pairs, d.glGen
 }
 
 // corrector loads the pairs once and returns a text fixer for one job (a
