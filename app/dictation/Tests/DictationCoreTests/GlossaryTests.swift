@@ -196,6 +196,7 @@ final class GlossaryModelTests: XCTestCase {
                                         : (400, #"{"error":{"message":"meant must be at most 4 words"}}"#)
         }
         let m = model(stub)
+        await m.reload()
         await m.edit("a1", meant: "one two three four five")
         XCTAssertEqual(m.problem, "meant must be at most 4 words")
         XCTAssertEqual(m.pairs.map(\.id), ["a1"])
