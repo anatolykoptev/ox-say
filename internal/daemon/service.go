@@ -21,6 +21,7 @@ import (
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
+	"github.com/anatolykoptev/ox-say/internal/glossary"
 	"github.com/anatolykoptev/ox-say/internal/meeting"
 	"github.com/anatolykoptev/ox-say/internal/transcripts"
 	"github.com/anatolykoptev/ox-say/internal/voices"
@@ -63,6 +64,8 @@ type Daemon struct {
 	// Transcripts keeps file transcripts under $OX_SAY_HOME/transcripts; nil when the
 	// directory could not be opened (the routes then answer 503).
 	Transcripts *transcripts.Store
+	// Glossary holds the user's heard → meant pairs ($OX_SAY_HOME/glossary.json).
+	Glossary *glossary.Store
 	// meetCancel and meetDone stop and await StartMeetings' goroutines.
 	meetCancel context.CancelFunc
 	meetDone   chan struct{}
@@ -365,6 +368,7 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 			tsup.Shutdown()
 		}
 	}
+	d.initGlossary()
 	d.initMeetings()
 	d.initTranscripts()
 	if d.VoxSup != nil {
