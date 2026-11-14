@@ -631,9 +631,10 @@ class Contract(unittest.TestCase):
     # `CFNetworkDownload_*.tmp` and `duetexpertd` on the hosted macos-15 VM). A file is suspect only when it holds
     # bytes of the clip itself, as int16 or float32; see the comment on `audio_signatures` for what that cannot see.
     # The test's own scratch directory is excluded (it holds the legitimate PCM copy of the clip).
-    # Mutation: Sources/ox-diar/main.swift, write the samples to a WAV beside the output and replace
-    # `manager.process(audio: samples)` with `manager.process(thatURL)` -> RED (the killed run leaves its stream file);
-    # `StubWritesAudio` below proves the same through this very method with a stub binary.
+    # Mutation: Sources/ox-diar/main.swift, write a copy of the samples into the shared temporary directory (a
+    # 16-bit mono WAV at the target rate is mapped in place by FluidAudio 0.18, so a WAV beside the output
+    # would not reach it, and no stream file appears) -> RED. `StubWritesAudio` below proves the check through
+    # this very method with a stub binary.
     def test_no_audio_reaches_the_temporary_directory(self):
         if not CLIP:
             self.skipTest("no --clip")
