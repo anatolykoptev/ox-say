@@ -472,7 +472,7 @@ func TestMovRefusesCodecsItCannotHold(t *testing.T) {
 // (the #464 repro: a .mov of dnxhd or rawvideo cleaned to a .mov). Any other input still meets the list, and a
 // QuickTime input widens nothing outside .mov.
 func TestQuickTimeInputKeepsItsOwnCodecsIntoMov(t *testing.T) {
-	qt := &probeInfo{FormatName: "mov,mp4,m4a,3gp,3g2,mj2", AudioIndex: 1, Streams: []streamInfo{
+	qt := &probeInfo{FormatName: "mov,mp4,m4a,3gp,3g2,mj2", MajorBrand: "qt", AudioIndex: 1, Streams: []streamInfo{
 		{Index: 0, Type: "video", Codec: "dnxhd"},
 		{Index: 1, Type: "audio", Codec: "aac"},
 		{Index: 2, Type: "audio", Codec: "pcm_s16be"},
@@ -493,6 +493,39 @@ func TestQuickTimeInputKeepsItsOwnCodecsIntoMov(t *testing.T) {
 	if _, err := planVideo(qt, "mp4"); err == nil || err.(*Error).Code != CodeUnsupportedStreams {
 		t.Fatalf("a QuickTime input must not widen the mp4 list: %v", err)
 	}
+	// The same demuxer name covers an mp4, an m4a and a 3gp: only a QuickTime movie's streams are known to go
+	// back into the mov muxer, so the others meet the allow-list.
+	for _, brand := range []string{"isom", "mp42", "M4A", "3gp4", ""} {
+		other := *qt
+		other.MajorBrand = brand
+		if _, err := planVideo(&other, "mov"); err == nil || err.(*Error).Code != CodeUnsupportedStreams {
+			t.Errorf("major brand %q must not pass dnxhd into mov: %v", brand, err)
+		}
+	}
+}
+
+// The brand reaches the plan from the real file: a .mov probes as "qt", an mp4 does not, so an mp4 holding a codec
+// the mov list never met (vp9) is refused up front instead of being handed to the mov muxer.
+// Mutation: mux.go isQuickTime, drop `&& info.MajorBrand == "qt"` -> the mp4 run is not refused -> RED.
+func TestOnlyAQuickTimeMovieKeepsItsOwnCodecsIntoMov(t *testing.T) {
+	requireTools(t)
+	requireEncoder(t, "libvpx-vp9")
+	mk := func(name string) string {
+		in := filepath.Join(t.TempDir(), name)
+		args := []string{"-f", "lavfi", "-i", "testsrc=size=64x64:rate=25:duration=1"}
+		args = append(args, tone(440, 48000, 1)...)
+		args = append(args, "-map", "0:v", "-map", "1:a", "-c:v", "libvpx-vp9", "-c:a", "aac", in)
+		ffrun(t, args...)
+		return in
+	}
+	mp4 := mk("in.mp4")
+	o := opts(t, mp4, filepath.Join(t.TempDir(), "o.mov"), 0.85, fakeEngine(t, "1"))
+	_, err := Run(context.Background(), o)
+	wantCode(t, err, CodeUnsupportedStreams)
+	if m := err.(*Error).Msg; !strings.Contains(m, "vp9") {
+		t.Errorf("message does not name the stream: %q", m)
+	}
+	noLeftovers(t, o)
 }
 
 // The refusal names a container that can hold the stream — never the extension that just refused it (#464.2).

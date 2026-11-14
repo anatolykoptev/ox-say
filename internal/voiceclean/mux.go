@@ -51,8 +51,15 @@ func setOf(v ...string) map[string]bool {
 }
 
 // qtFormats is ffprobe's one demuxer name for the whole QuickTime family: every .mov, .mp4, .m4a or .3gp file
-// reads as it.
+// reads as it. Only the major brand tells a QuickTime movie from the rest (isQuickTime).
 const qtFormats = "mov,mp4,m4a,3gp,3g2,mj2"
+
+// isQuickTime reports a QuickTime movie proper (major brand "qt"): the one input whose streams the mov muxer is
+// known to write back. An mp4, m4a or 3gp reads as the same demuxer but may hold codecs its own muxer accepted
+// and the mov muxer was never shown to.
+func isQuickTime(info *probeInfo) bool {
+	return info.FormatName == qtFormats && info.MajorBrand == "qt"
+}
 
 // carries reports whether the container (by output extension) can hold a stream of this type and codec by copy.
 func carries(ext, typ, codec string) bool {
@@ -115,13 +122,13 @@ func altFor(typ, codec string) string {
 }
 
 // planVideo decides, stream by stream, what the output carries. Audio and video that the container cannot hold are a
-// refusal naming the stream; the rest that it cannot hold is dropped and listed. A QuickTime input's streams all go
+// refusal naming the stream; the rest that it cannot hold is dropped and listed. A QuickTime movie's streams all go
 // back into a .mov: the mov muxer writes every codec that container already holds — the pro codecs (dnxhd, rawvideo,
 // dvvideo, big-endian pcm) the measured allow-list never met.
 func planVideo(info *probeInfo, ext string) (*videoPlan, error) {
 	p := &videoPlan{}
 	holds := func(typ, codec string) bool {
-		return carries(ext, typ, codec) || (ext == "mov" && info.FormatName == qtFormats)
+		return carries(ext, typ, codec) || (ext == "mov" && isQuickTime(info))
 	}
 	var ns, out int // out counts the output streams mapped so far
 	for _, s := range info.Streams {
