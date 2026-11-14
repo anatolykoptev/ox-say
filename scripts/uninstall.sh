@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Stop and remove the LaunchAgent, the ox-say binary and the dictation app in
-# ~/Applications. Engines, models and voices stay unless --purge is given. Paths are read back from the installed
+# ~/Applications. Engines, models and voices stay unless --purge is given; --purge never removes meetings,
+# transcripts or glossary.json, which are the user's data, not engine state. Paths are read back from the installed
 # LaunchAgent, so an install with a custom OX_SAY_HOME or OX_SAY_BINDIR is
 # removed correctly without setting them again.
 set -euo pipefail
@@ -83,5 +84,5 @@ if [ "$purge" = 1 ]; then
             echo "left $d: not an ox-say directory" >&2
         fi
     done
-    echo "ox-say engines, models, voices, logs and cache removed"
+    echo "ox-say engines, models, voices, logs and cache removed (meetings, transcripts and glossary.json kept)"
 fi

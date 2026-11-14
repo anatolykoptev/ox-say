@@ -207,8 +207,8 @@ announced in the menu and installs when you click it. `sh -s -- --version v0.1.3
 version.
 
 **Uninstall.** Run `~/Library/Application Support/ox-say/uninstall.sh`. It removes the agent, the command and the app and
-keeps models and voices. With `--purge` it removes those too. Meetings and transcripts are never removed
-for you (see [Privacy](#privacy)). Undo the MCP registration with `claude mcp remove --scope user ox-say`.
+keeps models and voices. With `--purge` it removes those too. Meetings, transcripts and `glossary.json` are
+never removed for you (see [Privacy](#privacy)). Undo the MCP registration with `claude mcp remove --scope user ox-say`.
 
 ## Privacy
 
@@ -229,8 +229,8 @@ for you (see [Privacy](#privacy)). Undo the MCP registration with `claude mcp re
   Brave, Arc or Edge. It stays on the Mac.
 - **Deleting.** Delete a meeting, a transcript, a voice or a voiceover from the app. **Keep Audio** removes old
   recordings automatically. `uninstall.sh --purge` removes engines, models and voices, but not
-  `meetings` and `transcripts`, so delete those two folders yourself to wipe your recordings.
-  `glossary.json` stays after `--purge` too, like `meetings` and `transcripts`.
+  `meetings`, `transcripts` and `glossary.json` (your corrections are your data, like the other two), so delete
+  those yourself to wipe your recordings and corrections.
 - **Recording others.** The law in some places requires everyone's consent. The app can copy a sentence
   to the clipboard for that (**Copy consent phrase**).
 
