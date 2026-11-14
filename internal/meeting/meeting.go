@@ -124,4 +124,7 @@ type Manifest struct {
 	// Attempts counts the times Recover put a failed meeting back in the
 	// queue; Retry and a finished meeting reset it.
 	Attempts int `json:"attempts,omitempty"`
+	// Glossary lists the glossary pair ids active when the transcript was
+	// written; a pair rejected later stays recorded here so an undo can name it.
+	Glossary []string `json:"glossary,omitempty"`
 }
