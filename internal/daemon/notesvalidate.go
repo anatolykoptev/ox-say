@@ -304,7 +304,10 @@ func (d *Daemon) newNotesTrialSupervisor(path string) (*engine.Supervisor, error
 		LogName:        "notes-trial.log", LogDir: d.Cfg.EngineLogDir,
 		PidPath: filepath.Join(d.Cfg.RunDir(), notesTrialPidFile),
 		Logger:  d.log,
-		Args:    func(p int) []string { return notesServerArgsKey(d.Cfg, p, path, notesTrialKeyFile) },
+		// The trial is a real llama-server start on this Mac: it gets the same
+		// fitting plan the notes spawn gets (#542), so a file that only loads
+		// under llama.cpp's fitter is not passed by a trial that skipped it.
+		Args:    func(p int) []string { return notesPlanArgsKey(d.Cfg, p, d.notesTrialPlan(path), notesTrialKeyFile) },
 		Env:     notesServerEnv(d.Cfg),
 		Prepare: func() error { return notesTrialPrepare(keyPath) },
 		Verify:  notesVerifyAuth,

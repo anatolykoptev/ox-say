@@ -141,10 +141,17 @@ func notesServerArgsKey(cfg *config.Config, port int, modelPath, keyFile string)
 // the layer count against --fit-target. A plan without a target (CPU decode)
 // keeps the config's -ngl.
 func notesPlanArgs(cfg *config.Config, port int, p notesPlan) []string {
+	return notesPlanArgsKey(cfg, port, p, notesKeyFile)
+}
+
+// notesPlanArgsKey is notesPlanArgs with the key file named: the trial child
+// gets the same fitted argv but its own key, so rotating it cannot break a
+// resident engine still serving its first key.
+func notesPlanArgsKey(cfg *config.Config, port int, p notesPlan, keyFile string) []string {
 	if p.fitMiB > 0 {
-		return notesArgs(cfg, port, p.model, "", p.fitMiB, notesKeyFile)
+		return notesArgs(cfg, port, p.model, "", p.fitMiB, keyFile)
 	}
-	return notesArgs(cfg, port, p.model, notesGPULayers(cfg), 0, notesKeyFile)
+	return notesArgs(cfg, port, p.model, notesGPULayers(cfg), 0, keyFile)
 }
 
 // notesArgs builds the child argv. ngl is the -ngl value verbatim: "99" for
