@@ -676,8 +676,11 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 	for i, ch := range chunks {
 		got, lost, err := c.summarise(runCtx, l, lang, i, len(chunks), ch, &restarts, 0)
 		if err != nil {
-			if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
-				// The run's own budget, not the caller's context.
+			// Notes a split chunk finished before the stop still count.
+			parts = append(parts, got...)
+			// The run's own budget is runCtx expiring under a live caller context;
+			// an engine error that merely wraps DeadlineExceeded is not it.
+			if ctx.Err() == nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 				for j := i; j < len(chunks); j++ {
 					skipped = append(skipped, j)
 				}
@@ -725,7 +728,8 @@ const (
 // as not): its text is split at a line end and each half is summarised on its own, down to maxSplitDepth levels.
 // The halves' notes come back in order, as ordinary parts. lost reports that some piece of the chunk has no
 // notes (the caller records the chunk as skipped). A non-truncation failure keeps chunk's own retry and then
-// loses the piece. err is set only for a stop the whole run must honour: a cancelled context or a dead engine.
+// loses the piece. err is set only for a stop the whole run must honour: a cancelled context or a dead engine;
+// the parts already finished by then come back with it.
 func (c Composer) summarise(ctx context.Context, l Labels, lang string, i, total int, text string, restarts *int, depth int) (parts []ChunkNotes, lost bool, err error) {
 	got, err := c.chunk(ctx, l, lang, i, total, text, restarts)
 	if err == nil {
@@ -761,7 +765,8 @@ func (c Composer) summarise(ctx context.Context, l Labels, lang string, i, total
 	for _, half := range []string{a, b} {
 		got, lostHalf, err := c.summarise(ctx, l, lang, i, total, half, restarts, depth+1)
 		if err != nil {
-			return nil, false, err
+			// Hand back what the earlier half (or this one's own pieces) finished.
+			return append(parts, got...), true, err
 		}
 		parts = append(parts, got...)
 		lost = lost || lostHalf
