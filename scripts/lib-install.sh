@@ -111,7 +111,9 @@ oxs_settings() {
 oxs_voxcpm2_min_bytes=25769803776 # 24 GiB
 oxs_voxcpm2_ok() {
     local mem
-    if [ "$(uname -m)" != arm64 ]; then
+    # arm64 hardware, not just an arm64 shell: a Rosetta shell says x86_64 while the Mac is Apple
+    # Silicon — hw.optional.arm64 reads the hardware, the same test get.sh makes for its own arch.
+    if [ "$(uname -m)" != arm64 ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" != 1 ]; then
         echo "ox-say: VoxCPM2 runs on Apple Silicon only; not fetching its model on this Mac" >&2
         return 1
     fi

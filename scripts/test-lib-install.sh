@@ -396,16 +396,21 @@ esac
 # the x86_64, 16 GB and 23.99 GB cases fail. Mutation: `-lt` -> `-le` in
 # oxs_voxcpm2_ok -> the exactly-24 GB case fails. Mutation: delete the
 # `case $mem` digits check in oxs_voxcpm2_ok -> the sysctl-fails, sysctl-empty
-# and sysctl-garbage cases fail (they used to fetch 3 GB).
-vox_case() { # name arch memsize want [extra env assignments...]
-    local d="$tmp/vox-$1" name=$1 arch=$2 mem=$3 want=$4
+# and sysctl-garbage cases fail (they used to fetch 3 GB). Mutation: drop the
+# hw.optional.arm64 disjunct from the arch test -> the Rosetta case fails (#397).
+vox_case() { # name arch memsize want [armhw=0|1] [extra env assignments...]
+    local d="$tmp/vox-$1" name=$1 arch=$2 mem=$3 want=$4 armhw=0
     shift 4
+    case "${1:-}" in
+        armhw=*) armhw=${1#armhw=}; shift ;;
+    esac
     mkdir -p "$d/bin"
     printf '#!/bin/sh\necho "$@" > "%s/fetch-args"\n' "$d" > "$d/fetch"
     printf '#!/bin/sh\necho %s\n' "$arch" > "$d/bin/uname"
     case $mem in
         fail) printf '#!/bin/sh\nexit 1\n' > "$d/bin/sysctl" ;;
-        *) printf '#!/bin/sh\necho %s\n' "$mem" > "$d/bin/sysctl" ;;
+        # sysctl answers the oid it is asked for: -n hw.memsize the size, -n hw.optional.arm64 the flag
+        *) printf '#!/bin/sh\ncase "${2:-}" in hw.memsize) echo %s ;; hw.optional.arm64) echo %s ;; *) exit 1 ;; esac\n' "$mem" "$armhw" > "$d/bin/sysctl" ;;
     esac
     chmod +x "$d/fetch" "$d/bin/uname" "$d/bin/sysctl"
     env PATH="$d/bin:$PATH" OX_SAY_WITH_VOXCPM2=1 "$@" \
@@ -417,6 +422,9 @@ vox_case arm64-24g-exact arm64 25769803776 "--with-voxcpm2"
 vox_case arm64-just-under-24g arm64 25769803775 ""
 vox_case arm64-16g arm64 17179869184 ""
 vox_case x86_64 x86_64 34359738368 ""
+# A Rosetta shell says x86_64 on arm64 hardware; hw.optional.arm64 reads the
+# hardware — the same test get.sh makes for its arch (#397).
+vox_case rosetta-32g x86_64 34359738368 "--with-voxcpm2" armhw=1
 vox_case sysctl-fails arm64 fail ""
 vox_case sysctl-empty arm64 "" ""
 vox_case sysctl-garbage arm64 "n/a" ""
