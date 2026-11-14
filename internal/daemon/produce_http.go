@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
+	"math/big"
 	"net/http"
 	"strconv"
 
@@ -190,6 +190,10 @@ func (d *Daemon) handleProduceStatus(w http.ResponseWriter, r *http.Request) {
 // or a magnitude past the integers' reach.
 var errNotWhole = errors.New("not a whole number")
 
+// maxWholeLiteral bounds the literal wholeField parses exactly, so a hostile
+// exponent cannot make the exact conversion expensive.
+const maxWholeLiteral = 64
+
 // wholeField reads an optional integer knob a JSON author may write as 8, 8.0
 // or 1e3 — every mathematically whole number, the way /v1/audio/speech reads
 // its fields through number(). Absent and null are "not given"; any other
@@ -205,11 +209,16 @@ func wholeField(raw json.RawMessage) (*int64, error) {
 	if i, err := n.Int64(); err == nil {
 		return &i, nil
 	}
-	f, err := n.Float64()
-	if err != nil || f != math.Trunc(f) || math.Abs(f) > 1<<53 {
+	// Exact decimal value, never a float64: 1.0000000000000001 rounds to a whole
+	// 1 as a float but is not one.
+	if len(n) > maxWholeLiteral {
 		return nil, errNotWhole
 	}
-	i := int64(f)
+	r, ok := new(big.Rat).SetString(string(n))
+	if !ok || !r.IsInt() || r.Num().BitLen() > 53 {
+		return nil, errNotWhole
+	}
+	i := r.Num().Int64()
 	return &i, nil
 }
 

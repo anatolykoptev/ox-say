@@ -3,10 +3,12 @@ package transcripts
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -234,7 +236,10 @@ func TestNewWarnsAndOpensOnAStuckTempDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := removeAll
-	removeAll = func(string) error { return errors.New("boom") }
+	// os.RemoveAll's real failure carries the full path in a *PathError.
+	removeAll = func(p string) error {
+		return &fs.PathError{Op: "unlinkat", Path: p, Err: syscall.EACCES}
+	}
 	defer func() { removeAll = old }()
 	var logs bytes.Buffer
 	s, err := New(dir, slog.New(slog.NewTextHandler(&logs, nil)))
@@ -243,6 +248,10 @@ func TestNewWarnsAndOpensOnAStuckTempDir(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "cannot remove a leftover temp dir") {
 		t.Fatalf("the sweep failure was not logged: %q", logs.String())
+	}
+	// The path holds the user's home directory; the log must not carry it.
+	if strings.Contains(logs.String(), dir) {
+		t.Fatalf("the sweep warning leaks the store path: %q", logs.String())
 	}
 }
 

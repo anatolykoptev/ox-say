@@ -197,8 +197,8 @@ func TestProduceHTTPLoudnessAndStepsOverrides(t *testing.T) {
 // mathematically whole JSON number — 8, 8.0, 1e3 — is the integer; a fraction,
 // a word or an out-of-range value is a plain 400 naming the field, never a
 // Go struct name.
-// Mutation: produce_http.go wholeField, `f != math.Trunc(f)` -> `false` -> RED
-// on the fraction rows.
+// Mutation: produce_http.go wholeField, `!r.IsInt()` -> `false` -> RED on the
+// fraction rows, including the one-plus-epsilon ones a float64 cannot see.
 func TestProduceHTTPWholeJSONNumbers(t *testing.T) {
 	f := newFakePorts(t)
 	d, mux := produceMux(t, f)
@@ -235,6 +235,12 @@ func TestProduceHTTPWholeJSONNumbers(t *testing.T) {
 		{"takes decimal out of range", `{"script":"Привет.","takes":9.0}`, "takes"},
 		{"seed fraction", `{"script":"Привет.","seed":1.5}`, "seed"},
 		{"seed word", `{"script":"Привет.","seed":"lucky"}`, "seed"},
+		// Nearer to 1 than a float64 can tell: Float64() rounds these to a whole 1.
+		{"takes one-plus-epsilon", `{"script":"Привет.","takes":1.0000000000000001}`, "takes"},
+		{"seed one-plus-epsilon", `{"script":"Привет.","seed":1.0000000000000001}`, "seed"},
+		{"steps one-plus-epsilon", `{"script":"Привет.","inference_timesteps":8.0000000000000001}`, "inference_timesteps"},
+		{"seed long fraction exponent", `{"script":"Привет.","seed":1.00000000000000000000001e1}`, "seed"},
+		{"steps huge exponent", `{"script":"Привет.","inference_timesteps":1e999999999}`, "inference_timesteps"},
 		{"steps range via decimal", `{"script":"Привет.","inference_timesteps":51.0}`, "inference_timesteps"},
 	} {
 		rec := do(mux, http.MethodPost, "/v1/produce", c.body)

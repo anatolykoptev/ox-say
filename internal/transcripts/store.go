@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -92,7 +93,7 @@ func New(dir string, log *slog.Logger) (*Store, error) {
 			continue
 		}
 		if err := removeAll(filepath.Join(dir, e.Name())); err != nil && s.Log != nil {
-			s.Log.Warn("transcripts: cannot remove a leftover temp dir", slog.String("name", e.Name()), slog.Any("error", err))
+			s.Log.Warn("transcripts: cannot remove a leftover temp dir", slog.String("name", e.Name()), slog.String("error", sanitizeErr(err)))
 		}
 	}
 	return s, nil
@@ -252,4 +253,14 @@ func (s *Store) Delete(id string) error {
 		return err
 	}
 	return os.RemoveAll(gone)
+}
+
+// sanitizeErr is err's text without the path an *fs.PathError carries — the
+// path is under the user's home directory and does not belong in a log.
+func sanitizeErr(err error) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Op + ": " + pe.Err.Error()
+	}
+	return err.Error()
 }
