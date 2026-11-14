@@ -3,6 +3,10 @@ package daemon
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -93,5 +97,71 @@ func TestAComputeWedgedEngineIsDownAndRestarted(t *testing.T) {
 	}
 	if n := len(spawnArgvs(t, dir)); n != 2 {
 		t.Fatalf("spawns = %d, want 2 — the wedged child was replaced before the retry", n)
+	}
+}
+
+// A wedged engine whose stop fails (a Guard still held, so Stop gives up) is
+// still up: the retry Compose would spend lands on the same process. The
+// error must say so — non-retryable — instead of promising a fresh spawn (#572).
+// Mutation: internal/daemon/meetings.go llmChat.Complete, Retryable: true on
+// the stop-failed path -> RED (TestAWedgedEngineThatCannotBeStoppedIsNotRetryable).
+func TestAWedgedEngineThatCannotBeStoppedIsNotRetryable(t *testing.T) {
+	d, dir := startNotesFake(t)
+	t.Setenv("OXSAY_FAKE_LLM_HANG_MS", "30000")
+	t.Setenv("OXSAY_FAKE_LLM_SLOTS_STALL", "1")
+	shortNotesCallTimeout(t)
+	keep := notesAliveProbe
+	notesAliveProbe = 100 * time.Millisecond
+	t.Cleanup(func() { notesAliveProbe = keep })
+	keepGap := notesProgressProbe
+	notesProgressProbe = 10 * time.Millisecond
+	t.Cleanup(func() { notesProgressProbe = keepGap })
+	keepStop := notesStopWait
+	notesStopWait = 200 * time.Millisecond
+	t.Cleanup(func() { notesStopWait = keepStop })
+	other := d.LLMSup.Acquire() // another user of the engine: Stop will not kill a request in flight
+	defer other.Release()
+	_, err := (llmChat{d: d}).Complete(context.Background(), meeting.Request{System: "s", User: "u"})
+	var down *meeting.EngineDownError
+	if !errors.As(err, &down) || down.Reason != meeting.FailNotesEngineTimeout {
+		t.Fatalf("err = %v (%T), want the engine-down error with %s", err, err, meeting.FailNotesEngineTimeout)
+	}
+	if down.Retryable {
+		t.Fatal("the child is still up after a failed stop: a retry would re-ask the same wedged process")
+	}
+	if n := len(spawnStamps(t, dir)); n != 1 {
+		t.Fatalf("spawns = %d, want 1", n)
+	}
+}
+
+// /slots answering with no rows says nothing about whether the decode moves:
+// it must not read as "alive and slow" (which splits the chunk), only as
+// inconclusive (#572).
+// Mutation: internal/daemon/meetings.go notesProgressing, drop the len==0
+// guards -> RED (TestNotesProgressingEmptySlotsIsInconclusive).
+func TestNotesProgressingEmptySlotsIsInconclusive(t *testing.T) {
+	d, _ := startNotesFake(t)
+	if err := os.MkdirAll(d.Cfg.RunDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d.Cfg.RunDir(), notesKeyFile), []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for body, want := range map[string]bool{
+		`[]`:                        false,
+		`null`:                      false,
+		`[{"is_processing":false}]`: true, // a real idle slot: the request simply ended
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		keepGap := notesProgressProbe
+		notesProgressProbe = 5 * time.Millisecond
+		got := d.notesProgressing(context.Background(), srv.URL)
+		notesProgressProbe = keepGap
+		srv.Close()
+		if got != want {
+			t.Errorf("/slots %s: notesProgressing = %v, want %v", body, got, want)
+		}
 	}
 }
