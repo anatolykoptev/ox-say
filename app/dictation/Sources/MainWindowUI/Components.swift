@@ -1,10 +1,13 @@
 import DictationCore
 import SwiftUI
 
-/// "Everything stays on this Mac. Nothing is sent anywhere." with a lock.
+/// "Everything stays on this Mac. Nothing is sent anywhere." with a lock — the honest variant when
+/// the notes folder itself is uploaded to iCloud by macOS (#532).
 struct PrivacyLine: View {
+    var notesFolderSyncs = false
+
     var body: some View {
-        Label(L10nKey.privacyLine.text, systemImage: "lock.fill")
+        Label(notesFolderSyncs ? L10nKey.privacyLineICloud.text : L10nKey.privacyLine.text, systemImage: "lock.fill")
             .font(.footnote)
             .foregroundStyle(.secondary)
             .labelStyle(.titleAndIcon)

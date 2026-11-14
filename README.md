@@ -213,7 +213,9 @@ for you (see [Privacy](#privacy)). Undo the MCP registration with `claude mcp re
 - **Where things live.** Everything is under `~/Library/Application Support/ox-say`: `meetings`
   (microphone and system channels, transcript, notes), `transcripts` (text only, readable by you alone),
   `voices`, `models`, `engine`. A copy of each meeting's notes and transcript goes to your notes folder
-  (`~/Documents/ox-say Meetings` by default). Voiceovers are written to `~/Movies/ox-say` unless you name another folder. Logs are in
+  (`~/Documents/ox-say Meetings` by default). A notes folder inside an iCloud-synced location —
+  `~/Documents` while "Desktop & Documents" sync is on — is uploaded by macOS, and the app warns
+  about it in Settings. Voiceovers are written to `~/Movies/ox-say` unless you name another folder. Logs are in
   `~/Library/Logs/ox-say`. Dictated text is held in memory only and never written to disk.
 - **The browser address.** To tell a Meet call from other tabs, the app reads the address of the active tab in Chrome,
   Brave, Arc or Edge. It stays on the Mac.

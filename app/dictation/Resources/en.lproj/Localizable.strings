@@ -189,6 +189,7 @@
 "common.open" = "Open";
 "common.choose" = "Choose…";
 "privacy.line" = "Recordings, transcripts and notes stay on this Mac. Nothing is uploaded.";
+"privacy.line.icloud" = "Recordings, transcripts and notes stay on this Mac — except the notes folder, which syncs to iCloud.";
 "meetings.day.today" = "Today";
 "meetings.day.yesterday" = "Yesterday";
 "meetings.untitled" = "Call";
@@ -241,6 +242,7 @@
 "settings.apps.default" = "As set above (%@)";
 "settings.apps.browsers" = "In Chrome, Brave, Arc or Edge";
 "settings.folder" = "Notes folder";
+"settings.folder.icloud" = "This folder syncs to iCloud: notes and transcripts will be uploaded to iCloud. Choose a folder outside Documents and Desktop to keep them on this Mac.";
 "settings.keep" = "Keep recordings for";
 "settings.keep.footer" = "After this time only the audio is deleted. Notes and transcripts stay until you delete them.";
 "settings.name" = "Your name in transcripts";

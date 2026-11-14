@@ -70,7 +70,7 @@ struct MeetingsPage: View {
                         .controlSize(.large)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                PrivacyLine().padding(.bottom, 14)
+                PrivacyLine(notesFolderSyncs: model.data.meetingSettings.folderSyncsICloud).padding(.bottom, 14)
             }
         case .list:
             VStack(spacing: 0) {
@@ -264,7 +264,7 @@ private struct MeetingList: View {
                 SearchResults(model: model)
             }
             Divider()
-            PrivacyLine()
+            PrivacyLine(notesFolderSyncs: model.data.meetingSettings.folderSyncsICloud)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14).padding(.vertical, 9)
         }

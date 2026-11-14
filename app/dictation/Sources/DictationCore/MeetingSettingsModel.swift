@@ -94,6 +94,9 @@ public struct MeetingSettingsValues: Equatable {
     public var callMode: CallGlobalMode
     public var apps: [CallApp]
     public var folderPath: String
+    /// True when macOS itself uploads the notes folder to iCloud (`ICloudSync`): the "nothing is
+    /// uploaded" promise then needs its honest variant. False when unknown.
+    public var folderSyncsICloud: Bool
     public var retention: MeetingRetention
     /// False when the daemon could not be asked: `retention` is the app's last copy, not a fact.
     public var retentionVerified: Bool
@@ -102,12 +105,14 @@ public struct MeetingSettingsValues: Equatable {
     public var yourNameFallback: String
     public var notesWriter: NotesWriterState
 
-    public init(enabled: Bool, callMode: CallGlobalMode, apps: [CallApp], folderPath: String, retention: MeetingRetention,
-                retentionVerified: Bool = true, yourName: String, yourNameFallback: String, notesWriter: NotesWriterState) {
+    public init(enabled: Bool, callMode: CallGlobalMode, apps: [CallApp], folderPath: String, folderSyncsICloud: Bool = false,
+                retention: MeetingRetention, retentionVerified: Bool = true, yourName: String, yourNameFallback: String,
+                notesWriter: NotesWriterState) {
         self.enabled = enabled
         self.callMode = callMode
         self.apps = apps
         self.folderPath = folderPath
+        self.folderSyncsICloud = folderSyncsICloud
         self.retention = retention
         self.retentionVerified = retentionVerified
         self.yourName = yourName
@@ -136,12 +141,15 @@ public enum MeetingSettingsModel {
     }
 
     /// `daemonRetention` is what the daemon reported, nil when it could not be asked; it wins because the daemon is what
-    /// deletes the audio.
+    /// deletes the audio. The folder's iCloud answer is read fresh on every load: a pick of a different folder moves it.
     public static func load(defaults d: UserDefaults, daemonRetention: MeetingRetention?, notesWriter: NotesWriterState,
-                            fullName: String, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> MeetingSettingsValues {
-        MeetingSettingsValues(
+                            fullName: String, home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                            probe: ICloudSync.Probe = ICloudSync.probe) -> MeetingSettingsValues {
+        let folder = MeetingSettings.folder(d, home: home)
+        return MeetingSettingsValues(
             enabled: MeetingSettings.enabled(d), callMode: MeetingSettings.callMode(d), apps: CallPolicy.apps(d),
-            folderPath: MeetingSettings.folder(d, home: home).path, retention: daemonRetention ?? MeetingSettings.retention(d),
+            folderPath: folder.path, folderSyncsICloud: ICloudSync.syncs(folder, home: home, probe: probe),
+            retention: daemonRetention ?? MeetingSettings.retention(d),
             retentionVerified: daemonRetention != nil, yourName: d.string(forKey: MeetingSettings.nameKey) ?? "", yourNameFallback: fullName, notesWriter: notesWriter)
     }
 
