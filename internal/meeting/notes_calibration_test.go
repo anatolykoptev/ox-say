@@ -3,18 +3,10 @@ package meeting
 import "testing"
 
 // relaxedRatio lists the samples allowed to be estimated looser than
-// maxEstimateRatio, each with the reason.
-var relaxedRatio = map[string]float64{
-	// Thai and Arabic are the lightest of the scripts in the 0.6 class (real
-	// 0.24-0.27 per rune, Hebrew and Hangul sit at 0.45), and their spaces
-	// merge into the next word while the estimate charges a space a whole
-	// token (a space before a digit or a symbol really costs one, see
-	// digits_only). Splitting these two scripts out would save chunk size
-	// only for them, on one measured sentence each; the shared weight stays
-	// the safe one.
-	"prose_th": 3.0,
-	"prose_ar": 3.0,
-}
+// maxEstimateRatio, each with the reason. None today: Thai and Arabic sat at
+// 3.0 until #545 stopped charging their spaces a whole token (the tokenizer
+// merges them into the next word).
+var relaxedRatio = map[string]float64{}
 
 const maxEstimateRatio = 2.5
 

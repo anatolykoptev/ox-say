@@ -216,8 +216,8 @@ func cutLine(line string, limit int) []string {
 // overflows.
 func fitRunes(r []rune, maxRunes, maxUnits int) int {
 	runes, units := 0, 0
-	for _, c := range r {
-		u := runeUnits(c)
+	for i := range r {
+		u := runeUnitsIn(r, i)
 		if runes+1 > maxRunes || units+u > maxUnits {
 			break
 		}
@@ -958,11 +958,26 @@ func runeUnits(r rune) int {
 	return 20
 }
 
+// runeUnitsIn is runeUnits with the context it sits in: a space followed by
+// a mid-script letter merges into the next word's token and costs nothing —
+// the calibration's Thai and Arabic samples measure it that way, and
+// charging it a whole token chunked those transcripts short (#545).
+// Everywhere else a space keeps its token: before a digit or a symbol it is
+// its own token (digits_only), and the other scripts' word starts are not
+// measured to merge this reliably.
+func runeUnitsIn(rs []rune, i int) int {
+	if rs[i] == ' ' && i+1 < len(rs) && unicode.IsLetter(rs[i+1]) && unicode.IsOneOf(midScripts, rs[i+1]) {
+		return 0
+	}
+	return runeUnits(rs[i])
+}
+
 // tokenUnits is the token cost of s in unitsPerToken units.
 func tokenUnits(s string) int {
+	rs := []rune(s)
 	n := 0
-	for _, r := range s {
-		n += runeUnits(r)
+	for i := range rs {
+		n += runeUnitsIn(rs, i)
 	}
 	return n
 }
@@ -981,16 +996,35 @@ func startsCluster(r rune) bool {
 }
 
 // cutAt moves a cut at r[n] back to a cluster boundary: a piece never starts
-// with a combining mark, variation selector, joiner or modifier, and never
-// ends on a joiner (that would split an emoji ZWJ sequence). A cluster longer
-// than the whole piece is cut where it was.
+// with a combining mark, variation selector, joiner or modifier, never ends
+// on a joiner (that would split an emoji ZWJ sequence), and never splits a
+// regional-indicator pair — a flag cut in half shows as two letters. A
+// cluster longer than the whole piece is cut where it was.
 func cutAt(r []rune, n int) int {
 	m := n
-	for m > 0 && m < len(r) && (startsCluster(r[m]) || r[m-1] == 0x200D) {
+	for m > 0 && m < len(r) && (startsCluster(r[m]) || r[m-1] == 0x200D || splitsFlag(r, m)) {
 		m--
 	}
 	if m == 0 {
 		return n
 	}
 	return m
+}
+
+// isRegionalIndicator is a flag letter: two adjacent ones form a flag emoji.
+func isRegionalIndicator(r rune) bool {
+	return r >= 0x1F1E6 && r <= 0x1F1FF
+}
+
+// splitsFlag reports whether a cut at r[m] breaks a regional-indicator pair:
+// an odd run of flag letters ending at m-1 pairs with r[m].
+func splitsFlag(r []rune, m int) bool {
+	if !isRegionalIndicator(r[m]) {
+		return false
+	}
+	n := 0
+	for i := m - 1; i >= 0 && isRegionalIndicator(r[i]); i-- {
+		n++
+	}
+	return n%2 == 1
 }
