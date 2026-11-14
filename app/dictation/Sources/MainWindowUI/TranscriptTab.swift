@@ -221,27 +221,47 @@ struct MiniPlayer: View {
     @State private var scrub: Double?
 
     var body: some View {
-        let total = max(values.duration ?? values.position, 1)
-        HStack(spacing: 10) {
-            Button { model.actions.togglePlayback() } label: {
-                Image(systemName: values.isPlaying ? "pause.fill" : "play.fill").frame(width: 18)
-            }
-            .help((values.isPlaying ? L10nKey.playPause : L10nKey.playPlay).text)
-            .accessibilityLabel((values.isPlaying ? L10nKey.playPause : L10nKey.playPlay).text)
-            Text(MeetingBadgeModel.clock(scrub ?? values.position)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
-            Slider(value: Binding(get: { min(scrub ?? values.position, total) }, set: { scrub = $0 }), in: 0...total) { editing in
-                if !editing, let to = scrub {
-                    model.actions.seekPlayback(to)
-                    scrub = nil
-                }
-            }
-            .accessibilityLabel(L10nKey.playPosition.text)
-            Text(values.duration.map(MeetingBadgeModel.clock) ?? "–:––").font(.caption).monospacedDigit().foregroundStyle(.secondary)
-            IconButton(symbol: "xmark", labelKey: .a11yPlayStop) { model.actions.stopPlayback() }
+        // The full row is wider than the narrowest column — the slider holds its own minimum and the
+        // close button was clipped at the edge: three variants, the first that fits wins.
+        ViewThatFits(in: .horizontal) {
+            row(clock: .split)
+            row(clock: .merged)
+            row(clock: .merged, scrub: false)
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 16).padding(.vertical, 8)
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
+    }
+
+    /// Where the clocks go: position and duration apart, or one "p / d" when the column is tight.
+    private enum Clock { case split, merged }
+
+    private func row(clock: Clock, scrub showsSlider: Bool = true) -> some View {
+        let total = max(values.duration ?? values.position, 1)
+        let position = MeetingBadgeModel.clock(scrub ?? values.position)
+        let duration = values.duration.map(MeetingBadgeModel.clock) ?? "–:––"
+        return HStack(spacing: 10) {
+            Button { model.actions.togglePlayback() } label: {
+                Image(systemName: values.isPlaying ? "pause.fill" : "play.fill").frame(width: 18)
+            }
+            .help((values.isPlaying ? L10nKey.playPause : L10nKey.playPlay).text)
+            .accessibilityLabel((values.isPlaying ? L10nKey.playPause : L10nKey.playPlay).text)
+            Text(clock == .split ? position : "\(position) / \(duration)")
+                .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            if showsSlider {
+                Slider(value: Binding(get: { min(scrub ?? values.position, total) }, set: { scrub = $0 }), in: 0...total) { editing in
+                    if !editing, let to = scrub {
+                        model.actions.seekPlayback(to)
+                        scrub = nil
+                    }
+                }
+                .accessibilityLabel(L10nKey.playPosition.text)
+            }
+            if clock == .split {
+                Text(duration).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            }
+            IconButton(symbol: "xmark", labelKey: .a11yPlayStop) { model.actions.stopPlayback() }
+        }
     }
 }

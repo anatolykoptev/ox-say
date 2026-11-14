@@ -210,6 +210,37 @@ final class MainWindowSearchPlayWiringTests: XCTestCase {
         XCTAssertTrue(w.contains("a.searchTyped = { [weak self] text in self?.searchEvent(.typed(text)) }"))
     }
 
+    /// #521 — «People on this call» picks a layout by width: the wide line of avatars with one-line
+    /// names under them while it fits, a collapsed cluster (overlapping avatars, «N participants», a
+    /// popover that lists everyone) when it does not. A name must never wrap letter by letter again.
+    /// Mutation: MeetingDetailView, delete `ViewThatFits` in the people section -> RED; delete
+    /// `.lineLimit(1)` -> RED; delete `.popover` -> RED.
+    func testThePeopleRowCollapsesInsteadOfWrapping() throws {
+        let d = flat(try source("Sources/MainWindowUI/MeetingDetailView.swift"))
+        let label = try XCTUnwrap(d.range(of: "Text(L10nKey.meetingPeople.text)"), "the people label")
+        let fit = try XCTUnwrap(d.range(of: "ViewThatFits(in: .horizontal)"), "the row picks a layout by width")
+        XCTAssertTrue(fit.lowerBound > label.lowerBound, "the label still heads the row")
+        XCTAssertTrue(d.contains(".lineLimit(1)"), "a name is one truncated line under its avatar, never wrapped")
+        XCTAssertTrue(d.contains(".popover("), "the collapsed variant lists everyone in a popover")
+        XCTAssertTrue(d.contains("L10nKey.meetingPeopleCount"), "the collapsed variant says how many are on the call")
+        // The rename action is reachable from both variants.
+        XCTAssertGreaterThanOrEqual(d.components(separatedBy: "openSpeakers").count - 1, 2)
+        XCTAssertFalse(d.contains("HStack(spacing: 14) { ForEach(Array(names.enumerated())"),
+                       "the old side-by-side row (the one that wrapped) is gone")
+    }
+
+    /// #521 — the player bar's close button was clipped at the column edge: the row was wider than the
+    /// narrowest column and the slider would not shrink. The bar now picks a variant that fits — full,
+    /// then a merged clock, then the clock without the scrubber — so the stop button is always inside.
+    /// Mutation: TranscriptTab MiniPlayer, delete `ViewThatFits` -> RED; delete the scrub-less variant -> RED.
+    func testThePlayerBarChoosesAVariantThatFits() throws {
+        let t = flat(try source("Sources/MainWindowUI/TranscriptTab.swift"))
+        XCTAssertTrue(t.contains("ViewThatFits(in: .horizontal) { row(clock: .split) row(clock: .merged) row(clock: .merged, scrub: false) }"),
+                      "three variants: full, merged clock, merged clock without the scrubber")
+        XCTAssertTrue(t.contains("IconButton(symbol: \"xmark\", labelKey: .a11yPlayStop)"), "the stop button is part of every variant")
+        XCTAssertTrue(t.contains(".accessibilityLabel(L10nKey.playPosition.text)"), "the scrubber still names itself")
+    }
+
     /// A snippet is shown through the core's link-free renderer; a transcript turn is shown verbatim (no markup read).
     /// Mutation: SearchPane.HitRow, `SearchSnippet.attributed(hit.snippet, query: query)` -> `try! AttributedString(markdown: hit.snippet)` -> RED.
     func testSnippetsGoThroughTheLinkFreeRenderer() throws {

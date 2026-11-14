@@ -221,6 +221,7 @@
 "meeting.speaker.you" = "Вы";
 "meeting.speaker.time" = "Время речи: %@";
 "meeting.people" = "Участники звонка";
+"meeting.people.count" = "Участники: %d";
 "meeting.name_them" = "Назвать";
 "meeting.speakers.footnote" = "Имена появятся в заметках и в расшифровке.";
 "meeting.duration.min" = "%d мин";

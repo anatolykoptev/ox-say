@@ -219,6 +219,7 @@ public enum L10nKey: String, CaseIterable {
     case meetingSpeakerYou = "meeting.speaker.you"
     case meetingSpeakerTime = "meeting.speaker.time"
     case meetingPeople = "meeting.people"
+    case meetingPeopleCount = "meeting.people.count"
     case meetingNameThem = "meeting.name_them"
     case meetingSpeakersFootnote = "meeting.speakers.footnote"
     case meetingDurationMin = "meeting.duration.min"
