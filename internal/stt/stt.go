@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -120,6 +121,7 @@ const (
 	DefaultMaxAudio = 4 * time.Hour
 	DefaultMaxQueue = 8
 	stderrTail      = 4 << 10
+	usageExit       = 2 // ox-stt exits 2 on an argument it does not know
 )
 
 // sttK is the decode budget's per-second rate: seconds of engine time
@@ -343,12 +345,20 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 	}
 
 	oo := oneshot.Options{StderrTail: stderrTail}
-	if engine == "parakeet" && opts.Boost.Active() {
+	boosted := engine == "parakeet" && opts.Boost.Active()
+	baseArgs := args
+	if boosted {
 		// the terms are the user's glossary text: stdin, never argv
-		args = append(args, "--terms-stdin", "--boost-alpha", strconv.FormatFloat(opts.Boost.Alpha, 'g', -1, 64))
+		args = append(slices.Clone(baseArgs), "--terms-stdin", "--boost-alpha", strconv.FormatFloat(opts.Boost.Alpha, 'g', -1, 64))
 		oo.Stdin = strings.NewReader(opts.Boost.Stdin())
 	}
 	out, err := oneshot.Run(ctx, opts.Bin, args, oo)
+	var exitErr *oneshot.ExitError
+	if boosted && errors.As(err, &exitErr) && exitErr.Code() == usageExit {
+		// An ox-stt that predates the boost flags refuses them with a usage error: decode without the list
+		// rather than fail the transcription.
+		out, err = oneshot.Run(ctx, opts.Bin, baseArgs, oneshot.Options{StderrTail: stderrTail})
+	}
 	if err != nil {
 		if timedOut() {
 			return nil, &TimeoutError{After: timeout}
@@ -356,7 +366,6 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		var exitErr *oneshot.ExitError
 		if errors.As(err, &exitErr) {
 			return nil, &EngineError{"stt: ox-stt failed: " + engineFailureReason(exitErr)}
 		}

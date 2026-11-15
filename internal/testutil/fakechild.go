@@ -74,6 +74,7 @@
 //	OXSAY_FAKE_STT_BLOCK=1    block until killed
 //	OXSAY_FAKE_STT_KILL=1     SIGKILL itself with nothing on stderr (an engine killed from outside)
 //	OXSAY_FAKE_STT_JSON       payload to print instead of the canned result
+//	OXSAY_FAKE_STT_REJECT_TERMS=1  exit 2 ("unknown argument") when argv carries --terms-stdin, like an older ox-stt
 //	OXSAY_FAKE_STT_STDIN      file the CLI fake writes its stdin to when argv carries --terms-stdin
 //
 // Fake ox-stt --serve (selected on OXSAY_FAKE_STT=1 AND a --serve flag in
@@ -672,6 +673,10 @@ func runFakeSTT(args []string) int {
 		stamp(fmt.Sprintf("end %s %d %d", id, os.Getpid(), time.Now().UnixNano()))
 	}()
 
+	if os.Getenv("OXSAY_FAKE_STT_REJECT_TERMS") == "1" && slices.Contains(args, "--terms-stdin") {
+		fmt.Fprintln(os.Stderr, "unknown argument: --terms-stdin")
+		return 2
+	}
 	if p := os.Getenv("OXSAY_FAKE_STT_STDIN"); p != "" && slices.Contains(args, "--terms-stdin") {
 		in, _ := io.ReadAll(os.Stdin)
 		_ = os.WriteFile(p, in, 0o600)

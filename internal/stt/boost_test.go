@@ -129,3 +129,22 @@ func TestServerGetsTermsHeader(t *testing.T) {
 		t.Fatalf("an empty boost sent X-Ox-Terms = %q", hdr)
 	}
 }
+
+// An older ox-stt rejects --terms-stdin with a usage error (exit 2): the transcription must still happen, once,
+// unboosted.
+// Mutation: stt.go, drop the usage-error retry -> RED (the error reaches the caller).
+func TestCLIRetriesUnboostedOnUsageError(t *testing.T) {
+	dir := t.TempDir()
+	opts, log := fakeOpts(t, dir)
+	t.Setenv("OXSAY_FAKE_STT_REJECT_TERMS", "1")
+	src := testutil.WriteTinyWAV(t, dir, "in.wav")
+	opts.Boost = testBoost
+	res, err := Transcribe(context.Background(), src, opts)
+	if err != nil || res.Text != "hello world." {
+		t.Fatalf("res = %+v, err = %v; want the unboosted retry's result", res, err)
+	}
+	runs := sttRuns(t, log)
+	if len(runs) != 2 || !hasArg(runs[0].args, "--terms-stdin") || hasArg(runs[1].args, "--terms-stdin") || hasArg(runs[1].args, "--boost-alpha") {
+		t.Fatalf("runs = %+v, want one boosted attempt then one without the flags", runs)
+	}
+}
