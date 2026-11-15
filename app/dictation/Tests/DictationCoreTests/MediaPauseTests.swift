@@ -550,7 +550,9 @@ final class QueuedScriptRunnerTests: XCTestCase {
 final class FakeScriptWorld {
     private let lock = NSLock()
     private var states: [String: String]
-    private var log: [(bundle: String, verb: String)] = []
+    private var log: [(bundle: String, verb: String, hungBundles: Set<String>)] = []
+    /// Bundles with a script call that has not answered yet.
+    private var inFlight: [String: Int] = [:]
     /// Bundle → seconds every script of it takes before answering.
     var hang: [String: TimeInterval] = [:]
     /// Bundle → seconds a `pause` takes (the player pauses at once, replies late).
@@ -567,6 +569,12 @@ final class FakeScriptWorld {
     func verbs(_ bundle: String) -> [String] { lock.withLock { log.filter { $0.bundle == bundle }.map(\.verb) } }
     var touched: [String] { lock.withLock { log.map(\.bundle) } }
 
+    /// Whether a call of `bundle` was issued while another bundle's call had not answered yet — the order
+    /// of two players' calls, with no clock in it.
+    func issued(_ verb: String, to bundle: String, whileHanging other: String) -> Bool {
+        lock.withLock { log.contains { $0.bundle == bundle && $0.verb == verb && $0.hungBundles.contains(other) } }
+    }
+
     func isRunning(_ bundle: String) -> Bool { lock.withLock { running.contains(bundle) } }
 
     func execute(_ source: String) -> ScriptOutcome {
@@ -576,13 +584,15 @@ final class FakeScriptWorld {
         let verb = lines.contains("return player state as text") ? "state"
             : lines.contains("pause") ? "pause" : lines.contains("play") ? "play" : "?"
         let (delay, deny) = lock.withLock { () -> (TimeInterval, Bool) in
-            log.append((bundle, verb))
+            log.append((bundle, verb, Set(inFlight.filter { $0.value > 0 }.keys)))
+            inFlight[bundle, default: 0] += 1
             var delay = hang[bundle] ?? 0
             if verb == "pause" { delay = max(delay, slowPause[bundle] ?? 0) }
             if verb == "pause" { states[bundle] = "paused" }
             if verb == "play" { states[bundle] = "playing" }
             return (delay, denied.contains(bundle))
         }
+        defer { lock.withLock { inFlight[bundle, default: 1] -= 1 } }
         if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         if deny { return .denied }
         if hang[bundle] != nil { return .failed(-1712) }
@@ -846,14 +856,15 @@ final class SoundWhileDictatingWiringTests: XCTestCase {
     // back. Mutation: in SoundWhileDictatingWiring.makeRunner build ONE QueuedScriptRunner
     // before `bundleIDs.map` and pass it to every player -> Spotify's state
     // call queues behind Music's, times out, and Spotify is never paused (RED).
+    // No wall-clock bound (it flaked at 0.827 s vs 0.8 s on a loaded Intel runner, #449): "promptly"
+    // is stated as order — Spotify's pause was issued while a Music call was still unanswered.
     func testAHungMusicDoesNotDelayOrBlockSpotify() {
         let world = FakeScriptWorld([music: "playing", spotify: "playing"])
         world.hang[music] = 0.9
         let r = runner(world)
-        let started = Date()
         r.dictationStateChanged(.recording); r.drain()
         XCTAssertEqual(world.state(spotify), "paused", "Spotify must not wait for a hung Music")
-        XCTAssertLessThan(Date().timeIntervalSince(started), 0.8)
+        XCTAssertTrue(world.issued("pause", to: spotify, whileHanging: music), "Spotify's pause waited for Music's hung call to end")
         r.dictationStateChanged(.transcribing); r.drain()
         XCTAssertEqual(world.state(spotify), "playing")
     }
