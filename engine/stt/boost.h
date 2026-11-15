@@ -133,16 +133,25 @@ inline size_t cp_count(const std::string & s) { return detail::utf8_chars(s).siz
 // piece id is the merge rank, so this reproduces the training-time segmentation without the model's
 // merge table. Empty when a character has no piece of its own (the word cannot be written in this
 // vocabulary) or the word is empty.
-inline std::vector<int> canonical_bpe(const vocab_view & v, const std::string & word) {
-    if (word.empty() || !v.piece) {
-        return {};
-    }
-    std::unordered_map<std::string, int> id;  // lowest id wins
+// piece text -> id, the lowest id winning; built once per graph::build, not once per word
+using piece_map = std::unordered_map<std::string, int>;
+
+inline piece_map make_piece_map(const vocab_view & v) {
+    piece_map id;
+    if (!v.piece) return id;
+    id.reserve((size_t) std::max(v.n_vocab, 0) * 2);
     for (int i = 0; i < v.n_vocab; ++i) {
         const char * p = v.piece(i);
         if (p && *p) {
             id.emplace(p, i);
         }
+    }
+    return id;
+}
+
+inline std::vector<int> canonical_bpe(const piece_map & id, const std::string & word) {
+    if (word.empty() || id.empty()) {
+        return {};
     }
     std::vector<std::string> sym = { kWordStart };
     for (const std::string & c : detail::utf8_chars(word)) {
@@ -175,6 +184,10 @@ inline std::vector<int> canonical_bpe(const vocab_view & v, const std::string & 
         ids.erase(ids.begin() + (long) at + 1);
     }
     return ids;
+}
+
+inline std::vector<int> canonical_bpe(const vocab_view & v, const std::string & word) {
+    return canonical_bpe(make_piece_map(v), word);
 }
 
 // Case variants of a term as written (research: the model writes cased text): a term with an upper-case
@@ -216,6 +229,7 @@ class graph {
             const char * pc = v.piece ? v.piece(i) : nullptr;
             g->word_start_[(size_t) i] = pc && std::string(pc).compare(0, 3, kWordStart) == 0;
         }
+        const piece_map pieces = make_piece_map(v);
         for (const term & t : terms) {
             std::vector<std::string> forms = case_variants(t.text);
             for (const std::string & sp : t.spoken) {
@@ -231,7 +245,7 @@ class graph {
                     size_t sp = variant.find_first_of(" \t", start);
                     if (sp == std::string::npos) sp = variant.size();
                     if (sp > start) {
-                        const std::vector<int> w = canonical_bpe(v, variant.substr(start, sp - start));
+                        const std::vector<int> w = canonical_bpe(pieces, variant.substr(start, sp - start));
                         ok = !w.empty();
                         toks.insert(toks.end(), w.begin(), w.end());
                     }

@@ -4,6 +4,7 @@
 #include "boost.h"
 
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -329,6 +330,42 @@ static void t_finite_bounds() {
     for (float f : b) CHECK(std::isfinite(f), "a NaN alpha biases nothing, finitely");
 }
 
+// Build cost: a real Parakeet vocabulary has 8192 pieces; a 200-term list must build in a fraction of a second,
+// because the build runs on the request path (POST /sessions, POST /transcribe). The piece map is built once per
+// build, not once per word and case variant (that took ~850 ms for 200 terms). The synthetic vocabulary has the
+// real size: every letter and "▁letter", then pseudo-random 2-4 letter pieces up to 8192.
+static void t_build_cost() {
+    cur = "t_build_cost";
+    std::vector<std::string> pieces = { "<unk>", "\xE2\x96\x81" };
+    for (char c = 'a'; c <= 'z'; ++c) pieces.push_back(std::string(1, c));
+    for (char c = 'a'; c <= 'z'; ++c) pieces.push_back(std::string("\xE2\x96\x81") + c);
+    unsigned long long x = 88172645463325252ULL;
+    while (pieces.size() < 8192) {
+        std::string p;
+        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        for (unsigned long long k = 0, n = 2 + x % 3; k < n; ++k) {
+            x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+            p.push_back((char) ('a' + x % 26));
+        }
+        pieces.push_back(p);
+    }
+    const vocab_view v = view_of(pieces);
+    std::vector<term> terms;
+    for (int i = 0; i < 200; ++i) {
+        std::string w1, w2;
+        for (int k = 0; k < 6; ++k) { x ^= x << 13; x ^= x >> 7; x ^= x << 17; w1.push_back((char) ('a' + x % 26)); }
+        for (int k = 0; k < 5; ++k) { x ^= x << 13; x ^= x >> 7; x ^= x << 17; w2.push_back((char) ('a' + x % 26)); }
+        term t(w1 + " " + w2, 1.0f, { w2 + " " + w1, w1 });
+        terms.push_back(t);
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    auto g = graph::build(terms, v, params{});
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    fprintf(stderr, "t_build_cost: 200 terms (with spoken forms) on an 8192-piece vocabulary: %.1f ms\n", ms);
+    CHECK(g->n_nodes() > 100, "the graph is not empty");
+    CHECK(ms < 150.0, "building 200 terms takes under 150 ms (one piece map per build, not per word)");
+}
+
 // map_spoken: whole-word, case-insensitive, ё=е, longest alias first. RED if the boundary test is dropped
 // ("дозорного" would become "dozorного") or the alias comparison stops folding case.
 static void t_map_spoken() {
@@ -386,6 +423,7 @@ int main() {
     t_build_skips();
     t_skip_report_no_text();
     t_finite_bounds();
+    t_build_cost();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
