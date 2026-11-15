@@ -85,6 +85,32 @@ final class VoiceNameTests: XCTestCase {
         XCTAssertEqual(VoiceName.id(from: "Мои\u{0306} голос", taken: []), "moy-golos")
     }
 
+    /// Latin diacritics keep their base letter — "Café Müller" ids to
+    /// "cafe-muller", not "caf-m-ller" (#428). Cyrillic still goes through the
+    /// transliteration table, not the fold (й -> y, never i).
+    /// Mutation F6: VoiceName.id, the NFD base-letter branch dropped -> RED.
+    func testLatinDiacriticsKeepTheirBaseLetter() {
+        XCTAssertEqual(VoiceName.id(from: "Café Müller", taken: []), "cafe-muller")
+        XCTAssertEqual(VoiceName.id(from: "Ŝkoda Žížala", taken: []), "skoda-zizala")
+        XCTAssertEqual(VoiceName.id(from: "Señor Niño", taken: []), "senor-nino")
+        // The Cyrillic table still wins: й transliterates to y, it must not fold to i.
+        XCTAssertEqual(VoiceName.id(from: "Мой голос", taken: []), "moy-golos")
+        XCTAssertEqual(VoiceName.id(from: "Ёлка Щука", taken: []), "elka-shchuka")
+        // A letter with no canonical base (ø, ß, a ligature) still separates.
+        for letter in ["ø", "ß", "æ", "ﬁ"] {
+            XCTAssertEqual(VoiceName.id(from: "x\(letter)y", taken: []), "x-y", letter)
+        }
+    }
+
+    /// A stem cut at the daemon's limit must not end on the separator:
+    /// "aaaa…-b" cut inside "-b" used to ship a trailing "-".
+    /// Mutation: VoiceName.id, the post-cut `trimmingCharacters` removed -> RED.
+    func testACutIdNeverEndsOnADash() {
+        let id = VoiceName.id(from: String(repeating: "a", count: 31) + " b", taken: [])
+        XCTAssertFalse(id.hasSuffix("-"), id)
+        XCTAssertLessThanOrEqual(id.count, VoiceName.maxIDLength)
+    }
+
     /// Whatever scripts, combining marks, emoji and joiners a label mixes, the id
     /// matches the daemon's pattern. Generated from a fixed seed so a failure
     /// reproduces; the pools are not a list of known-bad labels.

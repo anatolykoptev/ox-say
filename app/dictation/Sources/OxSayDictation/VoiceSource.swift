@@ -152,6 +152,14 @@ final class VoiceSource {
         pickTask = nil
     }
 
+    /// The window closed: an open sheet does not wait for the next open, unless its add is in flight (`mayClose`),
+    /// when the answer still needs somewhere to land.
+    func dropFileSheet() {
+        guard fileAdd?.mayClose == true else { return }
+        fileAdd = nil
+        sync()
+    }
+
     /// «Добавить»: the model decides whether the form may send; a 400/409 shows the daemon's own sentence in the
     /// sheet and keeps the input, a save refreshes the library through the session (its sole owner).
     private func submitFile() {

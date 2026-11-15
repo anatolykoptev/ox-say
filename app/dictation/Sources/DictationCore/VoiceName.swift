@@ -33,6 +33,17 @@ public enum VoiceName {
         (0x61...0x7A).contains(scalar.value) || (0x30...0x39).contains(scalar.value)
     }
 
+    /// The ASCII base letter of an accented Latin scalar ("é" -> "e"), by canonical
+    /// decomposition: only a letter followed by nothing but combining marks counts.
+    /// ø, ß, æ and ligatures have no canonical base and stay separators.
+    private static func latinBase(of scalar: Unicode.Scalar) -> Unicode.Scalar? {
+        let parts = String(scalar).decomposedStringWithCanonicalMapping.unicodeScalars
+        guard parts.count > 1, let base = parts.first, isASCIIAlphanumeric(base),
+              parts.dropFirst().allSatisfy({ $0.properties.generalCategory == .nonspacingMark })
+        else { return nil }
+        return base
+    }
+
     /// Whether a cleaned label names a voice that exists: by the id it slugs to, or by the label itself, case-insensitively.
     /// `taken` holds the ids and the lower-cased labels of the library. The one rule every add sheet follows.
     public static func isTaken(_ clean: String, in taken: Set<String>) -> Bool {
@@ -41,7 +52,7 @@ public enum VoiceName {
 
     /// The slug for `label`: transliterated, lowercased, every run outside
     /// [a-z0-9] collapsed to one "-", dashes trimmed, cut to the daemon's
-    /// length. A label that leaves nothing becomes "voice". When the slug is
+    /// length (and trimmed again, so the cut never ends on one). A label that leaves nothing becomes "voice". When the slug is
     /// in `taken`, "-2", "-3", … is appended — the stem cut to leave room, so
     /// the whole id never outgrows the limit.
     public static func id(from label: String, taken: Set<String>) -> String {
@@ -52,15 +63,20 @@ public enum VoiceName {
         for scalar in label.precomposedStringWithCanonicalMapping.lowercased().unicodeScalars {
             if let sub = cyrillic[scalar] {
                 mapped += sub
+            } else if isASCIIAlphanumeric(scalar) {
+                mapped.unicodeScalars.append(scalar)
+            } else if let base = latinBase(of: scalar) {
+                mapped.unicodeScalars.append(base)
             } else {
-                mapped.unicodeScalars.append(isASCIIAlphanumeric(scalar) ? scalar : "-")
+                mapped.unicodeScalars.append("-")
             }
         }
         var stem = mapped
             .replacingOccurrences(of: "-+", with: "-", options: .regularExpression)
             .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         if stem.isEmpty { stem = "voice" }
-        stem = String(stem.prefix(maxIDLength))
+        // A cut inside "-b" would leave the separator at the end.
+        stem = String(stem.prefix(maxIDLength)).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         var candidate = stem
         var suffixNumber = 1
         while taken.contains(candidate) {

@@ -215,6 +215,7 @@ final class MainWindowSource {
         voiceSource.stopPreview()
         voiceSource.quietDesign()
         voiceSource.quietFile()
+        voiceSource.dropFileSheet()
         voiceSource.quietRecording()
         stopClocks()
     }
@@ -242,7 +243,7 @@ final class MainWindowSource {
     /// The meeting feature started or stopped a recording (or was switched off).
     func recordingChanged() {
         // A call's audio never plays while a recording runs, visible window or not — nor does a voice's sample.
-        if host.meetings()?.recordingElapsed != nil { stopPlayback(); voiceSource.stopPreview(); voiceSource.quietDesign(); voiceSource.meetingStarted() }
+        if host.meetings()?.recordingElapsed != nil { stopPlayback(); voiceSource.stopPreview(); voiceSource.quietDesign(); voiceSource.quietFile(); voiceSource.meetingStarted() }
         if host.meetings()?.recordingElapsed != nil { speakSource.recordingStarted() }
         guard visible else { return }
         syncRecording()
