@@ -468,15 +468,15 @@ func TestMovRefusesCodecsItCannotHold(t *testing.T) {
 	})
 }
 
-// A QuickTime input's own streams go back into a .mov by copy even when the measured allow-list never met the codec
-// (the #464 repro: a .mov of dnxhd or rawvideo cleaned to a .mov). Any other input still meets the list, and a
+// A QuickTime input's own streams go back into a .mov by copy even when the mov allow-list never met the codec, as long
+// as the real muxer takes it (dryMux; the #464 repro: a .mov of dnxhd or rawvideo cleaned to a .mov). Any other input still meets the list, and a
 // QuickTime input widens nothing outside .mov.
 func TestQuickTimeInputKeepsItsOwnCodecsIntoMov(t *testing.T) {
 	qt := &probeInfo{FormatName: "mov,mp4,m4a,3gp,3g2,mj2", MajorBrand: "qt", AudioIndex: 1, Streams: []streamInfo{
 		{Index: 0, Type: "video", Codec: "dnxhd"},
 		{Index: 1, Type: "audio", Codec: "aac"},
 		{Index: 2, Type: "audio", Codec: "pcm_s16be"},
-		{Index: 3, Type: "video", Codec: "bmp", AttachedPic: true},
+		{Index: 3, Type: "video", Codec: "tiff", AttachedPic: true},
 	}}
 	p, err := planVideo(qt, "mov")
 	if err != nil {
@@ -492,6 +492,10 @@ func TestQuickTimeInputKeepsItsOwnCodecsIntoMov(t *testing.T) {
 	}
 	if _, err := planVideo(qt, "mp4"); err == nil || err.(*Error).Code != CodeUnsupportedStreams {
 		t.Fatalf("a QuickTime input must not widen the mp4 list: %v", err)
+	}
+	// Whatever the mov list never met is not refused by name: it is queued for the real muxer (dryMux).
+	if len(p.qtOnly) != 3 {
+		t.Errorf("qtOnly = %v, want dnxhd, pcm_s16be and the tiff cover", p.qtOnly)
 	}
 	// The same demuxer name covers an mp4, an m4a and a 3gp: only a QuickTime movie's streams are known to go
 	// back into the mov muxer, so the others meet the allow-list.
@@ -581,4 +585,98 @@ func TestMovToMovKeepsTheCodecsItHolds(t *testing.T) {
 		}
 		noLeftovers(t, o)
 	})
+}
+
+// The muxer, not a hand-written list, decides: QuickTime movies holding codecs no list of ours ever named (CineForm,
+// big-endian float pcm, signed-8 pcm, QuickTime IMA adpcm) clean to a .mov (#573).
+// Mutation: mux.go planVideo, `qt := false` -> the cfhd and pcm_f32be subtests RED (refused by the mov list).
+func TestQuickTimeMovieWithUnlistedCodecsCleansToMov(t *testing.T) {
+	requireTools(t)
+	for _, c := range []struct{ typ, codec string }{
+		{"v", "cfhd"}, {"a", "pcm_f32be"}, {"a", "pcm_f64be"}, {"a", "pcm_s8"}, {"a", "adpcm_ima_qt"},
+	} {
+		t.Run(c.codec, func(t *testing.T) {
+			requireEncoder(t, c.codec)
+			in := filepath.Join(t.TempDir(), "in.mov")
+			args := []string{"-f", "lavfi", "-i", "testsrc=size=128x128:rate=25:duration=1"}
+			args = append(args, tone(440, 48000, 1)...)
+			vc, ac := "mpeg4", "pcm_s16le"
+			if c.typ == "v" {
+				vc = c.codec
+			} else {
+				ac = c.codec
+			}
+			args = append(args, "-map", "0:v", "-map", "1:a", "-c:v", vc, "-c:a", ac, in)
+			if c.typ == "v" {
+				args = append(args[:len(args)-1], "-pix_fmt", "yuv422p10le", in)
+			}
+			ffrun(t, args...)
+			o := opts(t, in, filepath.Join(t.TempDir(), "o.mov"), 0.85, fakeEngine(t, "1"))
+			mustRun(t, o)
+			noLeftovers(t, o)
+		})
+	}
+}
+
+// A stream the mov muxer cannot copy is refused up front, naming the stream, with the shape planVideo's refusals have
+// (dryMux against the real ffmpeg: vp9 is mp4/mkv-only).
+// Mutation: clean.go dryMux, `err == nil` -> `true` -> RED (vp9 passes the dry run).
+func TestQuickTimeCodecsFromTheRealMuxerRefuseUpFront(t *testing.T) {
+	requireEncoder(t, "libvpx-vp9")
+	in := filepath.Join(t.TempDir(), "in.mkv")
+	ffrun(t, "-f", "lavfi", "-i", "testsrc=size=64x64:rate=25:duration=1", "-c:v", "libvpx-vp9", in)
+	j := &job{ctx: context.Background(), o: Options{In: in, FFmpeg: "ffmpeg", Run: execRunner}}
+	p := &videoPlan{qtOnly: []streamInfo{{Index: 0, Type: "video", Codec: "vp9"}}}
+	err := j.dryMux(p, "mov")
+	wantCode(t, err, CodeUnsupportedStreams)
+	if m := err.(*Error).Msg; !strings.Contains(m, "stream 0") || !strings.Contains(m, "vp9") {
+		t.Errorf("message does not name the stream: %q", m)
+	}
+	// and a stream the muxer takes passes
+	mp := filepath.Join(t.TempDir(), "in.mkv")
+	ffrun(t, "-f", "lavfi", "-i", "testsrc=size=64x64:rate=25:duration=1", "-c:v", "mpeg4", mp)
+	j.o.In = mp
+	if err := j.dryMux(&videoPlan{qtOnly: []streamInfo{{Index: 0, Type: "video", Codec: "mpeg4"}}}, "mov"); err != nil {
+		t.Errorf("mpeg4 into mov: %v", err)
+	}
+}
+
+// Through Run: a QuickTime-branded .mov holding vp9 (an mp4 whose ftyp major brand is patched to "qt  ") is refused up
+// front by the real muxer's dry run, naming the stream, before the cleanup engine starts. The ffmpeg reason goes to
+// Detail (log), scrubbed of paths, and never into the user's sentence.
+// Mutation: clean.go run(), delete the `if err := j.dryMux(plan, ...)` block -> RED (the run is not refused).
+func TestQuickTimeMovHoldingVP9IsRefusedBeforeTheEngineRuns(t *testing.T) {
+	requireEncoder(t, "libvpx-vp9")
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.mp4")
+	args := []string{"-f", "lavfi", "-i", "testsrc=size=64x64:rate=25:duration=1"}
+	args = append(args, tone(440, 48000, 1)...)
+	ffrun(t, append(args, "-map", "0:v", "-map", "1:a", "-c:v", "libvpx-vp9", "-c:a", "aac", in)...)
+	raw, err := os.ReadFile(in)
+	must(t, err)
+	if len(raw) < 12 || string(raw[4:8]) != "ftyp" {
+		t.Fatalf("no ftyp box at the start of %s", in)
+	}
+	copy(raw[8:12], "qt  ")
+	qt := filepath.Join(dir, "in.mov")
+	must(t, os.WriteFile(qt, raw, 0o600))
+	if got := fprobe(t, "-show_entries", "format_tags=major_brand", "-of", "csv=p=0", qt); !strings.Contains(got, "qt") {
+		t.Fatalf("fixture brand = %q, want qt", got)
+	}
+	marker := filepath.Join(dir, "engine-ran")
+	engine := writeScript(t, "#!/bin/sh\ntouch '"+marker+"'\nexit 1\n")
+	o := opts(t, qt, filepath.Join(t.TempDir(), "o.mov"), 0.85, engine)
+	_, err = Run(context.Background(), o)
+	wantCode(t, err, CodeUnsupportedStreams)
+	e := err.(*Error)
+	if !strings.Contains(e.Msg, "stream 0") || !strings.Contains(e.Msg, "vp9") {
+		t.Errorf("message does not name the stream: %q", e.Msg)
+	}
+	if _, serr := os.Stat(marker); serr == nil {
+		t.Error("the cleanup engine ran for a file that cannot be written")
+	}
+	if !strings.Contains(e.Detail, "vp9") || strings.Contains(e.Detail, dir) || strings.Contains(e.Msg, "only supported") {
+		t.Errorf("detail %q: want ffmpeg's reason without paths, and not in the user message", e.Detail)
+	}
+	noLeftovers(t, o)
 }

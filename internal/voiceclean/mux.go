@@ -20,6 +20,9 @@ type videoPlan struct {
 	meta    []string // -map_metadata:s:<out> 0:s:<in> for every carried stream: tags, language, handler name
 	codecs  []string // per-stream codec overrides after -c copy (subtitle conversions)
 	dropped []DroppedStream
+	// qtOnly are the streams admitted only because the input is a QuickTime movie, not by the mov list: the mov muxer
+	// has the last word on them (dryMux).
+	qtOnly []streamInfo
 }
 
 // What each container can hold by stream copy. matroska takes any audio or video codec; mov, mp4 and webm have
@@ -55,7 +58,8 @@ func setOf(v ...string) map[string]bool {
 const qtFormats = "mov,mp4,m4a,3gp,3g2,mj2"
 
 // isQuickTime reports a QuickTime movie proper (major brand "qt"): the one input whose streams the mov muxer is
-// known to write back. An mp4, m4a or 3gp reads as the same demuxer but may hold codecs its own muxer accepted
+// likely to write back: a codec outside the mov list is not refused by name but handed to the real muxer in a dry run
+// (dryMux), whose verdict cannot drift from the user's ffmpeg. An mp4, m4a or 3gp reads as the same demuxer but may hold codecs its own muxer accepted
 // and the mov muxer was never shown to.
 func isQuickTime(info *probeInfo) bool {
 	return info.FormatName == qtFormats && info.MajorBrand == "qt"
@@ -123,13 +127,12 @@ func altFor(typ, codec string) string {
 
 // planVideo decides, stream by stream, what the output carries. Audio and video that the container cannot hold are a
 // refusal naming the stream; the rest that it cannot hold is dropped and listed. A QuickTime movie's streams all go
-// back into a .mov: the mov muxer writes every codec that container already holds — the pro codecs (dnxhd, rawvideo,
-// dvvideo, big-endian pcm) the measured allow-list never met.
+// back into a .mov: the mov muxer writes the codecs that container already holds — the pro codecs (dnxhd, rawvideo,
+// dvvideo, big-endian pcm, cfhd, ...) the measured allow-list never met. Those streams are verified by dryMux rather than trusted.
 func planVideo(info *probeInfo, ext string) (*videoPlan, error) {
 	p := &videoPlan{}
-	holds := func(typ, codec string) bool {
-		return carries(ext, typ, codec) || (ext == "mov" && isQuickTime(info))
-	}
+	holds := func(typ, codec string) bool { return carries(ext, typ, codec) }
+	qt := ext == "mov" && isQuickTime(info)
 	var ns, out int // out counts the output streams mapped so far
 	for _, s := range info.Streams {
 		in := "0:" + strconv.Itoa(s.Index)
@@ -146,14 +149,19 @@ func planVideo(info *probeInfo, ext string) (*videoPlan, error) {
 			p.maps = append(p.maps, "-map", "1:a:0")
 			keep()
 		case s.Type == "video" && s.AttachedPic:
-			if holds("video", s.Codec) {
+			if holds("video", s.Codec) || qt {
+				if !holds("video", s.Codec) {
+					p.qtOnly = append(p.qtOnly, s)
+				}
 				p.maps = append(p.maps, "-map", in)
 				keep()
 			} else {
 				drop() // cover art is not the picture
 			}
 		case s.Type == "video" || s.Type == "audio":
-			if !holds(s.Type, s.Codec) {
+			if !holds(s.Type, s.Codec) && qt {
+				p.qtOnly = append(p.qtOnly, s)
+			} else if !holds(s.Type, s.Codec) {
 				return nil, newErr(CodeUnsupportedStreams, fmt.Sprintf("stream %d (%s, %s) cannot be stored in a .%s file; choose %s for this input", s.Index, s.Type, s.Codec, ext, altFor(s.Type, s.Codec)))
 			}
 			p.maps = append(p.maps, "-map", in)

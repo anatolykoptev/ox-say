@@ -151,6 +151,7 @@ jobs:
           bash scripts/test-lib-install.sh
           bash scripts/test-fetch-models.sh
           bash scripts/test-download-stall.sh
+          bash scripts/test-uninstall-purge.sh
 
   # ox-diar (speaker diarization, engine/diar): a Swift package on FluidAudio's Core ML models, Apple Silicon only.
   # The Intel leg of plan Task 20a (macos-15-intel, .cpuOnly) failed on its first run: Core ML cannot run the models

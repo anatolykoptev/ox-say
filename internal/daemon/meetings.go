@@ -462,12 +462,17 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 	// The retry Compose may spend should not re-ask the same wedged process:
 	// release the guard and stop the child so the retry spawns a fresh one.
 	g.Release()
-	if stopErr := c.d.LLMSup.Stop(ctx); stopErr != nil {
+	// Stop is bounded by the supervisor's own RecycleWait; no second deadline here, which would also cut the wait for
+	// the child's exit and turn a stop that did happen into a lost retry.
+	stopErr := c.d.LLMSup.Stop(ctx)
+	if stopErr != nil {
 		c.d.log.Warn("notes: the wedged notes engine could not be stopped before its retry", slog.Any("error", stopErr))
 	}
 	return "", &meeting.EngineDownError{
-		Err:       fmt.Errorf("the notes engine stopped producing after a call ran out of time: %w", err),
-		Retryable: true,
+		Err: fmt.Errorf("the notes engine stopped producing after a call ran out of time: %w", err),
+		// A child that could not be stopped is still the wedged one: a retry
+		// would re-ask it, so only a confirmed stop earns the retry (#572).
+		Retryable: stopErr == nil,
 		Reason:    meeting.FailNotesEngineTimeout,
 	}
 }
@@ -498,8 +503,8 @@ func (s notesSlot) decoded() int { return max(s.Decoded, s.NextToken.Decoded) }
 // whose counter moved.
 func (d *Daemon) notesProgressing(ctx context.Context, base string) bool {
 	a, ok := d.notesSlots(ctx, base)
-	if !ok {
-		return false
+	if !ok || len(a) == 0 {
+		return false // no rows says nothing about the decode: inconclusive, never "alive and slow"
 	}
 	select {
 	case <-time.After(notesProgressProbe):
@@ -507,7 +512,7 @@ func (d *Daemon) notesProgressing(ctx context.Context, base string) bool {
 		return false
 	}
 	b, ok := d.notesSlots(ctx, base)
-	if !ok {
+	if !ok || len(b) == 0 {
 		return false
 	}
 	processing := false
