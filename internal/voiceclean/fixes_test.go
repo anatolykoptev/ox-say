@@ -469,7 +469,7 @@ func TestMovRefusesCodecsItCannotHold(t *testing.T) {
 }
 
 // A QuickTime input's own streams go back into a .mov by copy even when the mov allow-list never met the codec, as long
-// as it is on the measured QuickTime lists (the #464 repro: a .mov of dnxhd or rawvideo cleaned to a .mov). Any other input still meets the list, and a
+// as the real muxer takes it (dryMux; the #464 repro: a .mov of dnxhd or rawvideo cleaned to a .mov). Any other input still meets the list, and a
 // QuickTime input widens nothing outside .mov.
 func TestQuickTimeInputKeepsItsOwnCodecsIntoMov(t *testing.T) {
 	qt := &probeInfo{FormatName: "mov,mp4,m4a,3gp,3g2,mj2", MajorBrand: "qt", AudioIndex: 1, Streams: []streamInfo{
@@ -493,15 +493,9 @@ func TestQuickTimeInputKeepsItsOwnCodecsIntoMov(t *testing.T) {
 	if _, err := planVideo(qt, "mp4"); err == nil || err.(*Error).Code != CodeUnsupportedStreams {
 		t.Fatalf("a QuickTime input must not widen the mp4 list: %v", err)
 	}
-	// Only measured codecs: a qt-branded file holding one the mov muxer refuses is refused up front (#573).
-	// Mutation: mux.go planVideo holds, drop `&& qtCarries(typ, codec)` -> RED (vp9 and opus pass preflight).
-	for _, c := range []struct{ typ, codec string }{{"video", "vp9"}, {"video", "av1"}, {"audio", "opus"}, {"audio", "flac"}, {"video", "unmeasured_codec"}} {
-		bad := *qt
-		bad.Streams = []streamInfo{{Index: 0, Type: "video", Codec: "h264"}, {Index: 1, Type: "audio", Codec: "aac"}}
-		bad.Streams = append(bad.Streams, streamInfo{Index: 2, Type: c.typ, Codec: c.codec})
-		if _, err := planVideo(&bad, "mov"); err == nil || err.(*Error).Code != CodeUnsupportedStreams || !strings.Contains(err.Error(), c.codec) {
-			t.Errorf("qt input with %s %s into mov: %v, want an unsupported_streams refusal naming it", c.typ, c.codec, err)
-		}
+	// Whatever the mov list never met is not refused by name: it is queued for the real muxer (dryMux).
+	if len(p.qtOnly) != 3 {
+		t.Errorf("qtOnly = %v, want dnxhd, pcm_s16be and the tiff cover", p.qtOnly)
 	}
 	// The same demuxer name covers an mp4, an m4a and a 3gp: only a QuickTime movie's streams are known to go
 	// back into the mov muxer, so the others meet the allow-list.
@@ -591,4 +585,58 @@ func TestMovToMovKeepsTheCodecsItHolds(t *testing.T) {
 		}
 		noLeftovers(t, o)
 	})
+}
+
+// The muxer, not a hand-written list, decides: QuickTime movies holding codecs no list of ours ever named (CineForm,
+// big-endian float pcm, signed-8 pcm, QuickTime IMA adpcm) clean to a .mov (#573).
+// Mutation: mux.go planVideo, `qt := false` -> the cfhd and pcm_f32be subtests RED (refused by the mov list).
+func TestQuickTimeMovieWithUnlistedCodecsCleansToMov(t *testing.T) {
+	requireTools(t)
+	for _, c := range []struct{ typ, codec string }{
+		{"v", "cfhd"}, {"a", "pcm_f32be"}, {"a", "pcm_f64be"}, {"a", "pcm_s8"}, {"a", "adpcm_ima_qt"},
+	} {
+		t.Run(c.codec, func(t *testing.T) {
+			requireEncoder(t, c.codec)
+			in := filepath.Join(t.TempDir(), "in.mov")
+			args := []string{"-f", "lavfi", "-i", "testsrc=size=128x128:rate=25:duration=1"}
+			args = append(args, tone(440, 48000, 1)...)
+			vc, ac := "mpeg4", "pcm_s16le"
+			if c.typ == "v" {
+				vc = c.codec
+			} else {
+				ac = c.codec
+			}
+			args = append(args, "-map", "0:v", "-map", "1:a", "-c:v", vc, "-c:a", ac, in)
+			if c.typ == "v" {
+				args = append(args[:len(args)-1], "-pix_fmt", "yuv422p10le", in)
+			}
+			ffrun(t, args...)
+			o := opts(t, in, filepath.Join(t.TempDir(), "o.mov"), 0.85, fakeEngine(t, "1"))
+			mustRun(t, o)
+			noLeftovers(t, o)
+		})
+	}
+}
+
+// A stream the mov muxer cannot copy is refused up front, naming the stream, with the shape planVideo's refusals have
+// (dryMux against the real ffmpeg: vp9 is mp4/mkv-only).
+// Mutation: clean.go dryMux, `err == nil` -> `true` -> RED (vp9 passes the dry run).
+func TestQuickTimeCodecsFromTheRealMuxerRefuseUpFront(t *testing.T) {
+	requireEncoder(t, "libvpx-vp9")
+	in := filepath.Join(t.TempDir(), "in.mkv")
+	ffrun(t, "-f", "lavfi", "-i", "testsrc=size=64x64:rate=25:duration=1", "-c:v", "libvpx-vp9", in)
+	j := &job{ctx: context.Background(), o: Options{In: in, FFmpeg: "ffmpeg", Run: execRunner}}
+	p := &videoPlan{qtOnly: []streamInfo{{Index: 0, Type: "video", Codec: "vp9"}}}
+	err := j.dryMux(p, "mov")
+	wantCode(t, err, CodeUnsupportedStreams)
+	if m := err.(*Error).Msg; !strings.Contains(m, "stream 0") || !strings.Contains(m, "vp9") {
+		t.Errorf("message does not name the stream: %q", m)
+	}
+	// and a stream the muxer takes passes
+	mp := filepath.Join(t.TempDir(), "in.mkv")
+	ffrun(t, "-f", "lavfi", "-i", "testsrc=size=64x64:rate=25:duration=1", "-c:v", "mpeg4", mp)
+	j.o.In = mp
+	if err := j.dryMux(&videoPlan{qtOnly: []streamInfo{{Index: 0, Type: "video", Codec: "mpeg4"}}}, "mov"); err != nil {
+		t.Errorf("mpeg4 into mov: %v", err)
+	}
 }

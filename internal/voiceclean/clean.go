@@ -211,6 +211,9 @@ func (j *job) run() (res *Result, err error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := j.dryMux(plan, extOf(o.Out)); err != nil {
+			return nil, err
+		}
 		j.plan = plan
 		j.dropped = plan.dropped
 	} else {
@@ -525,6 +528,24 @@ var ffBase = []string{"-nostdin", "-v", "error", "-y"}
 func (j *job) ff(args ...string) error {
 	_, err := j.o.Run(withTool(j.ctx, ToolFFmpeg), j.o.FFmpeg, append(append([]string(nil), ffBase...), args...))
 	return j.toolErr("ffmpeg", err)
+}
+
+// dryMux asks the real muxer, with the user's own ffmpeg, whether each stream that only the QuickTime rule admitted can
+// be stream-copied into the output container: a zero-length copy of that one stream into the null device, which fails
+// at the muxer's header check exactly as the real write would. A refusal has the shape of planVideo's.
+func (j *job) dryMux(p *videoPlan, ext string) error {
+	for _, s := range p.qtOnly {
+		err := j.ff(append(source(j.o.In), "-map", "0:"+strconv.Itoa(s.Index), "-c", "copy", "-t", "0", "-f", ext, os.DevNull)...)
+		if err == nil {
+			continue
+		}
+		var e *Error
+		if errors.As(err, &e) && e.Code == CodeEngineFailed {
+			return newErr(CodeUnsupportedStreams, fmt.Sprintf("stream %d (%s, %s) cannot be stored in a .%s file; choose %s for this input", s.Index, s.Type, s.Codec, ext, altFor(s.Type, s.Codec)))
+		}
+		return err
+	}
+	return nil
 }
 
 func (j *job) toolErr(tool string, err error) error {
