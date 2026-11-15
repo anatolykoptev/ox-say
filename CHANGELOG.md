@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.1.33](https://github.com/anatolykoptev/ox-say/compare/v0.1.32...v0.1.33) (2026-11-15)
+
+
+### Added
+
+* glossary page and owner edit/purge ([#575](https://github.com/anatolykoptev/ox-say/issues/575)) ([926ba1f](https://github.com/anatolykoptev/ox-say/commit/926ba1f90b6d1cf87acf2a0f5aa6e2c4ef47f76b))
+* **stt:** wire spoken-form decoder term boosting into the daemon (Stage B, supersedes [#574](https://github.com/anatolykoptev/ox-say/issues/574)) ([#576](https://github.com/anatolykoptev/ox-say/issues/576)) ([5f10527](https://github.com/anatolykoptev/ox-say/commit/5f1052768989368fe9436cca1b87e7d3fd4d1144))
+
+
+### Fixed
+
+* **daemon:** refusal quotes the real encoder window, not the test seam ([#565](https://github.com/anatolykoptev/ox-say/issues/565)) ([11d88dd](https://github.com/anatolykoptev/ox-say/commit/11d88dd62faea78a11084f571bc98d6ea9f2558e)), closes [#143](https://github.com/anatolykoptev/ox-say/issues/143)
+* tech-debt batch A ([#561](https://github.com/anatolykoptev/ox-say/issues/561)) ([fbd63d0](https://github.com/anatolykoptev/ox-say/commit/fbd63d0ef6b138b494c0bcbd0fdce94013c76ffe))
+* tech-debt batch B ([#563](https://github.com/anatolykoptev/ox-say/issues/563)) ([5ba319b](https://github.com/anatolykoptev/ox-say/commit/5ba319bc86393069855835f6eecb11527d7d1e8a))
+* tech-debt batch D ([#567](https://github.com/anatolykoptev/ox-say/issues/567)) ([0c84b5e](https://github.com/anatolykoptev/ox-say/commit/0c84b5e0ed0c577dca61cc4cc0a0591769c9fc60))
+* tech-debt batch E ([#562](https://github.com/anatolykoptev/ox-say/issues/562)) ([bfe8c16](https://github.com/anatolykoptev/ox-say/commit/bfe8c1695da79a3e7394f0ab136d81bbb50a2eec))
+* tech-debt batch F ([#566](https://github.com/anatolykoptev/ox-say/issues/566)) ([d3d57b5](https://github.com/anatolykoptev/ox-say/commit/d3d57b54f47e4794537128e050c0019794bb6549))
+* tech-debt batch G ([#578](https://github.com/anatolykoptev/ox-say/issues/578)) ([46582d2](https://github.com/anatolykoptev/ox-say/commit/46582d26aa86a9a809ccfeff6a32fc22484e1666))
+* tech-debt batch H ([#580](https://github.com/anatolykoptev/ox-say/issues/580)) ([3a4b0b9](https://github.com/anatolykoptev/ox-say/commit/3a4b0b9bfebd177010d66c229ff1cb8162a6bb50))
+* tech-debt batch J ([#581](https://github.com/anatolykoptev/ox-say/issues/581)) ([3a42788](https://github.com/anatolykoptev/ox-say/commit/3a427889dc7aac9a5c626130f07a29c94d11a521))
+* tech-debt batch K ([#569](https://github.com/anatolykoptev/ox-say/issues/569)) ([9c12c1f](https://github.com/anatolykoptev/ox-say/commit/9c12c1fbe777d5336ed4a75e40cc7c912ea2d872))
+* tech-debt batch L ([#577](https://github.com/anatolykoptev/ox-say/issues/577)) ([9669a27](https://github.com/anatolykoptev/ox-say/commit/9669a27390ed05774fd5fe4a48da17c2c54041ea))
+
 ## [0.1.32](https://github.com/anatolykoptev/ox-say/compare/v0.1.31...v0.1.32) (2026-11-14)
 
 
