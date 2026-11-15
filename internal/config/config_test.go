@@ -86,8 +86,8 @@ func TestLoadDefaults(t *testing.T) {
 	if c.STTServer != "on" || c.STTPort != DefaultSTTPort || c.STTIdleStop != DefaultSTTIdleStop*time.Second {
 		t.Fatalf("stt server defaults: %+v", c)
 	}
-	if c.STTBoostAlpha != 2 {
-		t.Fatalf("boost alpha default = %v, want 2", c.STTBoostAlpha)
+	if c.STTBoostAlpha != 1.5 {
+		t.Fatalf("boost alpha default = %v, want 1.5", c.STTBoostAlpha)
 	}
 }
 
@@ -99,7 +99,7 @@ func TestSTTBoostAlpha(t *testing.T) {
 		want float64
 		ok   bool
 	}{
-		{"", 2, true}, {"0", 0, true}, {"1.5", 1.5, true}, {"100", 100, true},
+		{"", 1.5, true}, {"0", 0, true}, {"1.5", 1.5, true}, {"100", 100, true},
 		{"101", 0, false}, {"-1", 0, false}, {"nan", 0, false}, {"inf", 0, false}, {"1e100", 0, false}, {"x", 0, false},
 	} {
 		t.Setenv("OX_SAY_STT_BOOST_ALPHA", tc.in)

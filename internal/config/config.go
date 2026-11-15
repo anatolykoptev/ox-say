@@ -29,7 +29,7 @@ const (
 	DefaultSTTMaxAudio    = 4 * 3600
 	DefaultSTTPort        = 8096
 	DefaultSTTIdleStop    = 600
-	DefaultSTTBoostAlpha  = 2.0 // decoder term boosting strength; 0 = off
+	DefaultSTTBoostAlpha  = 1.5 // decoder term boosting strength; 0 = off
 	maxSTTBoostAlpha      = 100.0
 	DefaultVoxCPM2Port    = 8097
 	DefaultNotesPort      = 8098
