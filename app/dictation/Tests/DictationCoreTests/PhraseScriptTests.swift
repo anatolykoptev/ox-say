@@ -148,6 +148,17 @@ final class PhraseScriptTests: XCTestCase {
         XCTAssertEqual(PhraseScript.preview("[style: тепло]\nТекст."), "Текст.")
     }
 
+    /// #189: a phrase that is only directives stripped to "" and its row went blank; it shows the label instead.
+    /// A blank phrase stays blank, and a phrase with words never shows the label.
+    /// Mutation: PhraseScript.preview, the `directivesOnly` fallback returned for every empty result -> RED
+    /// (the blank-phrase case); the fallback removed -> RED (the directives-only case).
+    func testADirectivesOnlyPhrasePreviewsAsALabelNotBlank() {
+        XCTAssertEqual(PhraseScript.preview("[pause 1s]", directivesOnly: "(pause)"), "(pause)")
+        XCTAssertEqual(PhraseScript.preview("[style: тепло]\n[pause 2s]", directivesOnly: "(pause)"), "(pause)")
+        XCTAssertEqual(PhraseScript.preview("  \n ", directivesOnly: "(pause)"), "")
+        XCTAssertEqual(PhraseScript.preview("Стоп. [pause 1s]", directivesOnly: "(pause)"), "Стоп.")
+    }
+
     func testTheDurationReadsAsClockTime() {
         XCTAssertEqual(PhraseScript.durationText(0), "0:00")
         XCTAssertEqual(PhraseScript.durationText(61.5), "1:01")

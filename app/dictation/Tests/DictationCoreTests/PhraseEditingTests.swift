@@ -31,6 +31,14 @@ private func chunk(_ n: Int, _ status: ProduceChunkState, text: String = "Фра
 }
 
 extension PhraseEditingTests {
+    /// #189: a row whose phrase is only directives shows the label, not a blank line.
+    /// Mutation: PhraseEditing.rows, `PhraseScript.preview(chunk.text)` without `directivesOnly:` -> RED.
+    func testADirectivesOnlyPhraseRowIsLabelled() {
+        let rows = PhraseEditing.rows(chunks: [chunk(0, .ok, text: "[pause 1s]"), chunk(1, .ok, text: "Слова.")],
+                                      jobRunning: false, text: { _ in "(pause)" })
+        XCTAssertEqual(rows.map(\.preview), ["(pause)", "Слова."])
+    }
+
     func testRowsShowDoneListenAndTheOneBeingRendered() {
         let rows = PhraseEditing.rows(chunks: [chunk(0, .ok), chunk(1, .review), chunk(2, .pending), chunk(3, .pending)], jobRunning: true)
         XCTAssertEqual(rows.map(\.state), [.done, .needsListen, .rendering, .pending])

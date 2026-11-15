@@ -790,6 +790,7 @@
 "speak.panel.pause" = "Pause";
 "speak.panel.pause_none" = "No pause";
 "speak.panel.pause_value" = "%@ s after the phrase";
+"speak.panel.directives_only" = "(only a pause or a style)";
 "speak.panel.now_phrase" = "Applies at once to the chosen phrase, without voicing it again.";
 "speak.panel.now_all" = "Applies at once to every phrase, without voicing it again.";
 "speak.panel.loudness" = "Loudness";

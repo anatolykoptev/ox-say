@@ -784,6 +784,7 @@
 "speak.panel.pause" = "Пауза";
 "speak.panel.pause_none" = "Без паузы";
 "speak.panel.pause_value" = "%@ с после фразы";
+"speak.panel.directives_only" = "(только пауза или стиль)";
 "speak.panel.now_phrase" = "Применится сразу к выбранной фразе, без новой озвучки.";
 "speak.panel.now_all" = "Применится сразу ко всем фразам, без новой озвучки.";
 "speak.panel.loudness" = "Громкость";
