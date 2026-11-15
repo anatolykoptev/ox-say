@@ -349,4 +349,27 @@ final class GlossaryModelTests: XCTestCase {
         await m.reload()
         XCTAssertNil(m.selection)
     }
+
+    /// `edit` says whether it went through: true only when the daemon accepted it. A hidden pair, a refusal and an
+    /// action already in flight are all false, so the sheet stays open.
+    /// Mutation: GlossaryModel.edit/actOnVisible, return true on the hidden-pair guard -> RED.
+    func testGlossaryEditReportsWhetherItWentThrough() async {
+        var refuse = false
+        let stub = GlossaryStub { request in
+            if request.httpMethod == "GET" { return (200, self.list(pairJSON("a1", "а", "1", "candidate"), pairJSON("a2", "б", "2", "active"))) }
+            return refuse ? (400, #"{"error":{"message":"invalid pair"}}"#) : (200, "{}")
+        }
+        let m = model(stub)
+        await m.reload()
+        let sent = await m.edit("a1", meant: "ok")
+        XCTAssertTrue(sent)
+        m.filter = .active
+        let hidden = await m.edit("a1", meant: "ok")
+        XCTAssertFalse(hidden, "nothing was sent for a pair the filter hides")
+        XCTAssertEqual(stub.lines.filter { $0.contains("/edit") }.count, 1)
+        refuse = true
+        let refused = await m.edit("a2", meant: "bad")
+        XCTAssertFalse(refused)
+        XCTAssertEqual(m.problem, "invalid pair")
+    }
 }

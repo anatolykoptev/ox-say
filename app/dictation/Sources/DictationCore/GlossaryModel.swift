@@ -95,14 +95,18 @@ public final class GlossaryModel: ObservableObject {
     public func reject(_ id: String) async { await actOnVisible(id) { try await self.client.reject(id: id) } }
     public func delete(_ id: String) async { await actOnVisible(id) { try await self.client.purge(id: id) } }
 
-    public func edit(_ id: String, meant: String) async {
+    /// Returns whether the edit went through, so the sheet closes only then: false for a refusal, and also when nothing
+    /// was sent (the pair is hidden by the filter, or another action is in flight).
+    @discardableResult
+    public func edit(_ id: String, meant: String) async -> Bool {
         let meant = meant.trimmingCharacters(in: .whitespacesAndNewlines)
-        await actOnVisible(id) { try await self.client.edit(id: id, meant: meant) }
+        return await actOnVisible(id) { try await self.client.edit(id: id, meant: meant) }
     }
 
-    private func actOnVisible(_ id: String, _ action: () async throws -> Void) async {
-        guard visible.contains(where: { $0.id == id }) else { return }
-        await act(action)
+    @discardableResult
+    private func actOnVisible(_ id: String, _ action: () async throws -> Void) async -> Bool {
+        guard visible.contains(where: { $0.id == id }) else { return false }
+        return await act(action)
     }
 
     /// The owner is present, so a pair filed here is approved at once: filing, then approving the id the daemon gave.

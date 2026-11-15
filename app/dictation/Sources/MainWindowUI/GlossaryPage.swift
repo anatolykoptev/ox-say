@@ -15,13 +15,13 @@ struct GlossaryPage: View {
             .safeAreaInset(edge: .top, spacing: 0) { banners }
             .toolbar { toolbar }
             .task { await model.reload() }
+            // The sheet shows `model.problem` under its fields: a refusal from an earlier action is not this form's.
+            .onChange(of: sheet?.id) { if $0 != nil { model.dismissProblem() } }
             .sheet(item: $sheet) { which in
                 GlossaryFormSheet(sheet: which, problem: model.problem) { heard, meant in
                     switch which {
                     case .add: return await model.add(heard: heard, meant: meant)
-                    case .edit(let pair):
-                        await model.edit(pair.id, meant: meant)
-                        return model.problem == nil
+                    case .edit(let pair): return await model.edit(pair.id, meant: meant)
                     }
                 }
             }
