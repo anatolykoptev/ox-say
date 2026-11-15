@@ -640,3 +640,43 @@ func TestQuickTimeCodecsFromTheRealMuxerRefuseUpFront(t *testing.T) {
 		t.Errorf("mpeg4 into mov: %v", err)
 	}
 }
+
+// Through Run: a QuickTime-branded .mov holding vp9 (an mp4 whose ftyp major brand is patched to "qt  ") is refused up
+// front by the real muxer's dry run, naming the stream, before the cleanup engine starts. The ffmpeg reason goes to
+// Detail (log), scrubbed of paths, and never into the user's sentence.
+// Mutation: clean.go run(), delete the `if err := j.dryMux(plan, ...)` block -> RED (the run is not refused).
+func TestQuickTimeMovHoldingVP9IsRefusedBeforeTheEngineRuns(t *testing.T) {
+	requireEncoder(t, "libvpx-vp9")
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.mp4")
+	args := []string{"-f", "lavfi", "-i", "testsrc=size=64x64:rate=25:duration=1"}
+	args = append(args, tone(440, 48000, 1)...)
+	ffrun(t, append(args, "-map", "0:v", "-map", "1:a", "-c:v", "libvpx-vp9", "-c:a", "aac", in)...)
+	raw, err := os.ReadFile(in)
+	must(t, err)
+	if len(raw) < 12 || string(raw[4:8]) != "ftyp" {
+		t.Fatalf("no ftyp box at the start of %s", in)
+	}
+	copy(raw[8:12], "qt  ")
+	qt := filepath.Join(dir, "in.mov")
+	must(t, os.WriteFile(qt, raw, 0o600))
+	if got := fprobe(t, "-show_entries", "format_tags=major_brand", "-of", "csv=p=0", qt); !strings.Contains(got, "qt") {
+		t.Fatalf("fixture brand = %q, want qt", got)
+	}
+	marker := filepath.Join(dir, "engine-ran")
+	engine := writeScript(t, "#!/bin/sh\ntouch '"+marker+"'\nexit 1\n")
+	o := opts(t, qt, filepath.Join(t.TempDir(), "o.mov"), 0.85, engine)
+	_, err = Run(context.Background(), o)
+	wantCode(t, err, CodeUnsupportedStreams)
+	e := err.(*Error)
+	if !strings.Contains(e.Msg, "stream 0") || !strings.Contains(e.Msg, "vp9") {
+		t.Errorf("message does not name the stream: %q", e.Msg)
+	}
+	if _, serr := os.Stat(marker); serr == nil {
+		t.Error("the cleanup engine ran for a file that cannot be written")
+	}
+	if !strings.Contains(e.Detail, "vp9") || strings.Contains(e.Detail, dir) || strings.Contains(e.Msg, "only supported") {
+		t.Errorf("detail %q: want ffmpeg's reason without paths, and not in the user message", e.Detail)
+	}
+	noLeftovers(t, o)
+}

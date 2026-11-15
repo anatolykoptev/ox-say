@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -530,6 +531,10 @@ func (j *job) ff(args ...string) error {
 	return j.toolErr("ffmpeg", err)
 }
 
+// absPathScrub matches an absolute path inside a tool's stderr (the device file it was told to write to excepted
+// by the replacement keeping nothing of it either: the log needs the muxer's reason, not where the files were).
+var absPathScrub = regexp.MustCompile(`/[^\s"'()<>:]+`)
+
 // dryMux asks the real muxer, with the user's own ffmpeg, whether each stream that only the QuickTime rule admitted can
 // be stream-copied into the output container: a zero-length copy of that one stream into the null device, which fails
 // at the muxer's header check exactly as the real write would. A refusal has the shape of planVideo's.
@@ -541,7 +546,9 @@ func (j *job) dryMux(p *videoPlan, ext string) error {
 		}
 		var e *Error
 		if errors.As(err, &e) && e.Code == CodeEngineFailed {
-			return newErr(CodeUnsupportedStreams, fmt.Sprintf("stream %d (%s, %s) cannot be stored in a .%s file; choose %s for this input", s.Index, s.Type, s.Codec, ext, altFor(s.Type, s.Codec)))
+			// ffmpeg's own words go to the log (Detail), without paths; the user gets the plain sentence.
+			return newErrDetail(CodeUnsupportedStreams, fmt.Sprintf("stream %d (%s, %s) cannot be stored in a .%s file; choose %s for this input", s.Index, s.Type, s.Codec, ext, altFor(s.Type, s.Codec)),
+				"mov dry run: "+absPathScrub.ReplaceAllString(e.Msg, "…"))
 		}
 		return err
 	}
