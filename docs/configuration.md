@@ -41,6 +41,7 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_STT_SERVER` | `on` | Resident `ox-stt --serve` for parakeet clips ≤ 300 s; `off` = per-call CLI only |
 | `OX_SAY_STT_PORT` | `8096` | Loopback port the STT server binds; must differ from `OX_SAY_ENGINE_PORT` and the daemon's port |
 | `OX_SAY_STT_IDLE_STOP_SECS` | `600` | Stop the STT server after N s idle; its idle cost is RAM, not VRAM |
+| `OX_SAY_STT_BOOST_ALPHA` | `1.5` | Decoder boost of the active glossary terms (0-100; `0` turns it off) |
 
 `<engine dir>` is the directory of the running daemon when it sits in an app
 bundle's `Contents/Helpers`, so the engines travel with the daemon and share

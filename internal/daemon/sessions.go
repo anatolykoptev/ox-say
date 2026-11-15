@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"regexp"
 	"time"
+
+	"github.com/anatolykoptev/ox-say/internal/stt"
 )
 
 // Streaming transcription sessions on the resident ox-stt server
@@ -112,7 +114,7 @@ func (d *Daemon) handleSTTSessionCreate(w http.ResponseWriter, r *http.Request) 
 		writeSessionErr(w, http.StatusServiceUnavailable, fmt.Sprintf("stt server: %v", err))
 		return
 	}
-	status, body := d.sttSessionProxy(w, r, base, "/sessions", sessionMaxJSON, nil)
+	status, body := d.sttSessionProxy(w, r, base, "/sessions", sessionMaxJSON, nil, d.sessionBoostBody())
 	if status/100 == 2 {
 		var created struct {
 			ID string `json:"id"`
@@ -168,7 +170,7 @@ func (d *Daemon) sttSessionOp(w http.ResponseWriter, r *http.Request, op string,
 	if op == "finish" || op == "audio" {
 		rewrite = d.correctSessionBody
 	}
-	status, _ := d.sttSessionProxy(w, r, base, up, limit, rewrite)
+	status, _ := d.sttSessionProxy(w, r, base, up, limit, rewrite, nil)
 	switch {
 	case op == "audio" && status/100 == 2:
 		d.noteSTTSession(id) // session traffic refreshes its idle clock
@@ -179,13 +181,22 @@ func (d *Daemon) sttSessionOp(w http.ResponseWriter, r *http.Request, op string,
 	}
 }
 
+// sessionBoostBody is the body the session-create request carries upstream: the glossary's boost list for
+// THIS session — fixed at creation, so a glossary edit mid-dictation cannot change it, and the finish
+// re-decode reuses it — or an empty body. It replaces whatever the client sent: the list is the daemon's to
+// choose, never the caller's.
+func (d *Daemon) sessionBoostBody() func([]byte) []byte {
+	b := d.sttBoost().JSON(stt.MaxWireJSON)
+	return func([]byte) []byte { return b }
+}
+
 // sttSessionProxy reads the request body under its cap, forwards it to the
 // STT server at base+path, and copies the upstream status and JSON body
 // back. The caller holds the guard; the request context carries the call.
 // The status returned is what was written to the client — the upstream's
 // code on a proxy-through, the proxy's own on a local refusal — and the
 // body the one sent back, so the caller can keep the session registry.
-func (d *Daemon) sttSessionProxy(w http.ResponseWriter, r *http.Request, base, path string, limit int64, rewrite func([]byte) []byte) (int, []byte) {
+func (d *Daemon) sttSessionProxy(w http.ResponseWriter, r *http.Request, base, path string, limit int64, rewrite func([]byte) []byte, reqBody func([]byte) []byte) (int, []byte) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
 		writeSessionErr(w, http.StatusBadRequest, fmt.Sprintf("cannot read body: %v", err))
@@ -194,6 +205,9 @@ func (d *Daemon) sttSessionProxy(w http.ResponseWriter, r *http.Request, base, p
 	if int64(len(body)) > limit {
 		writeSessionErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("body exceeds %d bytes", limit))
 		return http.StatusRequestEntityTooLarge, nil
+	}
+	if reqBody != nil {
+		body = reqBody(body)
 	}
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, base+path, bytes.NewReader(body))
 	if err != nil {

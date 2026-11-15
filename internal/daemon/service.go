@@ -80,6 +80,20 @@ type Daemon struct {
 	glKey    glKey
 	glPairs  []glossary.Pair
 	glWarned glKey
+	glGen    uint64 // moves on every reload of the pairs from disk
+	// tb* is the decoder boost list derived from the active pairs, keyed by their content (see boost.go).
+	tbMu       sync.Mutex
+	tbHave     bool
+	tbKey      string // content key of tbTerms
+	tbSeenGen  uint64 // the glGen tbCurKey was computed for
+	tbCurKey   string // content key of the current glossary
+	tbKeyOK    bool
+	tbTerms    []string
+	tbBuilding bool
+	tbVMu      sync.Mutex
+	tbVerdicts map[string]bool // form -> ordinary word, so a derivation reloads no dictionary for a form it has judged
+	tbDerives  atomic.Int64
+	tbChecks   atomic.Int64
 	// ownerToken is the bearer the owner-only glossary routes check, loaded
 	// or created at start from $OX_SAY_HOME/owner.token (mode 0600). Empty
 	// fails closed: nothing approves or rejects.

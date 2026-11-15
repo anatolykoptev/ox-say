@@ -24,6 +24,9 @@ type TranscribeInput struct {
 	Engine    string // parakeet (default) | whisper
 	Language  string // whisper only; parakeet auto-detects
 	Prompt    string // whisper only
+	// NoBoost keeps the glossary out of the decoder for this call. Set where the text must follow the audio
+	// literally: voice cloning's reference transcript.
+	NoBoost bool
 }
 
 // Transcribe runs one stt.Transcribe with the daemon's config. On a
@@ -51,6 +54,9 @@ func (d *Daemon) Transcribe(ctx context.Context, in TranscribeInput) (*stt.Resul
 		GPU:          d.Cfg.STTGPU,
 		Timeout:      d.Cfg.STTTimeout,
 		MaxAudio:     d.Cfg.STTMaxAudio,
+	}
+	if !in.NoBoost {
+		opts.Boost = d.sttBoost()
 	}
 	// Assign the lease only on a discrete card: opts.GPULease is an
 	// interface, and leaving it nil is stt's "no arbitration".

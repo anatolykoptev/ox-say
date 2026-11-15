@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -20,6 +21,8 @@ type Options struct {
 	// WaitDelay is how long the child gets to exit after the context ends before it is killed outright and its
 	// pipes closed; 0 leaves exec's default (wait for the pipes without limit).
 	WaitDelay time.Duration
+	// Stdin, when non-nil, is the child's standard input (it is closed at EOF); nil leaves it empty.
+	Stdin io.Reader
 }
 
 // ExitError is a child that ran and did not succeed: it exited non-zero or was ended by a signal that was not
@@ -51,6 +54,7 @@ func Run(ctx context.Context, bin string, args []string, opt Options) ([]byte, e
 	}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.WaitDelay = opt.WaitDelay
+	cmd.Stdin = opt.Stdin
 	var out bytes.Buffer
 	tail := &tailBuffer{max: keep}
 	cmd.Stdout = &out

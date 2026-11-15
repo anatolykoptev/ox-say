@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -100,6 +101,10 @@ type Options struct {
 	MaxAudio     time.Duration // audio past this is not decoded; 0 → DefaultMaxAudio
 	MaxQueue     int           // callers allowed to wait; 0 → DefaultMaxQueue
 
+	// Boost is the glossary term list pushed into the decoder for this one request (parakeet only; see Boost).
+	// The zero value decodes without boosting.
+	Boost Boost
+
 	// Server, when non-nil, acquires the resident ox-stt server: it returns
 	// its base URL plus a release func the caller runs once the response
 	// body is read. A nil Server means CLI only. The daemon wires it to the
@@ -116,6 +121,7 @@ const (
 	DefaultMaxAudio = 4 * time.Hour
 	DefaultMaxQueue = 8
 	stderrTail      = 4 << 10
+	usageExit       = 2 // ox-stt exits 2 on an argument it does not know
 )
 
 // sttK is the decode budget's per-second rate: seconds of engine time
@@ -338,7 +344,21 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 		args = append(args, "-ng")
 	}
 
-	out, err := oneshot.Run(ctx, opts.Bin, args, oneshot.Options{StderrTail: stderrTail})
+	oo := oneshot.Options{StderrTail: stderrTail}
+	boosted := engine == "parakeet" && opts.Boost.Active()
+	baseArgs := args
+	if boosted {
+		// the terms are the user's glossary text: stdin, never argv
+		args = append(slices.Clone(baseArgs), "--terms-stdin", "--boost-alpha", strconv.FormatFloat(opts.Boost.Alpha, 'g', -1, 64))
+		oo.Stdin = strings.NewReader(opts.Boost.Stdin())
+	}
+	out, err := oneshot.Run(ctx, opts.Bin, args, oo)
+	var exitErr *oneshot.ExitError
+	if boosted && errors.As(err, &exitErr) && exitErr.Code() == usageExit {
+		// An ox-stt that predates the boost flags refuses them with a usage error: decode without the list
+		// rather than fail the transcription.
+		out, err = oneshot.Run(ctx, opts.Bin, baseArgs, oneshot.Options{StderrTail: stderrTail})
+	}
 	if err != nil {
 		if timedOut() {
 			return nil, &TimeoutError{After: timeout}
@@ -346,7 +366,6 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		var exitErr *oneshot.ExitError
 		if errors.As(err, &exitErr) {
 			return nil, &EngineError{"stt: ox-stt failed: " + engineFailureReason(exitErr)}
 		}
@@ -397,6 +416,9 @@ func transcribeServer(ctx context.Context, wav string, opts Options) (*Result, e
 	// ox-stt's httplib caps a form-urlencoded body at 8 KB; a raw WAV body
 	// under its own content type is unlimited.
 	req.Header.Set("Content-Type", "audio/wav")
+	if h := opts.Boost.Header(); h != "" {
+		req.Header.Set("X-Ox-Terms", h)
+	}
 	resp, err := serverHTTP.Do(req)
 	if err != nil {
 		release()

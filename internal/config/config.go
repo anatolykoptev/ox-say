@@ -5,6 +5,7 @@ package config
 import (
 	"flag"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -28,6 +29,8 @@ const (
 	DefaultSTTMaxAudio    = 4 * 3600
 	DefaultSTTPort        = 8096
 	DefaultSTTIdleStop    = 600
+	DefaultSTTBoostAlpha  = 1.5 // decoder term boosting strength; 0 = off
+	maxSTTBoostAlpha      = 100.0
 	DefaultVoxCPM2Port    = 8097
 	DefaultNotesPort      = 8098
 	DefaultNotesIdleStop  = 120
@@ -178,6 +181,7 @@ type Config struct {
 	STTServer       string        // OX_SAY_STT_SERVER: on | off — resident ox-stt server
 	STTPort         int           // OX_SAY_STT_PORT: loopback port the STT server binds
 	STTIdleStop     time.Duration // OX_SAY_STT_IDLE_STOP_SECS
+	STTBoostAlpha   float64       // OX_SAY_STT_BOOST_ALPHA: decoder boost of glossary terms, 0..100, 0 = off
 
 	// GPUMemory is OX_SAY_GPU_MEMORY resolved by load: GPUMemoryUnified
 	// (Apple Silicon: TTS and STT share the GPU, no lease) or
@@ -250,6 +254,7 @@ var flagNames = map[string]string{
 	"stt-server":        "OX_SAY_STT_SERVER",
 	"stt-port":          "OX_SAY_STT_PORT",
 	"stt-idle-stop":     "OX_SAY_STT_IDLE_STOP_SECS",
+	"stt-boost-alpha":   "OX_SAY_STT_BOOST_ALPHA",
 	"gpu-memory":        "OX_SAY_GPU_MEMORY",
 	"voxcpm2-bin":       "OX_SAY_VOXCPM2_BIN",
 	"voxcpm2-model":     "OX_SAY_VOXCPM2_MODEL",
@@ -521,6 +526,14 @@ func loadSTT(c *Config, get func(string) string, engineDir string) error {
 		return fmt.Errorf("config: OX_SAY_STT_IDLE_STOP_SECS %d: want >= 1", sttIdleSecs)
 	}
 	c.STTIdleStop = time.Duration(sttIdleSecs) * time.Second
+	c.STTBoostAlpha = DefaultSTTBoostAlpha
+	if v := strings.TrimSpace(get("OX_SAY_STT_BOOST_ALPHA")); v != "" {
+		a, err := strconv.ParseFloat(v, 64)
+		if err != nil || math.IsNaN(a) || a < 0 || a > maxSTTBoostAlpha {
+			return fmt.Errorf("config: OX_SAY_STT_BOOST_ALPHA %q: want a number in 0..%g (0 = off)", v, maxSTTBoostAlpha)
+		}
+		c.STTBoostAlpha = a
+	}
 	return nil
 }
 

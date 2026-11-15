@@ -74,13 +74,16 @@
 //	OXSAY_FAKE_STT_BLOCK=1    block until killed
 //	OXSAY_FAKE_STT_KILL=1     SIGKILL itself with nothing on stderr (an engine killed from outside)
 //	OXSAY_FAKE_STT_JSON       payload to print instead of the canned result
+//	OXSAY_FAKE_STT_REJECT_TERMS=1  exit 2 ("unknown argument") when argv carries --terms-stdin, like an older ox-stt
+//	OXSAY_FAKE_STT_STDIN      file the CLI fake writes its stdin to when argv carries --terms-stdin
 //
 // Fake ox-stt --serve (selected on OXSAY_FAKE_STT=1 AND a --serve flag in
 // argv, checked BEFORE the --engine CLI selection above — the two fake
 // modes never overlap): parses --port and serves on 127.0.0.1:
 //
 //	GET  /health      -> 200
-//	POST /transcribe  -> OXSAY_FAKE_STT_JSON or the canned CLI result
+//	POST /transcribe  -> OXSAY_FAKE_STT_JSON or the canned CLI result; logs
+//	                     "terms <pid> <X-Ox-Terms value>" when that header is set
 //
 // Streaming sessions (the ox-stt --serve contract): only when argv carries
 // --vad, mirroring the real server — OXSAY_FAKE_STT_NO_VAD=1 forces 501
@@ -174,6 +177,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -479,6 +483,9 @@ func runFakeSTTServe(args []string) int {
 	})
 	mux.HandleFunc("POST /transcribe", func(w http.ResponseWriter, r *http.Request) {
 		sttLog(fmt.Sprintf("req %d %s %d", os.Getpid(), r.Header.Get("Content-Type"), time.Now().UnixNano()))
+		if v := r.Header.Get("X-Ox-Terms"); v != "" {
+			sttLog(fmt.Sprintf("terms %d %s", os.Getpid(), v))
+		}
 		if delay > 0 {
 			select {
 			case <-time.After(delay):
@@ -534,7 +541,10 @@ func runFakeSTTServe(args []string) int {
 		if !sessCheck(w, r, "application/json") {
 			return
 		}
-		_, _ = io.Copy(io.Discard, r.Body)
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if len(body) > 0 {
+			sttLog(fmt.Sprintf("sess-create-body %d %s", os.Getpid(), base64.RawURLEncoding.EncodeToString(body)))
+		}
 		var rnd [16]byte
 		if _, err := rand.Read(rnd[:]); err != nil {
 			sessErr(w, http.StatusInternalServerError, "rand")
@@ -663,6 +673,14 @@ func runFakeSTT(args []string) int {
 		stamp(fmt.Sprintf("end %s %d %d", id, os.Getpid(), time.Now().UnixNano()))
 	}()
 
+	if os.Getenv("OXSAY_FAKE_STT_REJECT_TERMS") == "1" && slices.Contains(args, "--terms-stdin") {
+		fmt.Fprintln(os.Stderr, "unknown argument: --terms-stdin")
+		return 2
+	}
+	if p := os.Getenv("OXSAY_FAKE_STT_STDIN"); p != "" && slices.Contains(args, "--terms-stdin") {
+		in, _ := io.ReadAll(os.Stdin)
+		_ = os.WriteFile(p, in, 0o600)
+	}
 	if os.Getenv("OXSAY_FAKE_STT_BLOCK") == "1" {
 		for {
 			time.Sleep(time.Hour)

@@ -14,6 +14,11 @@ Apache-2.0), the engine behind VoxCPM2 on Apple Silicon: a speech-route prompt
 audio field and a loopback-only guard. The upstream lines they contain remain
 under audio.cpp's Apache-2.0 license.
 
+internal/wordlists/data/ holds two Hunspell dictionaries as packaged by github.com/wooorm/dictionaries: the
+Russian dictionary of Alexander I. Lebedev (1997-2008), BSD-style licence in internal/wordlists/data/LICENSE.ru,
+and the English en_US dictionary derived from SCOWL by Kevin Atkinson, (MIT AND BSD) licence in
+internal/wordlists/data/LICENSE.en. They are read through github.com/client9/gospell (MIT).
+
 internal/vscript/sentences.go ports six of the sentence-boundary rules of razdel
 (https://github.com/natasha/razdel) to Go, and internal/vscript/abbrev.go
 adapts a subset of its Russian abbreviation list. The English and Latin entries

@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/anatolykoptev/go-mcpserver v0.21.0
+	github.com/client9/gospell v0.9.2
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/yuin/goldmark v1.8.6
