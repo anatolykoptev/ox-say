@@ -391,3 +391,110 @@ func TestGlossaryPairsWarnsOncePerState(t *testing.T) {
 		t.Fatalf("warnings = %d, want 2 after the fix", n)
 	}
 }
+
+// Edit and purge rewrite or remove a pair, so they are the owner's call like
+// approve and reject: 403 without the bearer, and a refused call changes
+// nothing.
+// Mutation: glossary_http.go glossaryRoutes, register the edit route on a handler without the ownerOK check -> RED.
+// Mutation: same for the purge route (DELETE /v1/glossary/{id}) -> RED.
+func TestGlossaryEditAndPurgeAreOwnerOnly(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+
+	rec := call(t, mux, http.MethodPost, "/v1/glossary", `{"heard":"Воксей","meant":"OxSay"}`)
+	var p glossary.Pair
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &p) != nil {
+		t.Fatalf("add: %d %s", rec.Code, rec.Body)
+	}
+	for _, bad := range []map[string]string{
+		nil,
+		{"Authorization": "Bearer 0000000000000000000000000000000000000000000000000000000000000000"},
+		{"Authorization": "Basic dGVzdA=="},
+	} {
+		if rec := callWith(t, mux, http.MethodPost, "/v1/glossary/"+p.ID+"/edit", `{"meant":"Other"}`, bad); rec.Code != http.StatusForbidden {
+			t.Fatalf("edit with Authorization %q: %d, want 403", bad["Authorization"], rec.Code)
+		}
+		if rec := callWith(t, mux, http.MethodDelete, "/v1/glossary/"+p.ID, "", bad); rec.Code != http.StatusForbidden {
+			t.Fatalf("purge with Authorization %q: %d, want 403", bad["Authorization"], rec.Code)
+		}
+	}
+	if got, _ := d.Glossary.List(); len(got) != 1 || got[0].Meant != "OxSay" {
+		t.Fatalf("a refused call changed the pair: %+v", got)
+	}
+}
+
+func TestGlossaryOwnerEditAndPurge(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+	auth := ownerAuth(t, d)
+
+	rec := call(t, mux, http.MethodPost, "/v1/glossary", `{"heard":"Воксей","meant":"OxSay"}`)
+	var p glossary.Pair
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &p) != nil {
+		t.Fatalf("add: %d %s", rec.Code, rec.Body)
+	}
+	if rec := callWith(t, mux, http.MethodPost, "/v1/glossary/"+p.ID+"/approve", "{}", auth); rec.Code != http.StatusOK {
+		t.Fatalf("approve: %d", rec.Code)
+	}
+	if got := d.corrector()("открой Воксей"); got != "открой OxSay" {
+		t.Fatalf("corrector = %q", got)
+	}
+	rec = callWith(t, mux, http.MethodPost, "/v1/glossary/"+p.ID+"/edit", `{"meant":"OxPulse"}`, auth)
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &p) != nil || p.Meant != "OxPulse" || p.Status != glossary.Active {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body)
+	}
+	if got := d.corrector()("открой Воксей"); got != "открой OxPulse" {
+		t.Fatalf("corrector after edit = %q: the pair cache missed the daemon's own write", got)
+	}
+	for _, c := range []struct {
+		method, path, body string
+		code               int
+	}{
+		{http.MethodPost, "/v1/glossary/" + p.ID + "/edit", `{"meant":"one two three four five"}`, http.StatusBadRequest},
+		{http.MethodPost, "/v1/glossary/" + p.ID + "/edit", `{"meant":"a","extra":1}`, http.StatusBadRequest},
+		{http.MethodPost, "/v1/glossary/ffffffff/edit", `{"meant":"x"}`, http.StatusNotFound},
+		{http.MethodDelete, "/v1/glossary/ffffffff", "", http.StatusNotFound},
+	} {
+		if rec := callWith(t, mux, c.method, c.path, c.body, auth); rec.Code != c.code {
+			t.Errorf("%s %s %s = %d, want %d", c.method, c.path, c.body, rec.Code, c.code)
+		}
+	}
+	if rec := callWith(t, mux, http.MethodDelete, "/v1/glossary/"+p.ID, "", auth); rec.Code != http.StatusOK {
+		t.Fatalf("purge: %d %s", rec.Code, rec.Body)
+	}
+	if got := d.corrector()("открой Воксей"); got != "открой Воксей" {
+		t.Fatalf("corrector after purge = %q", got)
+	}
+	rec = call(t, mux, http.MethodGet, "/v1/glossary", "")
+	var list struct{ Pairs []glossary.Pair }
+	if json.Unmarshal(rec.Body.Bytes(), &list) != nil || len(list.Pairs) != 0 {
+		t.Fatalf("list after purge: %s", rec.Body)
+	}
+}
+
+// A glossary.json the daemon cannot parse carries its full path in the store's
+// error; no glossary route may hand that path (the daemon home) to a caller.
+// Mutation: glossary_http.go handleGlossaryEdit, writeErr(..., err.Error()) instead of glossaryMessage -> RED.
+// Mutation: same in handleGlossaryPurge -> RED.
+func TestGlossaryErrorsCarryNoHomePath(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+	auth := ownerAuth(t, d)
+	if err := os.WriteFile(filepath.Join(d.Cfg.Home, glossary.FileName), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ method, path, body string }{
+		{http.MethodPost, "/v1/glossary/ffffffff/edit", `{"meant":"x"}`},
+		{http.MethodDelete, "/v1/glossary/ffffffff", ""},
+		{http.MethodPost, "/v1/glossary/ffffffff/approve", "{}"},
+		{http.MethodGet, "/v1/glossary", ""},
+	} {
+		rec := callWith(t, mux, c.method, c.path, c.body, auth)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("%s %s = %d, want 500 on a corrupt file: %s", c.method, c.path, rec.Code, rec.Body)
+		}
+		if strings.Contains(rec.Body.String(), d.Cfg.Home) || strings.Contains(rec.Body.String(), glossary.FileName) {
+			t.Errorf("%s %s leaks the file path: %s", c.method, c.path, rec.Body)
+		}
+	}
+}

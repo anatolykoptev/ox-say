@@ -111,6 +111,7 @@ public struct MainWindowView: View {
         case .dictation: DictationPage(model: model)
         case .voices: VoicesPage(model: model)
         case .transcribe: TranscribePage(model: model)
+        case .glossary: GlossaryPage()
         case .settings: SettingsPage(model: model)
         // Not live yet: unreachable until the section's own task lists it in `MainWindowSpec.liveSections`.
         case .models: EmptyView()
@@ -126,6 +127,7 @@ extension MainSection {
         case .dictation: return "mic.fill"
         case .meetings: return "person.2.fill"
         case .transcribe: return "doc.text"
+        case .glossary: return "character.book.closed"
         case .models: return "shippingbox"
         case .settings: return "gearshape.fill"
         }

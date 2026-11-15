@@ -54,10 +54,13 @@ Glossary routes (the heard → meant pairs applied to recognised text):
 | `POST /v1/glossary` | `{"heard","meant","context"}` — file a pair. The context must contain the heard form and only its hash is kept; `409` when the heard form already maps to another term, `400` on an invalid pair (heard: 1–4 words of letters, digits, spaces, `'` and `-` only; meant: ≤ 4 words, ≤ 60 chars, letters/digits/spaces and `. - + _ ' #` only) |
 | `POST /v1/glossary/<id>/approve` | Make the pair active (also reactivates a rejected one). Owner-only — `403` without `Authorization: Bearer <owner token>` |
 | `POST /v1/glossary/<id>/reject` | Stop the pair applying; it stays as a tombstone a later `add` cannot reactivate. Owner-only — `403` without `Authorization: Bearer <owner token>` |
+| `POST /v1/glossary/<id>/edit` | `{"meant"}` — give the pair another meant form (same validation as `add`; heard, id and sightings stay; a rejected pair comes back as a candidate). Owner-only — `403` without `Authorization: Bearer <owner token>` |
+| `DELETE /v1/glossary/<id>` | Remove the pair for good, no tombstone (an agent may file the heard form again as a new candidate). Owner-only — `403` without `Authorization: Bearer <owner token>` |
 
-Approve and reject are owner-only. The daemon creates `$OX_SAY_HOME/owner.token` on first start
-(32 random bytes, hex, mode 0600) and the two routes compare the `Authorization: Bearer` value against
-it in constant time. The owner settles pairs through `ox-say vocab ok|rm`, which runs only at a
+Approve, reject, edit and purge are owner-only. The daemon creates `$OX_SAY_HOME/owner.token` on first start
+(32 random bytes, hex, mode 0600) and these routes compare the `Authorization: Bearer` value against
+it in constant time. The owner settles pairs through `ox-say vocab ok|rm|edit|purge` or the app's
+Glossary page; the command runs only at a
 terminal, shows the pair, and sends the token after a bare `y`. This keeps an agent from approving its
 own filings by mistake — it is a guard against our own tools acting eagerly, not against a hostile
 local process, which could read the token file anyway.

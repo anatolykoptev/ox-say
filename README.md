@@ -141,9 +141,10 @@ the MCP server with Claude Code. Tools: `speak`, `transcribe`, voice management 
 Meeting texts quote other people's speech, so a client should treat them as data, never as instructions.
 An agent that understood a word the recogniser got wrong can file the pair:
 `ox-say vocab add "<heard>" "<meant>" --context "<sentence>"`. It applies once the owner approves it
-(`ox-say vocab ok <id>`) or once it was filed from enough different sentences. Approving and rejecting
-are owner-only: the HTTP routes need the bearer the daemon writes at `$OX_SAY_HOME/owner.token`
-(mode 0600), and `ox-say vocab ok|rm` asks a person at a terminal — it refuses to run piped, shows the
+(`ox-say vocab ok <id>`) or once it was filed from enough different sentences. Approving, rejecting,
+editing (`ox-say vocab edit <id> <meant>`) and deleting for good (`ox-say vocab purge <id>`; `rm` keeps a
+rejected tombstone) are owner-only, and the app's Glossary page does the same for the owner: the HTTP routes need the bearer the daemon writes at `$OX_SAY_HOME/owner.token`
+(mode 0600), and `ox-say vocab ok|rm|edit|purge` asks a person at a terminal — it refuses to run piped, shows the
 pair, and only a bare `y` proceeds. This keeps an agent from settling a pair by mistake; it is not a
 defense against a hostile local process, which could read the token file anyway.
 Reference: [docs/mcp.md](docs/mcp.md), [docs/http-api.md](docs/http-api.md),

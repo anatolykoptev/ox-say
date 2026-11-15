@@ -6,9 +6,9 @@ final class SectionsTests: XCTestCase {
 
     func testTheSidebarOrderIsTheBindingOrder() {
         XCTAssertEqual(MainWindowSpec.sections(advanced: false, live: all),
-                       [.speak, .voices, .dictation, .meetings, .transcribe, .settings])
+                       [.speak, .voices, .dictation, .meetings, .transcribe, .glossary, .settings])
         XCTAssertEqual(MainWindowSpec.sections(advanced: true, live: all),
-                       [.speak, .voices, .dictation, .meetings, .transcribe, .models, .settings])
+                       [.speak, .voices, .dictation, .meetings, .transcribe, .glossary, .models, .settings])
     }
 
     func testASectionWithNothingBehindItIsNotListed() {
@@ -65,7 +65,7 @@ final class SectionsTests: XCTestCase {
         XCTAssertEqual(on.count, MainWindowSpec.sections(advanced: true, live: all).count)
         XCTAssertEqual(on.count, off.count + 1, "Models takes a key only while Advanced is on")
         XCTAssertEqual(off.first, "1:speak")
-        XCTAssertTrue(on.contains("6:models") && on.contains("7:settings"), "the keys after Models shift: \(on)")
-        XCTAssertTrue(off.contains("6:settings"), "\(off)")
+        XCTAssertTrue(on.contains("7:models") && on.contains("8:settings"), "the keys after Models shift: \(on)")
+        XCTAssertTrue(off.contains("7:settings"), "\(off)")
     }
 }

@@ -90,13 +90,26 @@ func writeOwnerToken(home, path string, log *slog.Logger) string {
 }
 
 // glossaryRoutes registers the glossary. None is interactive: filing a pair
-// must not make the voiceover producer yield. There is no hard delete: a
-// rejected pair stays as a tombstone so agents cannot file it back.
+// must not make the voiceover producer yield. Reject keeps a tombstone so
+// agents cannot file a pair back; edit and purge (a hard delete, no
+// tombstone) are owner-only like approve and reject.
 func (d *Daemon) glossaryRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/glossary", d.handleGlossaryList)
 	mux.HandleFunc("POST /v1/glossary", d.handleGlossaryAdd)
 	mux.HandleFunc("POST /v1/glossary/{id}/approve", d.handleGlossaryStatus(true))
 	mux.HandleFunc("POST /v1/glossary/{id}/reject", d.handleGlossaryStatus(false))
+	mux.HandleFunc("POST /v1/glossary/{id}/edit", d.handleGlossaryEdit)
+	mux.HandleFunc("DELETE /v1/glossary/{id}", d.handleGlossaryPurge)
+}
+
+// glossaryMessage is a store error's text for a caller: a corrupt or unreadable
+// glossary.json names its full path in the error, so the daemon home (and the
+// file) is scrubbed with the producer's publicMessage; the detail is logged.
+func (d *Daemon) glossaryMessage(err error) string {
+	if glossaryStatus(err) == http.StatusInternalServerError {
+		d.log.Warn("glossary: request failed", slog.Any("error", err))
+	}
+	return publicMessage(err, d.Cfg.Home)
 }
 
 func glossaryStatus(err error) int {
@@ -114,7 +127,7 @@ func glossaryStatus(err error) int {
 func (d *Daemon) handleGlossaryList(w http.ResponseWriter, r *http.Request) {
 	pairs, err := d.Glossary.List()
 	if err != nil {
-		writeErr(w, glossaryStatus(err), err.Error())
+		writeErr(w, glossaryStatus(err), d.glossaryMessage(err))
 		return
 	}
 	if pairs == nil {
@@ -135,7 +148,7 @@ func (d *Daemon) handleGlossaryAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := d.Glossary.Add(in.Heard, in.Meant, in.Context)
 	if err != nil {
-		writeErr(w, glossaryStatus(err), err.Error())
+		writeErr(w, glossaryStatus(err), d.glossaryMessage(err))
 		return
 	}
 	d.invalidateGlossary()
@@ -144,8 +157,9 @@ func (d *Daemon) handleGlossaryAdd(w http.ResponseWriter, r *http.Request) {
 }
 
 // ownerOK reports whether the request carries the owner bearer. Approve and
-// reject settle a pair — the owner's call, made at a terminal through
-// `ox-say vocab`; an agent files candidates, it never settles them.
+// reject settle a pair, and edit and purge rewrite or remove one — the owner's
+// call, made at a terminal through `ox-say vocab` or in the app; an agent
+// files candidates, it never settles them.
 func (d *Daemon) ownerOK(r *http.Request) bool {
 	tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	return ok && d.ownerToken != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(d.ownerToken)) == 1
@@ -163,13 +177,50 @@ func (d *Daemon) handleGlossaryStatus(approve bool) http.HandlerFunc {
 		}
 		p, err := set(r.PathValue("id"))
 		if err != nil {
-			writeErr(w, glossaryStatus(err), err.Error())
+			writeErr(w, glossaryStatus(err), d.glossaryMessage(err))
 			return
 		}
 		d.invalidateGlossary()
 		d.log.Info("glossary pair set", slog.String("id", p.ID), slog.String("status", string(p.Status)))
 		writeJSON(w, http.StatusOK, p)
 	}
+}
+
+func (d *Daemon) handleGlossaryEdit(w http.ResponseWriter, r *http.Request) {
+	if !d.ownerOK(r) {
+		writeErr(w, http.StatusForbidden, "editing a pair is owner-only — run `ox-say vocab edit` at a terminal")
+		return
+	}
+	var in struct {
+		Meant string `json:"meant"`
+	}
+	if err := decodeStrict(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	p, err := d.Glossary.Edit(r.PathValue("id"), in.Meant)
+	if err != nil {
+		writeErr(w, glossaryStatus(err), d.glossaryMessage(err))
+		return
+	}
+	d.invalidateGlossary()
+	d.log.Info("glossary pair edited", slog.String("id", p.ID), slog.String("status", string(p.Status)))
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (d *Daemon) handleGlossaryPurge(w http.ResponseWriter, r *http.Request) {
+	if !d.ownerOK(r) {
+		writeErr(w, http.StatusForbidden, "deleting a pair is owner-only — run `ox-say vocab purge` at a terminal")
+		return
+	}
+	id := r.PathValue("id")
+	if err := d.Glossary.Purge(id); err != nil {
+		writeErr(w, glossaryStatus(err), d.glossaryMessage(err))
+		return
+	}
+	d.invalidateGlossary()
+	d.log.Info("glossary pair purged", slog.String("id", id))
+	writeJSON(w, http.StatusOK, map[string]any{"purged": id})
 }
 
 // glKey identifies one state of glossary.json: its mtime and size, or its
