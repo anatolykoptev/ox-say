@@ -89,7 +89,7 @@ final class ComponentsWiringTests: XCTestCase {
         let flat = lines.joined(separator: "\n")
         let listCase = try XCTUnwrap(flat.range(of: "case .list:\n            VStack(spacing: 0) {"), "the list state").lowerBound
         XCTAssertTrue(flat[listCase...].prefix(500).contains("MeetingsSplit(model: model)"), "the list state is the native split")
-        XCTAssertTrue(flat.contains("final class MeetingsSplitController: NSSplitViewController"))
+        XCTAssertTrue(flat.contains("final class MeetingsSplitController: ListDetailSplitController"))
         XCTAssertFalse(flat.contains(".frame(width: 290)"))
         // The window itself stays one two-column split: no content: column, no second shape.
         let window = Self.stripComments(try String(contentsOf: mainWindowUI.appendingPathComponent("MainWindowView.swift"), encoding: .utf8))
@@ -128,29 +128,35 @@ final class ComponentsWiringTests: XCTestCase {
     /// The list is 260...420 wide (ideal 290), the meeting never under 300, the divider is kept on the model across a
     /// section switch and a restore never writes back; Open Folder / Copy Notes / Delete exist only for a chosen
     /// meeting while the list is up; the failed-refresh bar spans the page above the split. Each pin is a USE of the
-    /// value, not its declaration.
-    /// Mutations: MeetingsPage.swift `listItem.minimumThickness = Self.listLimits.lowerBound` -> `= 0` -> RED;
+    /// value, not its declaration. The split mechanics themselves live once in the shared controller (#491).
+    /// Mutations: SplitController.swift `listItem.minimumThickness = listLimits.lowerBound` -> `= 0` -> RED;
     /// `splitViewDidResizeSubviews`, drop `!restoring` -> RED; `SelectionToolbar`, drop
     /// `, model.selectedMeeting != nil` -> RED; the Retry NoticeBar back inside `MeetingsListColumn` -> RED;
-    /// `MeetingsSplitView.mouseDown` without `dividerDragActive = true` -> RED (a sidebar drag can clobber the width).
+    /// `DividerDragSplitView.mouseDown` without `dividerDragActive = true` -> RED (a sidebar drag can clobber the width).
     func testMeetingsSplitLimitsAndSelectionGuards() throws {
         let page = Self.stripComments(try String(contentsOf: mainWindowUI.appendingPathComponent("MeetingsPage.swift"), encoding: .utf8))
         XCTAssertTrue(page.contains("CGFloat(MainWindowSpec.meetingsListWidth.minimum)...CGFloat(MainWindowSpec.meetingsListWidth.maximum)"))
         XCTAssertTrue(page.contains("static let detailMinimum = CGFloat(MainWindowSpec.meetingsDetailMinimum)"))
-        XCTAssertTrue(page.contains("listItem.minimumThickness = Self.listLimits.lowerBound"))
-        XCTAssertTrue(page.contains("listItem.maximumThickness = Self.listLimits.upperBound"))
-        XCTAssertTrue(page.contains("detailItem.minimumThickness = Self.detailMinimum"))
+        // The widths reach the shared split; the model width is both the first position and where a user's drag writes.
+        XCTAssertTrue(page.contains("listLimits: Self.listLimits, detailMinimum: Self.detailMinimum"))
+        XCTAssertTrue(page.contains("position: { model.meetingsListWidth }"))
+        XCTAssertTrue(page.contains("store: { model.meetingsListWidth = $0 }"))
+        // The split mechanics live once in the shared controller both pages subclass.
+        let split = Self.stripComments(try String(contentsOf: mainWindowUI.appendingPathComponent("SplitController.swift"), encoding: .utf8))
+        XCTAssertTrue(split.contains("listItem.minimumThickness = listLimits.lowerBound"))
+        XCTAssertTrue(split.contains("listItem.maximumThickness = listLimits.upperBound"))
+        XCTAssertTrue(split.contains("detailItem.minimumThickness = detailMinimum"))
         // The restore waits for a split wide enough to honour it, and its own move is never stored.
-        XCTAssertTrue(page.contains("guard !applied, splitView.bounds.width >= Self.listLimits.lowerBound + MainWindowSpec.splitDividerWidth + Self.detailMinimum else { return }"))
-        XCTAssertTrue(page.contains("restoring = true\n        defer { restoring = false }\n        splitView.setPosition("))
+        XCTAssertTrue(split.contains("guard !applied, splitView.bounds.width >= listLimits.lowerBound + MainWindowSpec.splitDividerWidth + detailMinimum else { return }"))
+        XCTAssertTrue(split.contains("restoring = true\n        defer { restoring = false }\n        splitView.setPosition("))
         // A width is stored only while OUR divider is dragged: a drag of the window's outer sidebar divider
         // resizes these subviews too (left button down all the same) and must not overwrite the stored width.
-        XCTAssertTrue(page.contains("guard applied, !restoring, meetingsSplit.dividerDragActive,"))
-        XCTAssertFalse(page.contains("pressedMouseButtons"), "a held button is not proof OUR divider is the one being dragged")
-        XCTAssertTrue(page.contains("splitView = meetingsSplit"))
-        XCTAssertTrue(page.contains("private final class MeetingsSplitView: NSSplitView {"))
-        XCTAssertTrue(page.contains("dividerDragActive = true\n        super.mouseDown(with: event)\n        dividerDragActive = false"))
-        XCTAssertTrue(page.contains("model.meetingsListWidth = list.frame.width"))
+        XCTAssertTrue(split.contains("guard let store, applied, !restoring, dragView.dividerDragActive,"))
+        XCTAssertFalse(split.contains("pressedMouseButtons"), "a held button is not proof OUR divider is the one being dragged")
+        XCTAssertTrue(split.contains("splitView = dragView"))
+        XCTAssertTrue(split.contains("private final class DividerDragSplitView: NSSplitView {"))
+        XCTAssertTrue(split.contains("dividerDragActive = true\n        super.mouseDown(with: event)\n        dividerDragActive = false"))
+        XCTAssertTrue(split.contains("store(list.frame.width)"))
         XCTAssertTrue(page.contains("if case .list = model.pageState, let d = model.selectedDetail, model.selectedMeeting != nil {"))
         XCTAssertTrue(page.contains("if let id = model.selectedMeeting { model.actions.deleteMeeting(id) }"))
         // The toolbar and the search field stay on the page, outside the AppKit split, so they reach the window.

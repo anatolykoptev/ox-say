@@ -24,7 +24,6 @@ final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
     /// throws, so nobody tracks a clip that never sounds.
     func play(wav: Data) throws {
         stop()
-        serial += 1
         let next = try AVAudioPlayer(data: wav)
         next.delegate = self
         next.prepareToPlay()
@@ -34,6 +33,7 @@ final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
             next.delegate = nil
             throw DidNotStart()
         }
+        serial += 1
     }
 
     /// Toggles between pause and resume; a no-op when nothing is loaded.

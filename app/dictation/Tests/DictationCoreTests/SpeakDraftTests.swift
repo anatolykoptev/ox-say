@@ -11,9 +11,12 @@ final class SpeakDraftTests: XCTestCase {
         XCTAssertEqual(SpeakDraft.initial(stored: "мой текст", firstRun: false, language: "ru", text: key), "мой текст")
     }
 
-    /// A text the person emptied on purpose stays empty after the first run.
+    /// A text the person emptied on purpose stays empty — after the first run and on it (#488):
+    /// `if let stored, !stored.isEmpty` would hand the cleared draft the sample back.
+    /// Mutation: SpeakDraft.initial, `if let stored` -> `if let stored, !stored.isEmpty` -> RED.
     func testAnEmptiedDraftStaysEmpty() {
         XCTAssertEqual(SpeakDraft.initial(stored: "", firstRun: false, language: "en", text: key), "")
+        XCTAssertEqual(SpeakDraft.initial(stored: "", firstRun: true, language: "ru", text: key), "")
     }
 
     /// Mutation: SpeakDraft.initial, ignore the language (always the .en key) -> RED.

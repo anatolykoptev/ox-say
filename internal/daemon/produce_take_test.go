@@ -40,6 +40,7 @@ type fakePorts struct {
 	bg           []bool
 	voice        voiceFacts
 	voiceErr     error
+	defaultVoice string
 	unavailable  string
 	engineID     string
 	normErr      error
@@ -77,7 +78,7 @@ func (f *fakePorts) Turn(context.Context) (func(), error) {
 
 func newFakePorts(t *testing.T) *fakePorts {
 	return &fakePorts{home: t.TempDir(), secs: 2, gapAt: map[int]float64{}, silentAt: map[int]bool{}, heard: map[int]string{},
-		voice: voiceFacts{Name: "nar", RefText: "Привет, как дела у вас сегодня.", SHA: "aa"}, engineID: "eng1"}
+		voice: voiceFacts{Name: "nar", RefText: "Привет, как дела у вас сегодня.", SHA: "aa"}, defaultVoice: "nar", engineID: "eng1"}
 }
 
 func toneClip(secs, gap float64) pcm.Clip {
@@ -154,7 +155,7 @@ func (f *fakePorts) Hear(_ context.Context, _ string) ([]voices.Word, error) {
 }
 
 func (f *fakePorts) Voice(string) (voiceFacts, error) { return f.voice, f.voiceErr }
-func (f *fakePorts) DefaultVoice(string) string       { return "nar" }
+func (f *fakePorts) DefaultVoice(string) string       { return f.defaultVoice }
 func (f *fakePorts) ColdStartSlack() time.Duration    { return f.coldStart }
 func (f *fakePorts) ConfiguredLanguage() string       { return f.lang }
 func (f *fakePorts) Unavailable() string              { return f.unavailable }

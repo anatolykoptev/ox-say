@@ -112,9 +112,16 @@ public final class VoiceLibrarySession {
     private let text: (L10nKey) -> String
     /// Counts every change of what a list read may still show: a read applies only if no change came after it began.
     private var epoch = 0
+    /// Daemon writes (rename, delete) on the wire: a list read that answers while one runs may carry the list from
+    /// before that write landed, even though it took the newer epoch.
+    private var writesInFlight = 0
     private var previewEpoch = 0
     /// Set by the first list read that lands: only then do `entries` say what the daemon holds.
     private var everLoaded = false
+    /// What the daemon is known to hold: the last list a read applied, kept current by the writes that returned. A failed
+    /// write puts its row back from this, never from what the screen showed when it began — an overlapping write on the
+    /// same row may have changed that to its own optimistic value.
+    private var confirmed: [VoiceEntry] = []
 
     public init(ops: VoiceLibraryOps, readPicks: @escaping () -> ReadAloudPicks,
                 writePicks: @escaping (ReadAloudPicks) -> Void, text: @escaping (L10nKey) -> String = { $0.text }) {
@@ -140,12 +147,15 @@ public final class VoiceLibrarySession {
         let mine = epoch
         do {
             let list = try await ops.list()
-            guard mine == epoch else { return }
+            // An answer that arrived while a write was on the wire may predate that write: it is dropped too.
+            guard mine == epoch, writesInFlight == 0 else { return }
             entries = list
+            confirmed = list
             load = .loaded
             everLoaded = true
         } catch {
-            guard mine == epoch else { return }
+            // A failed read mid-write says nothing about reachability: the post-write read decides `load`.
+            guard mine == epoch, writesInFlight == 0 else { return }
             load = .failed(sentence(error))
         }
     }
@@ -153,17 +163,27 @@ public final class VoiceLibrarySession {
     /// Renames to `label` (the id on disk stays). Returns the sentence to show when it did not go through.
     public func rename(id: String, label: String) async -> String? {
         guard let clean = VoiceLabel.clean(label) else { return text(.voicesRenameInvalid) }
-        if entries.first(where: { $0.id == id })?.label == clean { return nil }
+        let before = entries.first(where: { $0.id == id })
+        if before?.label == clean { return nil }
         // The new label shows at once, and a read that began earlier is stale, even if the next read fails.
         epoch += 1
         entries = entries.map { $0.id == id ? VoiceEntry(id: $0.id, label: clean, kind: $0.kind, created: $0.created, engine: $0.engine) : $0 }
         do {
+            writesInFlight += 1
+            defer { writesInFlight -= 1 }
             try await ops.setLabel(id, clean)
         } catch {
-            // The PATCH may have landed despite the lost answer: one re-read shows what the daemon stored.
+            // The row goes back to what the daemon is known to hold (`confirmed`), if it is still on screen. The PATCH
+            // may have landed despite the lost answer: one re-read shows what the daemon stored, if it can be read at all.
+            if let truth = confirmed.first(where: { $0.id == id }) ?? before {
+                entries = entries.map { $0.id == id ? truth : $0 }
+            }
             await reload()
             return sentence(error)
         }
+        // The PATCH returned: a read that began while it was on the wire is stale even now.
+        epoch += 1
+        confirmed = confirmed.map { $0.id == id ? VoiceEntry(id: $0.id, label: clean, kind: $0.kind, created: $0.created, engine: $0.engine) : $0 }
         await reload()
         return nil
     }
@@ -173,17 +193,28 @@ public final class VoiceLibrarySession {
     public func delete(id: String) async -> String? {
         // Gone from the list at once, and a read that began earlier is stale, even if the next read fails.
         epoch += 1
+        let removed = entries.enumerated().first { $0.element.id == id }
         entries.removeAll { $0.id == id }
         if playingID == id { stopPreview() }
         do {
+            writesInFlight += 1
+            defer { writesInFlight -= 1 }
             try await ops.delete(id)
         } catch StudioError.refused(let status, _) where status == 404 {
             // Already gone: the cleanup stands.
+            confirmed.removeAll { $0.id == id }
         } catch {
-            // Refused: put back what the daemon still holds.
+            // Refused: put the voice back as the daemon holds it (`confirmed`), where it was. A re-read may fail and
+            // must not hide a voice the daemon kept.
+            if let truth = confirmed.first(where: { $0.id == id }) ?? removed?.element, !entries.contains(where: { $0.id == id }) {
+                entries.insert(truth, at: min(removed?.offset ?? entries.count, entries.count))
+            }
             await reload()
             return sentence(error)
         }
+        // The delete returned: a read that began while it was on the wire is stale even now.
+        epoch += 1
+        confirmed.removeAll { $0.id == id }
         let before = readPicks()
         let cleaned = VoicePicksCleanup.afterDelete(id: id, russian: before.russian, english: before.english)
         let after = ReadAloudPicks(russian: cleaned.russian, english: cleaned.english)

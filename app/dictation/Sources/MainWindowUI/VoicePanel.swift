@@ -112,12 +112,14 @@ struct VoicePanel: View {
     private func pauseRow(_ values: SpeakValues, scope: PanelScope?, context: Context, off: Bool) -> some View {
         let shared = VoicePanelModel.sharedValue(targets(values, scope).map(\.pauseAfter))
         return VStack(alignment: .leading, spacing: 4) {
-            PanelSlider(title: L10nKey.speakPanelPause.text, range: VoicePanelModel.pauseRange, step: 0.05, initial: shared ?? 0, mixed: shared == nil && scope != nil,
+            // The slider's position is the square root of the seconds (`VoicePanelModel.pauseSlider`/`pauseFromSlider`):
+            // the first part of its track covers the short pauses, where 0.05 steps were too coarse to pick from.
+            PanelSlider(title: L10nKey.speakPanelPause.text, range: VoicePanelModel.pauseRange, step: 0.01, initial: VoicePanelModel.pauseSlider(shared ?? 0), mixed: shared == nil && scope != nil,
                         valueText: {
-                            let v = VoicePanelModel.pauseValue($0)
+                            let v = VoicePanelModel.pauseValue(VoicePanelModel.pauseFromSlider($0))
                             return v == 0 ? L10nKey.speakPanelPauseNone.text : L10nKey.speakPanelPauseValue.text(v.formatted(.number.precision(.fractionLength(2)).locale(L10nBundle.locale)))
                         },
-                        commit: { model.actions.speakPause($0) })
+                        commit: { model.actions.speakPause(VoicePanelModel.pauseFromSlider($0)) })
                 .id("pause-\(String(describing: scope))-\(shared ?? -1)-\(values.panelEpoch)")
                 .disabled(off)
             if !off { caption(context.caption("pause")) }

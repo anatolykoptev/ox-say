@@ -36,7 +36,9 @@ final class VoiceDesignWiringTests: XCTestCase {
         XCTAssertEqual(text.components(separatedBy: "voiceEntries()").count - 1, 1, "the library is read in one place: the session's ops")
     }
 
-    /// The form is told which names exist, from the session's list.
+    /// The form is told which names exist, from the session's list — at Submit and again at Keep: the set seen at
+    /// Submit can be hours old, so the id is derived from a fresh read (issue #433).
+    /// Mutation: VoiceDesigner.keep, `libraryNames()` -> `[]` or a stored set -> RED.
     func testTheFormIsToldWhichNamesExist() throws {
         let text = try source("OxSayDictation/VoiceSource.swift")
         XCTAssertTrue(text.contains("designer.libraryNames = "))
@@ -44,6 +46,7 @@ final class VoiceDesignWiringTests: XCTestCase {
         let designer = try source("OxSayDictation/VoiceDesigner.swift")
         XCTAssertTrue(taken.contains("session.entries"))
         XCTAssertTrue(designer.contains("flow.submit(taken: libraryNames(), recordingRunning"))
+        XCTAssertTrue(designer.contains("flow.keep(taken: libraryNames())"), "the names are read again at Keep")
     }
 
     /// The effects the flow returns are carried out as they come: the daemon's design and save, the playing, and a
@@ -89,6 +92,10 @@ final class VoiceDesignWiringTests: XCTestCase {
         let player = try source("OxSayDictation/AudioPlayer.swift")
         let play = try body(player, of: "func play(wav: Data) throws {")
         XCTAssertTrue(play.contains("serial += 1"), "every clip the player starts is counted")
+        let bumped = try XCTUnwrap(play.range(of: "serial += 1"))
+        let started = try XCTUnwrap(play.range(of: "next.play()"))
+        XCTAssertTrue(started.lowerBound < bumped.lowerBound,
+                      "a start that throws is not counted: the serial the caller reads must name a sounding clip")
     }
 
     /// A saved voice is work until the label and the list are done: the designer ends the flow only after `saved`.
@@ -159,5 +166,16 @@ final class VoiceDesignWiringTests: XCTestCase {
         let window = try source("OxSayDictation/MainWindowSource.swift")
         let actions = try body(window, of: "private func actions() -> MainWindowActions {")
         XCTAssertTrue(actions.contains("a.voiceDesign = "))
+    }
+
+    /// The replace question names the voice that would be overwritten — the id the save collided on — not the typed
+    /// label, which may name nothing on disk (issue #433). And the typed-text handlers use the current, non-deprecated
+    /// `.onChange` form.
+    /// Mutation: VoiceDesignSheet, `replaceQuestion($0)` -> `replaceQuestion(flow.label.isEmpty ? $0 : flow.label)` -> RED.
+    func testTheReplaceQuestionNamesTheVoiceThatWouldBeOverwritten() throws {
+        let sheet = try source("MainWindowUI/VoiceDesignSheet.swift")
+        XCTAssertTrue(sheet.contains("flow.confirmReplace.map { replaceQuestion($0) }"))
+        XCTAssertFalse(sheet.contains("flow.label.isEmpty ? $0 : flow.label"))
+        XCTAssertFalse(sheet.contains(") { _ in pushText() }"), "the single-parameter .onChange is deprecated")
     }
 }

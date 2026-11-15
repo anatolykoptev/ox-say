@@ -1,8 +1,9 @@
 import XCTest
 @testable import DictationCore
 
-/// The daemon's English sentences must not reach the page: the 409 carries a code (`running_id`), the 400 for a missing
-/// voice carries none, so its opening words are matched at the client edge and nowhere else.
+/// The daemon's English sentences must not reach the page: the 409 carries a code (`running_id`), and the 400 for a
+/// missing voice carries `no_saved_voice`; an older daemon's answer without the code is still matched by its opening
+/// words at the client edge and nowhere else.
 final class SpeakStudioErrorTests: XCTestCase {
     private func body(_ json: String) -> Data { Data(json.utf8) }
 
@@ -17,9 +18,17 @@ final class SpeakStudioErrorTests: XCTestCase {
                        .refused(status: 409, message: "this voiceover is still cancelling, try again in a moment"))
     }
 
+    /// The code is what counts (#499): any words next to `no_saved_voice` still map; the opening-words match stays for a
+    /// daemon older than the code.
+    /// Mutation: StudioClient.refusal, drop the `code == "no_saved_voice"` check -> the coded answer falls through to
+    /// .refused -> RED.
     func testAMissingSavedVoiceIsRecognisedDespiteThePlainWordsFilter() {
-        let raw = body(#"{"error":{"message":"produce needs a saved voice: design one with voice_design or add one with voice_add","type":"Bad Request"}}"#)
+        let raw = body(#"{"error":{"message":"produce needs a saved voice: design one with voice_design or add one with voice_add","type":"no_saved_voice","code":"no_saved_voice"}}"#)
         XCTAssertEqual(StudioClient.refusal(status: 400, body: raw), .noSavedVoice)
+        // The same code with other words still maps.
+        XCTAssertEqual(StudioClient.refusal(status: 400, body: body(#"{"error":{"message":"x","code":"no_saved_voice"}}"#)), .noSavedVoice)
+        // A daemon older than the code still answers its own words: the text match stays.
+        XCTAssertEqual(StudioClient.refusal(status: 400, body: body(#"{"error":{"message":"produce needs a saved voice: design one","type":"Bad Request"}}"#)), .noSavedVoice)
         XCTAssertEqual(StudioClient.refusal(status: 400, body: body(#"{"error":{"message":"the script must have 1 characters","type":"Bad Request"}}"#)),
                        .refused(status: 400, message: "the script must have 1 characters"))
         XCTAssertEqual(StudioClient.refusal(status: 500, body: raw), .refused(status: 500, message: ""),

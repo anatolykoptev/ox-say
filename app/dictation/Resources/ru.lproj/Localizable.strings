@@ -800,7 +800,7 @@
 "speak.panel.quality" = "Чистота звука";
 "speak.panel.quality_draft" = "Быстрее";
 "speak.panel.quality_final" = "Чище";
-"speak.panel.quality_hint" = "Быстрее готовится или чище звучит. Подействует на следующую озвучку.";
+"speak.panel.quality_hint" = "Сделается быстрее или зазвучит чище. Подействует на следующую озвучку.";
 "speak.panel.style" = "Манера записи";
 "speak.panel.style_voice_only" = "Только голос";
 "speak.panel.style_copy" = "Повторить интонацию записи";

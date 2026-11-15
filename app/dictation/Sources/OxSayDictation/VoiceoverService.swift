@@ -10,7 +10,6 @@ final class VoiceoverService {
     private var follower: VoiceoverFollower!
     private var changeObservers: [() -> Void] = []
     private var finishObservers: [(ProduceJob) -> Void] = []
-    private var windowStarted: Set<String> = []
     /// What the window and the app show now, read when a voiceover ends: one the person is looking at needs no notification.
     private let windowShown: () -> ShownWindow
 
@@ -48,15 +47,11 @@ final class VoiceoverService {
     /// A voiceover the app follows has not reached a terminal state: the version handshake waits for it.
     var following: Bool { follower.following }
 
-    /// Whether the project was started on the Озвучка page (the page shows its end itself).
-    func startedOnPage(_ id: String) -> Bool { windowStarted.contains(id) }
-
     /// Starts a voiceover and follows it. The daemon runs one at a time: a second start throws `voiceoverRunning`.
     @discardableResult
     func start(script: String, title: String, voice: String?, format: ProduceFormat,
-               options: VoiceoverOptions = VoiceoverOptions(), fromWindow: Bool = false) async throws -> ProduceJob {
+               options: VoiceoverOptions = VoiceoverOptions()) async throws -> ProduceJob {
         let started = try await client.startVoiceover(script: script, title: title, voice: voice, format: format, options: options)
-        if fromWindow { windowStarted.insert(started.id) }
         follower.follow(started)
         return started
     }
@@ -73,7 +68,6 @@ final class VoiceoverService {
         } catch StudioError.refused(status: 404, _) {
             throw JobWait.Failure.gone
         }
-        windowStarted.insert(id)
         follower.follow(job)
         let ended = try await JobWait.untilTerminal(id: id, poll: { [client] in try await client.voiceover(id: $0) },
                                                     sleep: { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) })
@@ -87,7 +81,6 @@ final class VoiceoverService {
     /// A row action changed a project's course (stopped, resumed, continued): follow it from the state the daemon now reports.
     func refollow(id: String) async {
         guard let latest = try? await client.voiceover(id: id) else { return }
-        windowStarted.insert(id)
         follower.follow(latest)
     }
 

@@ -75,6 +75,15 @@ func (e *busyError) Error() string {
 	return fmt.Sprintf("another voiceover is being produced (%s): wait for it or cancel it", e.id)
 }
 
+// noSavedVoiceCode is the stable code of a produce request that can name no voice: the caller must save or
+// design one first (HTTP 400). The app keys on it (StudioClient.refusal), never on the sentence.
+const noSavedVoiceCode = "no_saved_voice"
+
+// noSavedVoiceError is a requestError the app can name with its own sentence: it carries the code on the wire.
+type noSavedVoiceError struct{ msg string }
+
+func (e *noSavedVoiceError) Error() string { return e.msg }
+
 // preset is a named set of defaults (D17; chunk sizes from F1-0).
 type preset struct {
 	opts  vscript.Options

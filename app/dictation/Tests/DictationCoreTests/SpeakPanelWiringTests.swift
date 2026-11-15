@@ -32,11 +32,24 @@ final class SpeakPanelWiringTests: XCTestCase {
         XCTAssertTrue(change.contains("VoicePanelModel.loudnessAppliesNow(status: job.status)"))
         XCTAssertTrue(change.contains("voiceover.followAndWait(id: id)"), "the next read waits for the assemble run")
         XCTAssertTrue(change.contains("guard accepted else { return }"), "stored and shown only once accepted")
+        // #507.2: a level picked on another project while this change was in flight stays; the restore only runs while the
+        // panel still shows the target that was accepted.
+        XCTAssertTrue(change.contains("guard self?.model.data.speak.panel.loudness == target else { return }"), "a newer pick wins over the restore")
         XCTAssertTrue(change.contains("self?.model.data.speak.panel.loudness = previous"), "put back if the daemon fails it")
         for recreate in ["voiceover.start", "startVoiceover", "generateStudio", "SpeakStudio.start"] {
             XCTAssertFalse(change.contains(recreate), "a loudness change must not recreate the project (\(recreate))")
         }
         XCTAssertTrue(change.contains("savePanel()"), "the choice is kept for the next voicing")
+    }
+
+    /// #507.1: an accepted change that then fails on the daemon runs the caller's `onFailure` (the loudness picker puts the
+    /// level back through it): dropping the call would keep the suite green and leave the picker on a level never applied.
+    /// Mutation: SpeakSource.phraseOperation, `onFailure?()` deleted -> RED.
+    func testAFailedAcceptedChangeRunsOnFailure() throws {
+        let speak = try source("OxSayDictation/SpeakSource.swift")
+        let op = try body(speak, of: "private func phraseOperation(")
+        XCTAssertTrue(op.contains("} catch {"), "the failure path this pins")
+        XCTAssertTrue(op.contains("onFailure?()"), "an accepted change that fails on the daemon runs onFailure")
     }
 
     /// Pace, pause and mood for the chosen phrase or the whole text are one batch of delivery entries built by the pure
@@ -166,6 +179,17 @@ final class SpeakPanelWiringTests: XCTestCase {
         XCTAssertTrue(panel.contains("VoicePanelModel.scope(allText: values.panelAllText, phrase: values.panelPhrase, chunks: values.phraseChunks)"))
     }
 
+    /// #507.5: the pause slider is not linear — position maps to seconds through `pauseFromSlider` and back through
+    /// `pauseSlider`, so the short pauses take the first part of its track.
+    /// Mutation: VoicePanel.pauseRow, `VoicePanelModel.pauseFromSlider($0)` -> `$0` -> RED.
+    func testThePauseSliderTradesPositionForSeconds() throws {
+        let panel = try source("MainWindowUI/VoicePanel.swift")
+        let row = try body(panel, of: "private func pauseRow(")
+        XCTAssertTrue(row.contains("initial: VoicePanelModel.pauseSlider(shared ?? 0)"), "a stored pause opens at its position")
+        XCTAssertTrue(row.contains("VoicePanelModel.pauseValue(VoicePanelModel.pauseFromSlider($0))"), "the readout is the gridded seconds")
+        XCTAssertTrue(row.contains("model.actions.speakPause(VoicePanelModel.pauseFromSlider($0))"), "seconds are sent, not the position")
+    }
+
     /// A click on a phrase row chooses it for pace and pause (Advanced only), and choosing another project forgets it.
     /// Mutation: PhraseList, `model.data.speak.panelPhrase = row.index` removed -> RED; SpeakSource.selectProject, `panelPhrase = nil` removed -> RED.
     func testAPhraseRowIsChosenByAClickAndForgottenWithItsProject() throws {
@@ -182,7 +206,8 @@ final class SpeakPanelWiringTests: XCTestCase {
     /// Mutation: SpeakPage, `model.speakPanelShown.wrappedValue = true` in the line -> `= false` -> RED.
     func testTheOwnSettingsLineOpensThePanel() throws {
         let page = try source("MainWindowUI/SpeakPage.swift")
-        XCTAssertTrue(page.contains("VoicePanelModel.ownSettingsOn(panel: model.data.speak.panel, engine: model.data.speak.engine, advanced: model.advanced)"))
+        XCTAssertTrue(page.contains("VoicePanelModel.ownSettingsOn(panel: model.data.speak.panel, engine: model.data.speak.engine, advanced: model.advanced, reel: model.data.speak.reel)"),
+                      "a reel's preset wins loudness and takes: they do not count")
         XCTAssertTrue(page.contains("Button(L10nKey.speakPanelOwnSettings.text) { model.speakPanelShown.wrappedValue = true }"))
         let model = try source("MainWindowUI/MainWindowModel.swift")
         XCTAssertTrue(model.contains("didSet { data.speak.panelShown = VoicePanelModel.panelShown(data.speak.panelShown, advanced: advanced) }"))

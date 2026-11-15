@@ -99,6 +99,7 @@ func decodeStrict(r *http.Request, v any) error {
 func produceStatusCode(err error) int {
 	var be *busyError
 	var ce *cancellingError
+	var nve *noSavedVoiceError
 	switch {
 	case errors.As(err, &be), errors.As(err, &ce), errors.Is(err, errNotRunning):
 		return http.StatusConflict
@@ -106,6 +107,8 @@ func produceStatusCode(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, errProducerStopped):
 		return http.StatusServiceUnavailable
+	case errors.As(err, &nve):
+		return http.StatusBadRequest
 	}
 	return synthStatus(err)
 }
@@ -127,6 +130,11 @@ func (d *Daemon) writeProduceErr(w http.ResponseWriter, err error) {
 	var ce *conflictError
 	if errors.As(err, &ce) && ce.code != "" {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"message": d.prod.public(err), "type": "Conflict", "code": ce.code}})
+		return
+	}
+	var nve *noSavedVoiceError
+	if errors.As(err, &nve) {
+		writeJSON(w, code, map[string]any{"error": map[string]any{"message": d.prod.public(err), "type": noSavedVoiceCode, "code": noSavedVoiceCode}})
 		return
 	}
 	writeErr(w, code, d.prod.public(err))
