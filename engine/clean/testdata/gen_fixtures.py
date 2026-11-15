@@ -70,3 +70,24 @@ assert spec.shape == (961, STFT_FRAMES, 2), spec.shape
 stft_clip.tofile(here / "stft_clip.f32")
 spec.permute(1, 0, 2).contiguous().numpy().astype(np.float32).tofile(here / "stft_ref.f32")  # [50, 961, 2]
 print(f"torch {torch.__version__} torchaudio {torchaudio.__version__}")
+# #462: the second oracle clip. 9217 samples (20 frames and one left-over sample: the ragged tail snip-edges drops), a
+# 20.5 kHz tone (near Nyquist, high mel bins) over a DC offset of 0.2, plus a 0.01 noise floor. `clip2.f32` holds the whole
+# clip; its first 1920 samples are the single-frame case. Same oracle settings as above, dither 0.
+rng2 = np.random.default_rng(462)
+n2 = 9217
+t2 = np.arange(n2) / 48000.0
+x2 = 0.2 + 0.25 * np.sin(2 * np.pi * 20500 * t2) + 0.01 * rng2.standard_normal(n2)
+x2 = np.clip(x2, -1, 1).astype(np.float32)
+
+
+def oracle_features(clip):
+    fbk = torchaudio.compliance.kaldi.fbank(torch.from_numpy(clip * 32768.0).unsqueeze(0), dither=0.0, frame_length=40.0,
+                                            frame_shift=8.0, num_mel_bins=60, sample_frequency=48000, window_type="hamming")
+    e1 = torchaudio.functional.compute_deltas(fbk.T).T
+    e2 = torchaudio.functional.compute_deltas(e1.T).T
+    return torch.cat([fbk, e1, e2], 1).numpy().astype(np.float32)
+
+
+x2.tofile(here / "clip2.f32")
+oracle_features(x2).tofile(here / "feat2.f32")  # [20, 180]
+oracle_features(x2[:1920]).tofile(here / "feat2_single.f32")  # [1, 180]
