@@ -104,6 +104,22 @@ final class VoiceFileWiringTests: XCTestCase {
         XCTAssertTrue(closed.contains("voiceSource.quietFile()"), "a closed window drops a probe still in flight")
     }
 
+    /// PIN (#435): a meeting recording that starts drops a probe still measuring, as the design sheet's playback is
+    /// dropped — else its answer opens the file sheet over the recording. A closed window also clears an open sheet,
+    /// unless its add is in flight (`mayClose`).
+    /// Mutation: MainWindowSource.recordingChanged, `voiceSource.quietFile()` deleted -> RED;
+    /// MainWindowSource.windowClosed, `voiceSource.dropFileSheet()` deleted -> RED.
+    func testARecordingStartDropsTheProbeAndAClosedWindowTheSheet() throws {
+        let window = try source("OxSayDictation/MainWindowSource.swift")
+        let rec = try body(window, of: "func recordingChanged() {")
+        XCTAssertTrue(rec.contains("voiceSource.quietFile()"), "a recording start drops a probe in flight")
+        let closed = try body(window, of: "func windowClosed() {")
+        XCTAssertTrue(closed.contains("voiceSource.dropFileSheet()"), "a closed window clears the sheet")
+        let drop = try body(try source("OxSayDictation/VoiceSource.swift"), of: "func dropFileSheet() {")
+        XCTAssertTrue(drop.contains("guard fileAdd?.mayClose == true"), "an add in flight keeps its sheet")
+        XCTAssertTrue(drop.contains("fileAdd = nil"))
+    }
+
     /// PIN: the actions reach the glue and the page: one `voiceFile` closure, the picker's audio+movie filter, the
     /// sheet on `values.file`, the picked URL handed over, «Взять из файла…» on the page.
     /// Mutation: VoicesPage, `.fileImporter(allowedContentTypes: [.audio, .movie])` narrowed to `[.audio]` -> RED;
