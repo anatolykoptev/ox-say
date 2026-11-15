@@ -451,6 +451,9 @@ void apply_plan(result & r, const boost_plan & p) {
         r.text_raw += (r.text_raw.empty() ? "" : " ") + sg.text;
     }
     for (segment & sg : r.segments) sg.text = p.sp->map(sg.text);
+    // "words" is one decoded word per entry, so only a single-word spoken form can match there; a multi-word spoken
+    // form ("Окс Сей") is mapped in the segment and text above but its words keep the decoder's spelling. The app
+    // reads "text"; the per-word timings stay exactly what the decoder emitted.
     for (word & w : r.words) w.w = p.sp->map(w.w);
 }
 

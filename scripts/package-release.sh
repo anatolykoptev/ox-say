@@ -118,6 +118,17 @@ fi
 mkdir -p "$stage/licenses/go/go"
 cp "$golicense" "$stage/licenses/go/go/LICENSE"
 
+# The word lists embedded in the daemon (internal/wordlists/data, go:embed) carry their own licences, which
+# NOTICE points at: ship them next to the Go modules' ones. A missing file fails the package.
+mkdir -p "$stage/licenses/wordlists"
+for f in LICENSE.ru LICENSE.en README.md; do
+    if [ ! -f "$root/internal/wordlists/data/$f" ]; then
+        echo "internal/wordlists/data/$f is missing — the embedded word lists need their licences in the archive" >&2
+        exit 1
+    fi
+    cp "$root/internal/wordlists/data/$f" "$stage/licenses/wordlists/$f"
+done
+
 # Modes. A file the owner cannot write stops the installer when it meets the same file from an earlier install
 # (the 0400 FluidAudio licences, and the 0444 Go licences copied out of the read-only module cache). Licences ship
 # 0644; every other file at least owner-writable. release.yml asserts it on the built archive.

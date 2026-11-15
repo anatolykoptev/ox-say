@@ -258,6 +258,10 @@ static void t_parse_terms() {
     CHECK(t.size() == 200, "capped at 200");
     CHECK(err.find("200") != std::string::npos, "the cap is reported");
 
+    // a written form that starts with '#' (a hashtag, "#1") is a term; only "# ..." and a lone "#" are comments
+    t = parse_terms("#hashtag\n# a comment\n#\n#1 pick\n", err);
+    CHECK(t.size() == 2 && t[0].text == "#hashtag" && t[1].text == "#1 pick", "#hashtag and #1 pick are terms, '# a comment' and '#' are not");
+
     t = parse_terms("", err);
     CHECK(t.empty() && err.empty(), "empty input, no error");
 }
