@@ -158,7 +158,8 @@ public final class VoiceLibrarySession {
     /// Renames to `label` (the id on disk stays). Returns the sentence to show when it did not go through.
     public func rename(id: String, label: String) async -> String? {
         guard let clean = VoiceLabel.clean(label) else { return text(.voicesRenameInvalid) }
-        if entries.first(where: { $0.id == id })?.label == clean { return nil }
+        let before = entries.first(where: { $0.id == id })
+        if before?.label == clean { return nil }
         // The new label shows at once, and a read that began earlier is stale, even if the next read fails.
         epoch += 1
         entries = entries.map { $0.id == id ? VoiceEntry(id: $0.id, label: clean, kind: $0.kind, created: $0.created, engine: $0.engine) : $0 }
@@ -167,7 +168,10 @@ public final class VoiceLibrarySession {
             defer { writesInFlight -= 1 }
             try await ops.setLabel(id, clean)
         } catch {
-            // The PATCH may have landed despite the lost answer: one re-read shows what the daemon stored.
+            // Put the old label back by this write's own inverse — not a snapshot, so an overlapping write's change
+            // stays — and only while the row still shows the label this write put there. The PATCH may have landed
+            // despite the lost answer: one re-read shows what the daemon stored, if it can be read at all.
+            if let before { entries = entries.map { $0.id == id && $0.label == clean ? before : $0 } }
             await reload()
             return sentence(error)
         }
@@ -182,7 +186,7 @@ public final class VoiceLibrarySession {
     public func delete(id: String) async -> String? {
         // Gone from the list at once, and a read that began earlier is stale, even if the next read fails.
         epoch += 1
-        let held = entries
+        let removed = entries.enumerated().first { $0.element.id == id }
         entries.removeAll { $0.id == id }
         if playingID == id { stopPreview() }
         do {
@@ -192,8 +196,11 @@ public final class VoiceLibrarySession {
         } catch StudioError.refused(let status, _) where status == 404 {
             // Already gone: the cleanup stands.
         } catch {
-            // Refused: put back what was on screen — a re-read may fail and must not hide a voice the daemon kept.
-            entries = held
+            // Refused: put the voice back where it was — by this write's own inverse, not a snapshot, so an
+            // overlapping write's change stays. A re-read may fail and must not hide a voice the daemon kept.
+            if let removed, !entries.contains(where: { $0.id == id }) {
+                entries.insert(removed.element, at: min(removed.offset, entries.count))
+            }
             await reload()
             return sentence(error)
         }

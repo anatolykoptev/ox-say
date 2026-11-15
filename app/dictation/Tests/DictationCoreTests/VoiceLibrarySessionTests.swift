@@ -451,6 +451,45 @@ final class VoiceLibrarySessionTests: XCTestCase {
         XCTAssertEqual(s.entries.map(\.label), ["New", "b"], "the mid-write read's stale list must not undo the label")
     }
 
+    /// Review of #566: a rename and a delete overlap and both fail while the library cannot be re-read. Each catch
+    /// path's reload is dropped or fails, so what is on screen must be put back by the failures themselves — the
+    /// label the rename showed and the voice the delete hid — in either order of failure, not left to a reload.
+    /// Mutation: VoiceLibrarySession.rename, the label restore on the failure path gone -> RED (rename fails first);
+    /// VoiceLibrarySession.delete, the reinsert of the removed entry gone -> RED.
+    func testOverlappingFailedWritesPutBackWhatTheyChangedWithoutAReload() async {
+        for renameFailsFirst in [true, false] {
+            let renameCall = AsyncGate<Void>()
+            let deleteCall = AsyncGate<Void>()
+            var calls = 0
+            let s = VoiceLibrarySession(
+                ops: VoiceLibraryOps(
+                    list: { [self] in
+                        calls += 1
+                        guard calls == 1 else { throw StudioError.daemonUnreachable }
+                        return [entry("a", "Old"), entry("b")]
+                    },
+                    setLabel: { _, _ in await renameCall.wait(); throw StudioError.daemonUnreachable },
+                    delete: { _ in await deleteCall.wait(); throw StudioError.daemonUnreachable },
+                    speak: { _, _, _ in Data() }),
+                readPicks: { ReadAloudPicks(russian: nil, english: nil) }, writePicks: { _ in },
+                text: ShippedStrings.localizer("en"))
+            await s.reload()
+            let renaming = Task { await s.rename(id: "a", label: "New") }
+            await renameCall.waiting()
+            let deleting = Task { await s.delete(id: "b") }
+            await deleteCall.waiting()
+            XCTAssertEqual(s.entries.map(\.label), ["New"], "both changes show while the writes are on the wire")
+            if renameFailsFirst {
+                renameCall.open(()); _ = await renaming.value
+                deleteCall.open(()); _ = await deleting.value
+            } else {
+                deleteCall.open(()); _ = await deleting.value
+                renameCall.open(()); _ = await renaming.value
+            }
+            XCTAssertEqual(s.entries.map(\.label), ["Old", "b"], "renameFailsFirst=\(renameFailsFirst): the daemon kept both")
+        }
+    }
+
     /// Issue #431: a refused delete puts back the list that was on screen, not whatever a re-read happens to get —
     /// here the re-read fails, and the voice the daemon still holds must stay visible.
     /// Mutation: VoiceLibrarySession.delete, `entries = held` on the refused path gone -> RED.
