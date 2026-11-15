@@ -66,14 +66,15 @@ public struct VoiceEntry: Equatable, Identifiable {
     }
 
     /// `{"voices":[…]}`. With no voices the daemon writes `{"voices":null}` (a nil
-    /// Go slice), and an older or terse one may omit the key: both are an empty
-    /// library, `[]`. Any other type is nil, a read that failed. An entry without a label shows its id (a daemon older
+    /// Go slice): an empty library, `[]`. handleListVoices writes the key on every
+    /// answer, so a missing key, or any other type, is not this route's answer —
+    /// nil, a read that failed. An entry without a label shows its id (a daemon older
     /// than labels writes none); one without a source or a designed_from is
     /// `.other`. Entries that do not parse are skipped, as in MeetingInfo.
     public static func decodeList(_ data: Data) -> [VoiceEntry]? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         switch obj["voices"] {
-        case nil, is NSNull: return []
+        case is NSNull: return []
         case let list as [[String: Any]]: return list.compactMap(decode)
         default: return nil
         }

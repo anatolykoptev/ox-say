@@ -72,13 +72,24 @@ final class VoiceLibraryTests: XCTestCase {
         XCTAssertNil(VoiceEntry.decodeList(Data("not json".utf8)))
     }
 
+    /// handleListVoices (internal/daemon/http.go) writes `voices` on every
+    /// answer, so a body without the key is not this route's answer at all — a
+    /// truncated body or a proxy's error page must be a failed read, never an
+    /// empty library (#428). The page shows "unreachable", not "no voices".
+    /// Mutation F1: VoiceLibrary.decodeList, `case is NSNull` -> `case nil, is NSNull` -> RED.
+    func testAnAbsentVoicesKeyIsAFailedRead() {
+        for body in ["{}", #"{"other":[]}"#, #"{"voices":{"unexpected":1}}"#] {
+            XCTAssertNil(VoiceEntry.decodeList(Data(body.utf8)), body)
+        }
+        XCTAssertEqual(VoicesPageState.of(load: .failed("x"), hasVoices: false), .unreachable("x"))
+    }
+
     /// An empty library is not a failed read. The daemon's List() returns a nil
     /// slice with no voices, which handleListVoices (internal/daemon/http.go)
-    /// writes as `{"voices":null}`; a daemon that omits the key writes `{}`.
-    /// Both, and `[]`, are an empty list that reaches the empty state.
-    /// Mutation F1: VoiceLibrary.decodeList, `?? []` on the voices lookup removed -> RED.
+    /// writes as `{"voices":null}`; `[]` is the same. Both reach the empty state.
+    /// Mutation F1: VoiceLibrary.decodeList, `is NSNull` and `[[String: Any]]` branches swapped -> RED.
     func testAnEmptyLibraryDecodesToEmptyAndReachesTheEmptyState() {
-        for body in [#"{"voices":null}"#, #"{"voices":[]}"#, "{}"] {
+        for body in [#"{"voices":null}"#, #"{"voices":[]}"#] {
             let list = VoiceEntry.decodeList(Data(body.utf8))
             XCTAssertEqual(list, [], body)
             XCTAssertEqual(VoicesPageState.of(load: .loaded, hasVoices: !(list ?? [VoiceEntry(id: "x", label: "x", kind: .other)]).isEmpty),
