@@ -60,8 +60,9 @@ func load(aff, dicGz []byte) (*gospell.GoSpell, error) {
 // Common reports whether every word of s (split on spaces) is an ordinary word, in any inflection and either
 // case. A multi-word form counts only when all of its words do: «окс сей» is not, "Hugging Face" is. The script
 // picks the language: Cyrillic letters -> Russian, Latin letters -> English; a form of mixed scripts, with a digit
-// or with no letter is never ordinary. Names are words too: the dictionaries list «Клод» and "Claude" with a
-// capital, and a lower-case form is checked against both spellings.
+// or with no letter is never ordinary. In Russian a name is a word too («Клод» is listed with a capital and a lower-case form is checked against
+// both spellings: «Клод Моне» → "Claude" was a measured false insertion); in English a proper noun listed only with
+// a capital ("Devin", "Claude") is a name, not an ordinary word.
 func (c *Checker) Common(s string) bool {
 	ws := strings.Fields(s)
 	if len(ws) == 0 {
@@ -120,7 +121,9 @@ func (c *Checker) word(w string) bool {
 		if c.en == nil {
 			return false
 		}
-		return c.en.Spell(w) || c.en.Spell(title(w))
+		// lower-case spelling only: an English proper noun the dictionary lists with a capital ("Devin", "Claude")
+		// is a name, not an ordinary word, and stays boostable
+		return c.en.Spell(w)
 	}
 	return false
 }

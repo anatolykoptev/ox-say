@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/anatolykoptev/ox-say/internal/config"
+	"github.com/anatolykoptev/ox-say/internal/glossary"
 	"github.com/anatolykoptev/ox-say/internal/testutil"
 )
 
@@ -26,8 +28,7 @@ func boostDaemon(t *testing.T, pairs map[string]string) (*Daemon, string) {
 	for heard, meant := range pairs {
 		approvedPair(t, d, heard, meant)
 	}
-	p, gen := d.glossaryPairsGen()
-	d.deriveBoost(p, gen)
+	d.refreshBoost()
 	return d, log
 }
 
@@ -156,8 +157,7 @@ func TestBoostFollowsGlossaryEdits(t *testing.T) {
 	}
 	approvedPair(t, d, "дэвин", "Devin")
 	d.invalidateGlossary()
-	p, gen := d.glossaryPairsGen()
-	d.deriveBoost(p, gen)
+	d.refreshBoost()
 	if _, err := d.Transcribe(context.Background(), TranscribeInput{AudioPath: src}); err != nil {
 		t.Fatal(err)
 	}
@@ -219,4 +219,64 @@ func TestSessionAndHeaderCarryTheSameList(t *testing.T) {
 	if strings.Join(fromBody, "|") != strings.Join(fromHeader, "|") {
 		t.Fatalf("session body has %d terms, header %d: the lists differ", len(fromBody), len(fromHeader))
 	}
+}
+
+// A sighting of an existing pair rewrites glossary.json (Seen, Sightings) but changes no meant/heard form: the list
+// is not derived again, so the dictionary is not reloaded mid-call for nothing.
+// Mutation: boost.go sttBoost, key the list on the pair generation (glGen) -> RED.
+func TestSightingDoesNotRederiveTheList(t *testing.T) {
+	d, _ := boostDaemon(t, map[string]string{"оксей": "OxSay"})
+	before := d.tbDerives.Load()
+	if _, err := d.Glossary.Add("оксей", "OxSay", "я читал про оксей вчера"); err != nil {
+		t.Fatal(err)
+	}
+	d.invalidateGlossary()
+	for i := 0; i < 3; i++ {
+		d.sttBoost()
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := d.tbDerives.Load(); n != before {
+		t.Fatalf("derivations after a sighting = %d, want %d (unchanged)", n, before)
+	}
+}
+
+// A derivation judges only the forms it has not judged before: filing one more pair does not load a dictionary for
+// the forms already in the memo.
+// Mutation: boost.go boostTermsFor, ignore the verdict memo -> RED.
+func TestVerdictMemoSparesTheDictionary(t *testing.T) {
+	d, _ := boostDaemon(t, map[string]string{"оксей": "OxSay"})
+	before := d.tbChecks.Load()
+	approvedPair(t, d, "дэвин", "Devin")
+	d.invalidateGlossary()
+	d.refreshBoost()
+	if n := d.tbChecks.Load() - before; n != 2 {
+		t.Fatalf("forms judged for one new pair = %d, want 2 (its meant and its heard form)", n)
+	}
+}
+
+// The first dictation after a start is boosted: the daemon derives the list once at start, not on the first request.
+// Mutation: glossary_http.go initGlossary, drop the d.sttBoost() kick -> RED.
+func TestListIsDerivedAtStart(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	st := glossary.NewStore(filepath.Join(dir, "home"))
+	p, err := st.Add("оксей", "OxSay", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Approve(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	d := newTestDaemonSTT(t, dir, func(c *config.Config) { c.STTBoostAlpha = 2 }, nil, nil)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		d.tbMu.Lock()
+		done := d.tbHave && len(d.tbTerms) > 0
+		d.tbMu.Unlock()
+		if done {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("no boost list was derived at daemon start")
 }

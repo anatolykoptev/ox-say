@@ -1,20 +1,24 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"runtime/debug"
-	"unicode"
+	"slices"
+	"strings"
 
 	"github.com/anatolykoptev/ox-say/internal/glossary"
-	"github.com/anatolykoptev/ox-say/internal/ruwords"
 	"github.com/anatolykoptev/ox-say/internal/stt"
+	"github.com/anatolykoptev/ox-say/internal/wordlists"
 )
 
 // sttBoost is the decoder boost list for ONE request: the active glossary pairs as ox-stt term lines
 // (glossary.BoostTerms) with the configured strength (OX_SAY_STT_BOOST_ALPHA, 0 = off). The list is derived
-// from the glossary file only — there is no second store and no file copy — and cached per version of that
-// file. It never blocks a request: while a new version is being derived (the Russian dictionary check takes a
-// few hundred milliseconds), the request goes out with the previous list, or with none before the first one.
+// from the glossary file only — there is no second store and no file copy — and cached per CONTENT of the
+// active (meant, heard) set, so a sighting of an existing pair (which rewrites the file and moves the pair
+// generation) does not derive again. It never blocks a request: while a new list is being derived, the request
+// goes out with the previous one, or with none before the first; the daemon derives once at start.
 func (d *Daemon) sttBoost() stt.Boost {
 	if d.Cfg.STTBoostAlpha <= 0 || d.Glossary == nil {
 		return stt.Boost{}
@@ -22,45 +26,90 @@ func (d *Daemon) sttBoost() stt.Boost {
 	pairs, gen := d.glossaryPairsGen()
 	d.tbMu.Lock()
 	defer d.tbMu.Unlock()
-	if !(d.tbHave && d.tbGen == gen) && !d.tbBuilding {
+	if !d.tbKeyOK || d.tbSeenGen != gen {
+		d.tbSeenGen, d.tbCurKey, d.tbKeyOK = gen, boostKey(pairs), true
+	}
+	if !(d.tbHave && d.tbKey == d.tbCurKey) && !d.tbBuilding {
 		d.tbBuilding = true
-		go d.deriveBoost(pairs, gen)
+		go d.deriveBoost(pairs, d.tbCurKey)
 	}
 	return stt.Boost{Alpha: d.Cfg.STTBoostAlpha, Terms: d.tbTerms}
 }
 
-// deriveBoost builds the term lines for one glossary generation and stores them.
-func (d *Daemon) deriveBoost(pairs []glossary.Pair, gen uint64) {
+// refreshBoost derives the list for the current glossary now, on the caller's goroutine (tests, the eval).
+func (d *Daemon) refreshBoost() {
+	pairs, gen := d.glossaryPairsGen()
+	d.tbMu.Lock()
+	key := boostKey(pairs)
+	d.tbSeenGen, d.tbCurKey, d.tbKeyOK = gen, key, true
+	d.tbMu.Unlock()
+	d.deriveBoost(pairs, key)
+}
+
+// boostKey identifies what the boost list depends on: every active pair's meant and heard form. A sighting
+// changes a pair's Seen and Sightings, never these, so it never changes the key.
+func boostKey(pairs []glossary.Pair) string {
+	lines := make([]string, len(pairs))
+	for i, p := range pairs {
+		lines[i] = p.Meant + "\x00" + p.Heard + "\x00" + p.Added.UTC().Format("20060102150405.000000000")
+	}
+	slices.Sort(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(sum[:])
+}
+
+// deriveBoost builds the term lines for one key and stores them, unless a newer key has been seen meanwhile.
+func (d *Daemon) deriveBoost(pairs []glossary.Pair, key string) {
+	d.tbDerives.Add(1)
 	terms := d.boostTermsFor(pairs)
 	d.tbMu.Lock()
-	d.tbHave, d.tbGen, d.tbTerms, d.tbBuilding = true, gen, terms, false
+	if !d.tbHave || key == d.tbCurKey {
+		d.tbHave, d.tbKey, d.tbTerms = true, key, terms
+	}
+	d.tbBuilding = false
 	d.tbMu.Unlock()
 }
 
-// boostTermsFor applies the common-word filter. The Russian dictionary is parsed on first use and dropped
-// right after — it is ~100 MB of heap, and the list is rebuilt only when the glossary changes. A dictionary
-// that cannot load means no boost list: boosting common words is the failure the filter exists to prevent.
+// boostTermsFor applies the common-word filter to every spoken form and every written form. The dictionaries
+// are parsed on the first form that is not already in the verdict memo and dropped right after (the Russian one
+// is ~100 MB of heap), so a derivation whose forms were all judged before loads nothing. A dictionary that
+// cannot load means no boost list: boosting common words is the failure the filter exists to prevent.
 func (d *Daemon) boostTermsFor(pairs []glossary.Pair) []string {
 	if len(pairs) == 0 {
 		return nil
 	}
-	var ck *ruwords.Checker
-	loadFailed := false
-	common := func(heard string) bool {
-		if !hasCyrillic(heard) {
-			return false
+	var ck *wordlists.Checker
+	failed := false
+	common := func(form string) bool {
+		d.tbVMu.Lock()
+		v, ok := d.tbVerdicts[form]
+		d.tbVMu.Unlock()
+		if ok {
+			return v
 		}
-		if ck == nil && !loadFailed {
-			var err error
-			if ck, err = ruwords.Load(); err != nil {
-				loadFailed = true
-				d.log.Warn("stt boost: the Russian word list did not load; no glossary terms are boosted", slog.Any("error", err))
-			}
+		if failed {
+			return true
 		}
-		return loadFailed || ck.Common(heard)
+		if ck == nil {
+			ck = wordlists.New()
+		}
+		d.tbChecks.Add(1)
+		v = ck.Common(form)
+		if ck.Err() != nil {
+			failed = true
+			d.log.Warn("stt boost: a word list did not load; no glossary terms are boosted", slog.Any("error", ck.Err()))
+			return true
+		}
+		d.tbVMu.Lock()
+		if d.tbVerdicts == nil {
+			d.tbVerdicts = map[string]bool{}
+		}
+		d.tbVerdicts[form] = v
+		d.tbVMu.Unlock()
+		return v
 	}
 	terms := glossary.BoostTerms(pairs, common)
-	if loadFailed {
+	if failed {
 		return nil
 	}
 	if ck != nil {
@@ -68,13 +117,4 @@ func (d *Daemon) boostTermsFor(pairs []glossary.Pair) []string {
 		go debug.FreeOSMemory()
 	}
 	return terms
-}
-
-func hasCyrillic(s string) bool {
-	for _, r := range s {
-		if unicode.Is(unicode.Cyrillic, r) {
-			return true
-		}
-	}
-	return false
 }

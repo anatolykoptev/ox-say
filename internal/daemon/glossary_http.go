@@ -27,6 +27,8 @@ func (d *Daemon) initGlossary() {
 	d.Glossary = glossary.NewStore(d.Cfg.Home)
 	d.activePairs = d.Glossary.Active
 	d.ownerToken = ownerToken(d.Cfg.Home, d.log)
+	// derive the boost list once now, off the request path, so the first dictation after a start is boosted
+	d.sttBoost()
 }
 
 // ownerToken loads $home/owner.token, generating it on first start. A file

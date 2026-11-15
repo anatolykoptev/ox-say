@@ -34,7 +34,7 @@ func TestCommonEnglish(t *testing.T) {
 			t.Errorf("%q must be an ordinary English word", w)
 		}
 	}
-	for _, w := range []string{"OxSay", "Hormozi", "GitHub", "vaelor", "kisol", "Glossa", "krolik", "Oxsay Hormozi", "GPT4", "node.js", "оксей Hormozi"} {
+	for _, w := range []string{"OxSay", "Hormozi", "GitHub", "Devin", "Claude", "vaelor", "kisol", "Glossa", "krolik", "Oxsay Hormozi", "GPT4", "node.js", "оксей Hormozi"} {
 		if c.Common(w) {
 			t.Errorf("%q must not be an ordinary English word", w)
 		}

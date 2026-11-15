@@ -136,8 +136,7 @@ func loadGlossary(t *testing.T, d *Daemon, list string, alpha float64) {
 		}
 	}
 	d.invalidateGlossary()
-	pairs, gen := d.glossaryPairsGen()
-	d.deriveBoost(pairs, gen)
+	d.refreshBoost()
 	if b := d.sttBoost(); len(b.Terms) == 0 {
 		t.Fatalf("no boost terms derived from %s", list)
 	}
@@ -198,7 +197,8 @@ func TestCivicEval(t *testing.T) {
 				lines[i] = n + "\t1"
 			}
 			d.tbMu.Lock()
-			d.tbHave, d.tbGen, d.tbTerms = true, gen, lines
+			d.tbSeenGen, d.tbCurKey, d.tbKeyOK = gen, "civic", true
+			d.tbHave, d.tbKey, d.tbTerms = true, "civic", lines
 			d.tbMu.Unlock()
 			d.Cfg.STTBoostAlpha = alpha
 			res, err := d.Transcribe(context.Background(), TranscribeInput{AudioPath: seg, Language: "en"})
