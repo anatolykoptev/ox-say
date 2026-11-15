@@ -118,6 +118,10 @@ public final class VoiceLibrarySession {
     private var previewEpoch = 0
     /// Set by the first list read that lands: only then do `entries` say what the daemon holds.
     private var everLoaded = false
+    /// What the daemon is known to hold: the last list a read applied, kept current by the writes that returned. A failed
+    /// write puts its row back from this, never from what the screen showed when it began — an overlapping write on the
+    /// same row may have changed that to its own optimistic value.
+    private var confirmed: [VoiceEntry] = []
 
     public init(ops: VoiceLibraryOps, readPicks: @escaping () -> ReadAloudPicks,
                 writePicks: @escaping (ReadAloudPicks) -> Void, text: @escaping (L10nKey) -> String = { $0.text }) {
@@ -146,6 +150,7 @@ public final class VoiceLibrarySession {
             // An answer that arrived while a write was on the wire may predate that write: it is dropped too.
             guard mine == epoch, writesInFlight == 0 else { return }
             entries = list
+            confirmed = list
             load = .loaded
             everLoaded = true
         } catch {
@@ -168,15 +173,17 @@ public final class VoiceLibrarySession {
             defer { writesInFlight -= 1 }
             try await ops.setLabel(id, clean)
         } catch {
-            // Put the old label back by this write's own inverse — not a snapshot, so an overlapping write's change
-            // stays — and only while the row still shows the label this write put there. The PATCH may have landed
-            // despite the lost answer: one re-read shows what the daemon stored, if it can be read at all.
-            if let before { entries = entries.map { $0.id == id && $0.label == clean ? before : $0 } }
+            // The row goes back to what the daemon is known to hold (`confirmed`), if it is still on screen. The PATCH
+            // may have landed despite the lost answer: one re-read shows what the daemon stored, if it can be read at all.
+            if let truth = confirmed.first(where: { $0.id == id }) ?? before {
+                entries = entries.map { $0.id == id ? truth : $0 }
+            }
             await reload()
             return sentence(error)
         }
         // The PATCH returned: a read that began while it was on the wire is stale even now.
         epoch += 1
+        confirmed = confirmed.map { $0.id == id ? VoiceEntry(id: $0.id, label: clean, kind: $0.kind, created: $0.created, engine: $0.engine) : $0 }
         await reload()
         return nil
     }
@@ -195,17 +202,19 @@ public final class VoiceLibrarySession {
             try await ops.delete(id)
         } catch StudioError.refused(let status, _) where status == 404 {
             // Already gone: the cleanup stands.
+            confirmed.removeAll { $0.id == id }
         } catch {
-            // Refused: put the voice back where it was — by this write's own inverse, not a snapshot, so an
-            // overlapping write's change stays. A re-read may fail and must not hide a voice the daemon kept.
-            if let removed, !entries.contains(where: { $0.id == id }) {
-                entries.insert(removed.element, at: min(removed.offset, entries.count))
+            // Refused: put the voice back as the daemon holds it (`confirmed`), where it was. A re-read may fail and
+            // must not hide a voice the daemon kept.
+            if let truth = confirmed.first(where: { $0.id == id }) ?? removed?.element, !entries.contains(where: { $0.id == id }) {
+                entries.insert(truth, at: min(removed?.offset ?? entries.count, entries.count))
             }
             await reload()
             return sentence(error)
         }
         // The delete returned: a read that began while it was on the wire is stale even now.
         epoch += 1
+        confirmed.removeAll { $0.id == id }
         let before = readPicks()
         let cleaned = VoicePicksCleanup.afterDelete(id: id, russian: before.russian, english: before.english)
         let after = ReadAloudPicks(russian: cleaned.russian, english: cleaned.english)

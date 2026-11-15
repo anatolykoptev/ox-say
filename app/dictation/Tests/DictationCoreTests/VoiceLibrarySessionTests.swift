@@ -490,6 +490,51 @@ final class VoiceLibrarySessionTests: XCTestCase {
         }
     }
 
+    /// Same-row overlap (gate review of #566), both writes refused while the library cannot be re-read, in both orders
+    /// of failure. (a) a rename and a delete of one voice: the delete must not put back the rename's optimistic label.
+    /// (b) two renames of one voice, L0 -> L1 and L1 -> L2: whichever fails first must not leave the other's value.
+    /// The daemon held L0 throughout, so the screen ends there.
+    /// Mutation: VoiceLibrarySession.rename/delete, the restore from `confirmed` replaced by the entry captured when the
+    /// write began -> RED (a: "New" back; b: "L1" left).
+    func testOverlappingFailedWritesOnOneRowEndWithWhatTheDaemonHolds() async {
+        enum Pair { case renameThenDelete, twoRenames }
+        for pair in [Pair.renameThenDelete, .twoRenames] {
+            for firstFailsFirst in [true, false] {
+                let first = AsyncGate<Void>(), second = AsyncGate<Void>()
+                var calls = 0, labelCalls = 0
+                let s = VoiceLibrarySession(
+                    ops: VoiceLibraryOps(
+                        list: { [self] in
+                            calls += 1
+                            guard calls == 1 else { throw StudioError.daemonUnreachable }
+                            return [entry("a", "L0"), entry("b")]
+                        },
+                        setLabel: { _, _ in
+                            labelCalls += 1
+                            if labelCalls == 1 { await first.wait() } else { await second.wait() }
+                            throw StudioError.daemonUnreachable
+                        },
+                        delete: { _ in await second.wait(); throw StudioError.daemonUnreachable },
+                        speak: { _, _, _ in Data() }),
+                    readPicks: { ReadAloudPicks(russian: nil, english: nil) }, writePicks: { _ in },
+                    text: ShippedStrings.localizer("en"))
+                await s.reload()
+                let one = Task { await s.rename(id: "a", label: pair == .renameThenDelete ? "New" : "L1") }
+                await first.waiting()
+                let two = Task { pair == .renameThenDelete ? await s.delete(id: "a") : await s.rename(id: "a", label: "L2") }
+                await second.waiting()
+                if firstFailsFirst {
+                    first.open(()); _ = await one.value
+                    second.open(()); _ = await two.value
+                } else {
+                    second.open(()); _ = await two.value
+                    first.open(()); _ = await one.value
+                }
+                XCTAssertEqual(s.entries.map(\.label), ["L0", "b"], "\(pair), first fails first: \(firstFailsFirst)")
+            }
+        }
+    }
+
     /// Issue #431: a refused delete puts back the list that was on screen, not whatever a re-read happens to get —
     /// here the re-read fails, and the voice the daemon still holds must stay visible.
     /// Mutation: VoiceLibrarySession.delete, `entries = held` on the refused path gone -> RED.
