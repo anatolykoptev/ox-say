@@ -20,6 +20,8 @@ import sys
 TERMS = ["OxSay", "Hormozi", "Devin", "GitHub", "vaelor", "Dropbox", "Sonnet", "Haiku", "Fable", "Codex",
          "krolik", "pillow", "kisol", "dozor", "Glossa", "Claude", "Parakeet", "Brave", "Opus", "Hugging Face"]
 COMMON = {"krolik", "Codex", "dozor", "Sonnet", "Opus", "Haiku"}
+# Cyrillic written forms that are ordinary Russian words (lists/extra_ru.tsv): in every glossary, never to be inserted
+RU_WRITTEN = ["вкратце", "пожалуйста", "сейчас"]
 
 
 def has(text, term):
@@ -70,7 +72,7 @@ def main(work, results):
             b, x = by[r[0]]["base"]["text"], by[r[0]]["boost"]["text"]
             n += 1
             changed += b != x
-            for t in TERMS:
+            for t in TERMS + RU_WRITTEN:
                 k = max(0, count(x, t) - count(b, t))
                 tot += k
                 if k:
@@ -78,16 +80,17 @@ def main(work, results):
         out.append(f"false insertions {label}: {tot}/{n} = {100 * tot / max(n, 1):.2f} per 100, texts changed {changed}/{n}, per term {per}")
         return tot, n
 
-    ru = [r for r in rows if r[2] == "ru" and r[1] in ("neg", "noterm", "nearmiss")]
+    ru = [r for r in rows if r[2] == "ru" and r[1] in ("neg", "neg2", "noterm", "nearmiss")]
     enn = [r for r in rows if r[2] == "en" and r[1] in ("noterm", "nearmiss")]
     t1, n1 = fi(ru, "RU negatives")
     t2, n2 = fi(enn, "EN negatives")
     comb = 100 * (t1 + t2) / max(n1 + n2, 1)
+    out.append(f"FALSE INSERTIONS SEPARATELY: RU {100 * t1 / max(n1, 1):.2f} per 100 ({t1}/{n1}), EN {100 * t2 / max(n2, 1):.2f} per 100 ({t2}/{n2})")
     out.append(f"false insertions RU+EN combined: {t1 + t2}/{n1 + n2} = {comb:.2f} per 100")
 
     d_ms, b_ms, x_ms = [], [], []
     for r in rows:
-        if r[0] in by and r[1] in ("term", "noterm", "nearmiss", "neg"):
+        if r[0] in by and r[1] in ("term", "noterm", "nearmiss", "neg", "neg2"):
             b, x = by[r[0]]["base"], by[r[0]]["boost"]
             dur = b["duration_s"]
             if dur > 0:

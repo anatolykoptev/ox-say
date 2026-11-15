@@ -124,7 +124,12 @@ func loadGlossary(t *testing.T, d *Daemon, list string, alpha float64) {
 	if err := os.Remove(filepath.Join(d.Cfg.Home, glossary.FileName)); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
-	for _, r := range readTSV(t, list) {
+	rows := readTSV(t, list)
+	// Cyrillic written forms that are ordinary Russian words: their own heard spellings, in every glossary
+	if extra := filepath.Join(filepath.Dir(list), "extra_ru.tsv"); fileExists(extra) {
+		rows = append(rows, readTSV(t, extra)...)
+	}
+	for _, r := range rows {
 		for _, heard := range r[1:] {
 			p, err := d.Glossary.Add(heard, r[0], "")
 			if err != nil {
@@ -210,3 +215,5 @@ func TestCivicEval(t *testing.T) {
 		}
 	}
 }
+
+func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }

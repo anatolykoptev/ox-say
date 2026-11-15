@@ -411,9 +411,13 @@ boost_plan make_plan(parakeet_context * ctx, const std::vector<oxstt::boost::ter
     v.n_vocab = parakeet_n_vocab(ctx);
     v.piece   = [ctx](int i) { return parakeet_token_to_str(ctx, i); };
     std::vector<std::string> skipped;
+    const auto t_build = std::chrono::steady_clock::now();
     p.graph = oxstt::boost::graph::build(terms, v, oxstt::boost::params{}, &skipped);
-    fputs(oxstt::boost::skip_report(skipped).c_str(), stderr);
     p.sp    = std::make_shared<const oxstt::boost::speller>(terms);
+    fputs(oxstt::boost::skip_report(skipped).c_str(), stderr);
+    // counts and time only, never the terms; one line per list actually built (an unchanged list is cached)
+    fprintf(stderr, "ox-stt: boost: graph of %zu term(s) built in %.1f ms\n", terms.size(),
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_build).count());
     p.alpha = alpha;
     return p;
 }
