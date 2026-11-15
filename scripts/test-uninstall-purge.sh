@@ -22,6 +22,20 @@ fail()  { printf 'FAIL %s\n' "$1"; fails=$((fails + 1)); }
 exists() { if [ -e "$2" ]; then pass "$1"; else fail "$1 — $2 is gone"; fi; }
 gone()   { if [ ! -e "$2" ]; then pass "$1"; else fail "$1 — $2 is still there"; fi; }
 
+# uninstall.sh boots the agent out with launchctl and stops the dictation app: on a Mac with OxSay installed the real
+# tools would stop the live daemon. Stubs come first in PATH and the test refuses to go on unless they win.
+stubs="$tmp/stubs"
+mkdir -p "$stubs"
+printf '#!/bin/bash\necho "launchctl $*" >> "%s/calls"\nexit 0\n' "$tmp" > "$stubs/launchctl"
+for t in pkill pgrep; do printf '#!/bin/bash\necho "%s $*" >> "%s/calls"\nexit 1\n' "$t" "$tmp" > "$stubs/$t"; done
+printf '#!/bin/bash\nexit 1\n' > "$stubs/plutil"
+chmod +x "$stubs"/*
+export PATH="$stubs:$PATH"
+if [ "$(command -v launchctl)" != "$stubs/launchctl" ]; then
+    echo "FAIL the launchctl stub is not first in PATH; refusing to run uninstall.sh" >&2
+    exit 1
+fi
+
 export HOME="$tmp/home"
 home="$HOME/Library/Application Support/ox-say"
 mkdir -p "$home/engine" "$home/models" "$home/voices" "$home/run" "$home/meetings/m1" "$home/transcripts/t1"
@@ -44,7 +58,8 @@ exists "glossary.json survives --purge" "$home/glossary.json"
 exists "meetings survives --purge" "$home/meetings/m1/meta.json"
 exists "transcripts survives --purge" "$home/transcripts/t1/meta.json"
 
-if grep -q 'glossary.json' "$root/scripts/uninstall.sh"; then pass "uninstall.sh names glossary.json in its help text"; else fail "uninstall.sh does not mention glossary.json"; fi
+if grep -q 'launchctl bootout' "$tmp/calls" 2>/dev/null; then pass "the launchctl stub, not the real launchctl, took the bootout"; else fail "the launchctl stub was not called"; fi
+if grep -q 'glossary.json kept' "$tmp/out"; then pass "the final message says glossary.json was kept"; else fail "the final message does not mention glossary.json"; fi
 
 [ "$fails" = 0 ] || { printf '%s failed\n' "$fails"; exit 1; }
 printf 'all ok\n'
