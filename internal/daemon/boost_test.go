@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -188,5 +189,34 @@ func TestSTTBoostBeforeFirstDerivation(t *testing.T) {
 	}
 	if b = d.sttBoost(); !b.Active() || !strings.Contains(strings.Join(b.Terms, "|"), "OxSay\t1\tоксей") {
 		t.Fatalf("boost after the derivation = %+v", b)
+	}
+}
+
+// ox-stt keeps ONE built graph (its cache key is the list text), so the session body and the /transcribe header
+// must carry the same list, or alternating requests rebuild the graph every time. A glossary too big for the 4 KB
+// header is trimmed for both.
+// Mutation: sessions.go sessionBoostBody, JSON(stt.MaxBodyBytes) instead of the shared budget -> RED.
+func TestSessionAndHeaderCarryTheSameList(t *testing.T) {
+	pairs := map[string]string{}
+	for i := 0; i < 120; i++ {
+		pairs[fmt.Sprintf("форма%03dтест", i)] = fmt.Sprintf("Name%03dLong", i)
+	}
+	d, log := boostDaemon(t, pairs)
+	srv := transcriptionServer(t, d)
+	if code, body := sessReq(t, http.MethodPost, sessBase(srv), "application/json", []byte("{}")); code != http.StatusOK {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	src := testutil.WriteTinyWAV(t, t.TempDir(), "in.wav")
+	if _, err := d.Transcribe(context.Background(), TranscribeInput{AudioPath: src}); err != nil {
+		t.Fatal(err)
+	}
+	lines := sttLogLines(t, log)
+	_, fromBody := decodeWire(t, lastField(t, lines, "sess-create-body"))
+	_, fromHeader := decodeWire(t, lastField(t, lines, "terms "))
+	if len(fromHeader) == 0 || len(fromHeader) >= 120 {
+		t.Fatalf("the header list should be trimmed (got %d terms)", len(fromHeader))
+	}
+	if strings.Join(fromBody, "|") != strings.Join(fromHeader, "|") {
+		t.Fatalf("session body has %d terms, header %d: the lists differ", len(fromBody), len(fromHeader))
 	}
 }

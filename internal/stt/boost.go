@@ -22,7 +22,11 @@ type Boost struct {
 const (
 	MaxAlpha       = 100
 	MaxHeaderBytes = 4 << 10  // base64url of the JSON, inside the HTTP header limit
-	MaxBodyBytes   = 16 << 10 // the JSON body of POST /sessions
+	MaxBodyBytes   = 16 << 10 // the largest JSON body ox-stt accepts on POST /sessions
+	// MaxWireJSON is the JSON budget of BOTH delivery paths: the header's, scaled down by base64's 4/3. The
+	// session body carries the same trimmed list as the header, because ox-stt caches one built graph by list
+	// text and two different lists would rebuild it on every alternating request.
+	MaxWireJSON = MaxHeaderBytes / 4 * 3
 )
 
 // Active reports whether the request should carry a list at all.
@@ -52,7 +56,7 @@ func (b Boost) JSON(maxBytes int) []byte {
 // "" when there is nothing to send.
 func (b Boost) Header() string {
 	// base64 inflates by 4/3: the JSON budget is the header budget scaled down, rounded down
-	j := b.JSON(MaxHeaderBytes / 4 * 3)
+	j := b.JSON(MaxWireJSON)
 	if j == nil {
 		return ""
 	}
