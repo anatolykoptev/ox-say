@@ -14,6 +14,25 @@ final class FbankTests: XCTestCase {
         XCTAssertLessThan(Fixture.maxAbsDiff(got, want), 2e-3, "log-mel and deltas, float32 vDSP against torch")
     }
 
+    /// #462: the 1 s chirp leaves the edges open. Clip 2 is 9217 samples (20 frames and a one-sample tail snip-edges drops)
+    /// of a 20.5 kHz tone over a 0.2 DC offset, so the high mel bins, DC removal and the ragged end are all exercised; its
+    /// first 1920 samples are the single-frame case (deltas of one frame). Oracle: torchaudio, dither 0.
+    /// Mutation: Fbank, the DC-removal subtraction deleted -> RED (the offset is 0.2 x 32768).
+    func testFeaturesMatchTorchaudioOnARaggedHighToneOverDC() throws {
+        let clip = try Fixture.floats("clip2.f32").map { $0 * FeatureConfig.scale }
+        XCTAssertEqual(clip.count, 9217)
+        let want = try Fixture.floats("feat2.f32")
+        let got = Fbank().features(scaled: clip)
+        XCTAssertEqual(got.count, 20 * 180)
+        guard got.count == want.count else { return }
+        XCTAssertLessThan(Fixture.maxAbsDiff(got, want), 2e-3, "ragged length, high tone over DC")
+        let single = Fbank().features(scaled: Array(clip.prefix(1920)))
+        let wantSingle = try Fixture.floats("feat2_single.f32")
+        XCTAssertEqual(single.count, 180)
+        guard single.count == wantSingle.count else { return }
+        XCTAssertLessThan(Fixture.maxAbsDiff(single, wantSingle), 2e-3, "a single frame")
+    }
+
     func testFrameCountIsSnipEdges() {
         XCTAssertEqual(Fbank().features(scaled: [Float](repeating: 1, count: 192_000)).count, 496 * 180)
         XCTAssertEqual(Fbank().features(scaled: [Float](repeating: 1, count: 1919)).count, 0)
@@ -63,20 +82,38 @@ final class FbankTests: XCTestCase {
         }
     }
 
-    /// Silent input: the conditioned frame is the noise minus its own mean. Over 3.84M samples the standard error of
-    /// the mean is 1/sqrt(N) = 5.1e-4 and of the std 1/sqrt(2N) = 3.6e-4, so 3e-3 is about 6 sigma: a flake needs a
-    /// 1-in-10^8 draw, while a wrong sigma (e.g. 0.5 or 2) or a biased generator misses by far more.
-    func testNoiseIsZeroMeanUnitSigmaOverLongSilence() {
+    /// The generator itself, not the conditioned frames: DC removal zeroes every frame's mean, so a mean check on those
+    /// passes by construction (#462) and a biased generator would only show as a smaller sigma. 2M raw draws: the standard
+    /// error of the mean is 1/sqrt(N) = 7.1e-4 and of the std 1/sqrt(2N) = 5.0e-4, so 4e-3 is more than 5 sigma, while a
+    /// biased generator or a wrong sigma (0.5, 2) misses by far more.
+    /// Mutation: GaussianNoise.next, a `+ 0.01` on the returned value -> RED (mean).
+    func testRawNoiseDrawsAreZeroMeanUnitSigma() {
+        var g = GaussianNoise(seed: 42)
+        let n = 2_000_000
+        var sum = 0.0, sumSquares = 0.0
+        for _ in 0..<n {
+            let v = Double(g.next())
+            sum += v; sumSquares += v * v
+        }
+        let mean = sum / Double(n)
+        let sigma = (sumSquares / Double(n) - mean * mean).squareRoot()
+        XCTAssertEqual(mean, 0, accuracy: 4e-3)
+        XCTAssertEqual(sigma, 1.0, accuracy: 4e-3)
+    }
+
+    /// Silent input: the conditioned frame is the noise minus its own mean, so its std is the generator's times
+    /// sqrt(1 - 1/1920). The standard error over 3.84M samples is 3.6e-4, so 3e-3 is about 8 sigma. (Its mean is zero by
+    /// construction after DC removal and is checked on the raw draws above.)
+    func testConditionedNoiseHasUnitSigmaOverLongSilence() {
         let frames = 2000
         let n = FeatureConfig.frameLength + (frames - 1) * FeatureConfig.frameShift
         let f = Fbank(dither: .seeded(42)).conditionedFrames(scaled: [Float](repeating: 0, count: n))
         XCTAssertEqual(f.count, frames * FeatureConfig.frameLength)
         guard f.count == frames * FeatureConfig.frameLength else { return }
         let mean = f.reduce(0.0) { $0 + Double($1) } / Double(f.count)
-        // DC removal shrinks the variance by (1 - 1/1920); compensate so the bound stays 6 sigma.
+        // DC removal shrinks the variance by (1 - 1/1920); compensate.
         let varr = f.reduce(0.0) { $0 + (Double($1) - mean) * (Double($1) - mean) } / Double(f.count)
         let sigma = (varr * 1920.0 / 1919.0).squareRoot()
-        XCTAssertEqual(mean, 0, accuracy: 3e-3)
         XCTAssertEqual(sigma, 1.0, accuracy: 3e-3)
     }
 

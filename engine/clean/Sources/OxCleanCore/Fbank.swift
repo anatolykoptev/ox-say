@@ -197,7 +197,9 @@ public struct Fbank {
                                 vDSP_zvmags(&split, 1, p.baseAddress!, 1, vDSP_Length(N / 2))
                                 var quarter: Float = 0.25
                                 vDSP_vsmul(p.baseAddress!, 1, &quarter, p.baseAddress!, 1, vDSP_Length(N / 2))
-                                p[0] = dc * dc  // bin 1024 (Nyquist) has zero mel weight and is not used
+                                // Bin 0 (DC) has zero mel weight, so this write changes no feature; kept so p[k] reads as the power of bin k, and
+                                // bin 1024 (Nyquist, packed with DC) is not used.
+                                p[0] = dc * dc
                                 for b in 0..<M {
                                     let flt = filters[b]
                                     var acc: Float = 0

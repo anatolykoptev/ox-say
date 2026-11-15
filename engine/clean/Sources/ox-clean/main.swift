@@ -288,9 +288,8 @@ enum CLI {
             }
             if slowMs > 0 { usleep(UInt32(slowMs) * 1000) }
         }
-        // F_FULLFSYNC: on macOS fsync leaves the data in the drive's cache, so a power cut could still lose the copy that
-        // the rename is about to publish. Volumes that cannot do it fall back to fsync.
-        guard fcntl(ofd, F_FULLFSYNC) == 0 || fsync(ofd) == 0 else { return undo(errno, "copy \(part) to \(out)") }
+        // The copy is flushed to the drive before the rename publishes it (FileSync: F_FULLFSYNC, fsync only where the volume has none).
+        if let e = FileSync.durably(ofd) { return undo(e, "copy \(part) to \(out)") }
         guard close(ofd) == 0 else { let e = errno; unlink(tmp); unlink(part); return fail(e, "finish \(out)") }
         if exists(out) { unlink(tmp); unlink(part); return PublishFailure(reason: "out_exists", message: "\(out) appeared while cleaning; not overwriting it") }
         guard rename(tmp, out) == 0 else { let e = errno; unlink(tmp); unlink(part); return fail(e, "move \(tmp) to \(out)") }

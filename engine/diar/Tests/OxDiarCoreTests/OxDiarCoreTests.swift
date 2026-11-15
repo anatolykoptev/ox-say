@@ -159,6 +159,25 @@ private func os(_ major: Int, _ minor: Int = 0) -> OperatingSystemVersion {
         #expect(Pinned.effectiveUnits(env: ["OX_DIAR_COMPUTE_UNITS": "CPUONLY"]) == .cpuAndNeuralEngine)
     }
 
+    /// #408: every CI and release run sets OX_DIAR_COMPUTE_UNITS=cpuOnly, so a call site that hardcoded `.cpuOnly`
+    /// would stay green everywhere and run the default engine about 4x slower on the CPU. The unit tests above cover
+    /// `effectiveUnits`; this pins the call site in main.swift: the units come from the environment through
+    /// `withNemotronUnits`, and reach `loadNemotron` as the closure's `units`, with no units named in main.swift at all.
+    /// Mutation: main.swift, `computeUnits: units` -> `computeUnits: .cpuOnly` -> RED; `env: ProcessInfo.processInfo.environment`
+    /// -> `env: [:]` -> RED (the units would ignore OX_DIAR_COMPUTE_UNITS).
+    @Test func theMainCallSiteTakesItsUnitsFromTheEnvironment() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/ox-diar/main.swift")
+        let code = try String(contentsOf: url, encoding: .utf8).split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in line.firstRange(of: "//").map { String(line[..<$0.lowerBound]) } ?? String(line) }
+            .joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        #expect(code.contains("Pinned.withNemotronUnits(env: ProcessInfo.processInfo.environment) { units in"))
+        #expect(code.contains("Pinned.loadNemotron(from: nemDir, computeUnits: units)"))
+        for hardcoded in [".cpuOnly", ".cpuAndNeuralEngine", ".cpuAndGPU", ".all"] {
+            #expect(!code.contains(hardcoded), "main.swift names \(hardcoded): the units must come from the environment")
+        }
+    }
+
     /// The soft landing covers the whole run: a load that fails under the Neural Engine retries once on the
     /// CPU (an ANE-compile failure was seen on a macOS update), and the retry is a fresh attempt — new models,
     /// new units. The recording loader sees the units each attempt asked for, so a dropped retry — or a retry
