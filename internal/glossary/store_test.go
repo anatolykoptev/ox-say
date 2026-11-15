@@ -223,3 +223,31 @@ func TestPurgeRemovesWithoutTombstone(t *testing.T) {
 		t.Fatalf("refile after purge = %+v, %v; want a fresh candidate", again, err)
 	}
 }
+
+// An agent must never settle a pair: after the owner edits a rejected pair, the
+// old sightings must not let one context-free agent filing activate it.
+// Mutation: store.go Edit, drop the Sightings/Seen reset -> RED.
+func TestEditOfARejectedPairNeedsFreshEvidence(t *testing.T) {
+	s := newTestStore(t)
+	p, _ := s.Add("гит хаб", "GitHub", "открой гит хаб один")
+	s.Add("гит хаб", "GitHub", "открой гит хаб два")
+	if _, err := s.Reject(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Edit(p.ID, "GitLab")
+	if err != nil || got.Status != Candidate || len(got.Sightings) != 0 || got.Seen != 0 {
+		t.Fatalf("edit rejected = %+v, %v; want a candidate with no sightings", got, err)
+	}
+	if a, err := s.Add("гит хаб", "GitLab", ""); err != nil || a.Status != Candidate {
+		t.Fatalf("one agent filing after the edit = %+v, %v; want still a candidate", a, err)
+	}
+	// An owner-edited active pair stays active and keeps its evidence.
+	q, _ := s.Add("окс сей", "OxSay", "сделай окс сей релиз")
+	s.Add("окс сей", "OxSay", "открой окс сей план")
+	if q, _ = s.Approve(q.ID); q.Status != Active {
+		t.Fatal(q)
+	}
+	if e, _ := s.Edit(q.ID, "OxPulse"); e.Status != Active || len(e.Sightings) != 2 {
+		t.Fatalf("edit active = %+v", e)
+	}
+}

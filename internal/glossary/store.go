@@ -208,7 +208,8 @@ func (s *Store) Reject(id string) (Pair, error) { return s.setStatus(id, Rejecte
 // Edit replaces the meant form of a pair. It keeps the id, the heard form and
 // the sightings, and re-runs the same validation as Add. An active pair stays
 // active and a candidate stays a candidate; a rejected one comes back as a
-// candidate, because the owner has just chosen a new meaning for it.
+// candidate, because the owner has just chosen a new meaning for it. A pair
+// that is not active loses its sightings and count: they backed the old meant.
 func (s *Store) Edit(id, meant string) (Pair, error) {
 	meant = strings.TrimSpace(meant)
 	s.mu.Lock()
@@ -225,8 +226,13 @@ func (s *Store) Edit(id, meant string) (Pair, error) {
 		return Pair{}, err
 	}
 	pairs[i].Meant = meant
-	if pairs[i].Status == Rejected {
+	if pairs[i].Status != Active {
+		// The sightings vouched for the old meaning. Kept, one agent filing of the new meant would reach the
+		// activation threshold and settle a pair the owner only re-opened: activation needs fresh evidence or
+		// an owner approve. An active pair stays active with its evidence.
 		pairs[i].Status = Candidate
+		pairs[i].Sightings = nil
+		pairs[i].Seen = 0
 	}
 	if err := s.save(pairs); err != nil {
 		return Pair{}, err
