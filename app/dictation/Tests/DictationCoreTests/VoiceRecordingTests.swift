@@ -457,6 +457,21 @@ final class VoiceRecordingTests: XCTestCase {
         XCTAssertLessThan(defers.lowerBound, add.lowerBound)
     }
 
+    /// #570: «Сохранить» hands the reducer whether the take is silent, measured on the samples that were recorded. The
+    /// reducer test supplies `silent: true` itself and the helper test covers `isSilent` alone, so a call site that
+    /// dropped the argument (or passed a constant) stayed green while a silent take went to the daemon. PIN (source text).
+    /// Mutation: VoiceSource.swift saveTake, `silent: VoiceRecording.isSilent(takeSamples)` -> `silent: false` -> RED;
+    /// the argument removed -> RED; `isSilent(takeSamples)` -> `isSilent([])` -> RED.
+    func testSaveTakeMeasuresTheRecordedSamplesForSilence() throws {
+        let save = try body(try source("OxSayDictation/VoiceSource.swift"), of: "private func saveTake() {")
+        let call = try XCTUnwrap(save.range(of: "r.save("), "saveTake asks the reducer to save")
+        let rest = save[call.upperBound...]
+        let argument = String(rest.prefix { $0 != "\n" })
+        XCTAssertTrue(argument.contains("silent: VoiceRecording.isSilent(takeSamples))"),
+                      "the silence of the recorded samples decides the save: \(argument)")
+        XCTAssertTrue(argument.contains("taken: takenNames()"), "the call keeps the taken names: \(argument)")
+    }
+
     /// The microphone is asked here, on the first «Записать», never by a read or at launch. PIN (source text).
     func testTheMicrophoneIsAskedOnlyThroughTheReducersEffect() throws {
         let voice = try source("OxSayDictation/VoiceSource.swift")
