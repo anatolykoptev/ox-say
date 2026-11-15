@@ -25,7 +25,8 @@ const (
 // common reports a spoken form that is an ordinary word of the language («кролик»): boosting it makes the
 // decoder insert it into sentences that never said it, so such a form is left out of the boost list. The
 // post-pass (Apply) still maps it — this only limits what the decoder is pushed towards. A nil common keeps
-// every form. A meant that is itself an ordinary word keeps its term, with no spoken form.
+// every form. The written form (meant) goes through the same check: an ordinary-word meant is marked
+// SpokenOnly, so only its spoken forms are boosted, and a term with none left is dropped.
 //
 // Order: the most recently filed group first, then by Meant, so a cap drops the oldest. At most
 // MaxBoostTerms terms and maxBoostAliases spoken forms per term; forms under three characters are dropped
@@ -65,9 +66,15 @@ func BoostTerms(pairs []Pair, common func(heard string) bool) []string {
 			break
 		}
 		sort.SliceStable(g.heard, func(i, j int) bool { return g.heard[i].Added.After(g.heard[j].Added) })
+		// an ordinary-word written form is not boosted itself (it would be inserted into sentences that never
+		// said it); its spoken forms are, and map back to it
+		spokenOnly := common != nil && common(g.meant)
 		var sb strings.Builder
 		sb.WriteString(g.meant)
 		sb.WriteString("\t1")
+		if spokenOnly {
+			sb.WriteString("\t" + SpokenOnly)
+		}
 		seen := map[string]bool{key(g.meant): true}
 		n := 0
 		for _, p := range g.heard {
@@ -86,7 +93,13 @@ func BoostTerms(pairs []Pair, common func(heard string) bool) []string {
 				break
 			}
 		}
+		if spokenOnly && n == 0 {
+			continue // nothing left to boost
+		}
 		out = append(out, sb.String())
 	}
 	return out
 }
+
+// SpokenOnly is the term-line flag for a written form that is an ordinary word (engine/stt/boost.h kSpokenOnly).
+const SpokenOnly = "@spoken-only"

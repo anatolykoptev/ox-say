@@ -115,3 +115,27 @@ func TestPostPassIdempotentWithDecoderMapping(t *testing.T) {
 		t.Fatalf("second pass changed the text: %q (%d)", again, n2)
 	}
 }
+
+// The WRITTEN form is checked too: a meant that is an ordinary word («вкратце», "Pillow") must not be boosted as
+// such, or the decoder inserts it into sentences that never said it; its spoken forms still are, and still map back
+// to it. A term left with nothing to boost is dropped.
+// Mutation: BoostTerms skips the written-form check -> RED.
+func TestBoostTermsOrdinaryWrittenFormIsSpokenOnly(t *testing.T) {
+	common := func(f string) bool {
+		switch f {
+		case "вкратце", "Pillow", "кролик", "Opus":
+			return true
+		}
+		return false
+	}
+	got := BoostTerms([]Pair{
+		activePair("в кратцы", "вкратце", 1), // Cyrillic ordinary meant, spoken form not a word
+		activePair("пиллоу", "Pillow", 2),    // Latin ordinary meant
+		activePair("кролик", "Opus", 3),      // ordinary meant AND ordinary heard: nothing left to boost
+		activePair("оксей", "OxSay", 4),      // neither: unchanged
+	}, common)
+	want := []string{"вкратце\t1\t@spoken-only\tв кратцы", "Pillow\t1\t@spoken-only\tпиллоу", "OxSay\t1\tоксей"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("terms = %q, want %q", got, want)
+	}
+}
