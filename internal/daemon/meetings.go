@@ -462,9 +462,9 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 	// The retry Compose may spend should not re-ask the same wedged process:
 	// release the guard and stop the child so the retry spawns a fresh one.
 	g.Release()
-	stopCtx, stopCancel := context.WithTimeout(ctx, notesStopWait)
-	defer stopCancel()
-	stopErr := c.d.LLMSup.Stop(stopCtx)
+	// Stop is bounded by the supervisor's own RecycleWait; no second deadline here, which would also cut the wait for
+	// the child's exit and turn a stop that did happen into a lost retry.
+	stopErr := c.d.LLMSup.Stop(ctx)
 	if stopErr != nil {
 		c.d.log.Warn("notes: the wedged notes engine could not be stopped before its retry", slog.Any("error", stopErr))
 	}
@@ -476,10 +476,6 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 		Reason:    meeting.FailNotesEngineTimeout,
 	}
 }
-
-// notesStopWait bounds the stop of a wedged notes engine; the supervisor's own
-// RecycleWait is the same 30 s. A var so a test can shorten the wait.
-var notesStopWait = 30 * time.Second
 
 // notesProgressProbe is the gap between the two /slots reads the wedge check
 // makes; a decoding engine's counter visibly grows inside it. A var so a

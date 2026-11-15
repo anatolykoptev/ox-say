@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anatolykoptev/ox-say/internal/engine"
 	"github.com/anatolykoptev/ox-say/internal/meeting"
 )
 
@@ -116,12 +117,20 @@ func TestAWedgedEngineThatCannotBeStoppedIsNotRetryable(t *testing.T) {
 	keepGap := notesProgressProbe
 	notesProgressProbe = 10 * time.Millisecond
 	t.Cleanup(func() { notesProgressProbe = keepGap })
-	keepStop := notesStopWait
-	notesStopWait = 200 * time.Millisecond
-	t.Cleanup(func() { notesStopWait = keepStop })
+	// Stop gives up after the supervisor's RecycleWait: shorten it on a notes supervisor of the same wiring.
+	cfg := notesEngineConfig(d.Cfg, d.log, d.notesSpawnPlan)
+	cfg.RecycleWait = 200 * time.Millisecond
+	inheritBoundNotesPort(t, &cfg, d.Cfg)
+	sup, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.LLMSup.Shutdown()
+	d.LLMSup = sup
+	t.Cleanup(sup.Shutdown)
 	other := d.LLMSup.Acquire() // another user of the engine: Stop will not kill a request in flight
 	defer other.Release()
-	_, err := (llmChat{d: d}).Complete(context.Background(), meeting.Request{System: "s", User: "u"})
+	_, err = (llmChat{d: d}).Complete(context.Background(), meeting.Request{System: "s", User: "u"})
 	var down *meeting.EngineDownError
 	if !errors.As(err, &down) || down.Reason != meeting.FailNotesEngineTimeout {
 		t.Fatalf("err = %v (%T), want the engine-down error with %s", err, err, meeting.FailNotesEngineTimeout)
