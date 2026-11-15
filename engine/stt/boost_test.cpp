@@ -366,6 +366,27 @@ static void t_build_cost() {
     CHECK(ms < 150.0, "building 200 terms takes under 150 ms (one piece map per build, not per word)");
 }
 
+// "@spoken-only": the written form is an ordinary word of its own language ("Pillow"), so only its spoken forms are
+// boosted; the decoder still maps them back to the written form afterwards.
+// Mutation: build() ignores the flag -> RED (the toy graph then has the written form's nodes).
+static void t_spoken_only() {
+    cur = "t_spoken_only";
+    std::string err;
+    auto t = parse_terms("a b x\t1\t@spoken-only\tb y\nabc\t@spoken-only\n", err);
+    CHECK(t.size() == 2 && t[0].spoken_only && t[0].spoken == std::vector<std::string>({ "b y" }), "flag read, not an alias");
+    CHECK(t.size() == 2 && t[1].spoken_only && t[1].weight == 1.0f && t[1].spoken.empty(), "flag as the second field, weight stays 1");
+    const vocab_view v = view_of(kToy);
+    auto both = graph::build({ term("a b x", 1.0f, { "b y" }) }, v, params{});
+    term so("a b x", 1.0f, { "b y" });
+    so.spoken_only = true;
+    auto only = graph::build({ so }, v, params{});
+    CHECK(both->n_nodes() == 6 && only->n_nodes() == 3, "root + 'b y' only, without the written 'a b x' nodes");
+    CHECK(only->child(0, A) < 0, "the written form's first piece is not a root arc");
+    CHECK(only->child(0, B) > 0, "the spoken form's first piece is");
+    speller sp({ so });
+    CHECK(sp.map("b y") == "a b x", "the spoken form still maps to the written form");
+}
+
 // map_spoken: whole-word, case-insensitive, ё=е, longest alias first. RED if the boundary test is dropped
 // ("дозорного" would become "dozorного") or the alias comparison stops folding case.
 static void t_map_spoken() {
@@ -424,6 +445,7 @@ int main() {
     t_skip_report_no_text();
     t_finite_bounds();
     t_build_cost();
+    t_spoken_only();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

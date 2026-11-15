@@ -45,6 +45,7 @@ struct params {
 struct term {
     std::string text;                 // the written form: what the user wants in the output
     float weight = 1.0f;              // multiplies the phrase's arcs (NeMo's per-phrase alpha)
+    bool spoken_only = false;         // the written form is an ordinary word: boost only the spoken forms
     std::vector<std::string> spoken;  // spellings the model writes when the term is SPOKEN (e.g. Cyrillic
                                       // for a Latin name in Russian speech); boosted like the written form
                                       // and mapped back to `text` by map_spoken() after the decode
@@ -231,7 +232,8 @@ class graph {
         }
         const piece_map pieces = make_piece_map(v);
         for (const term & t : terms) {
-            std::vector<std::string> forms = case_variants(t.text);
+            std::vector<std::string> forms;
+            if (!t.spoken_only) forms = case_variants(t.text);
             for (const std::string & sp : t.spoken) {
                 for (const std::string & cv : case_variants(sp)) {
                     if (std::find(forms.begin(), forms.end(), cv) == forms.end()) forms.push_back(cv);
@@ -519,6 +521,9 @@ inline std::string skip_report(const std::vector<std::string> & skipped) {
 }
 inline constexpr size_t kMaxTerms = 200;
 inline constexpr size_t kMaxAliases = 8;
+// A term-line field that marks a written form which is an ordinary word of its language: only the spoken forms are
+// boosted. "@" cannot start a heard form (glossary heard forms carry letters, digits, spaces, ' and - only).
+inline constexpr const char * kSpokenOnly = "@spoken-only";
 
 inline std::string trim(const std::string & s) {
     size_t b = 0, e = s.size();
@@ -552,6 +557,10 @@ inline std::vector<term> parse_terms(const std::string & text, std::string & err
         bool bad = false;
         for (size_t i = 1; i < f.size() && !bad; ++i) {
             if (f[i].empty()) continue;
+            if (f[i] == kSpokenOnly) {  // a flag, not an alias, in any position
+                tm.spoken_only = true;
+                continue;
+            }
             if (i == 1) {
                 char * end = nullptr;
                 const double d = std::strtod(f[i].c_str(), &end);
