@@ -794,6 +794,7 @@ public enum L10nKey: String, CaseIterable {
     case speakPanelPause = "speak.panel.pause"
     case speakPanelPauseNone = "speak.panel.pause_none"
     case speakPanelPauseValue = "speak.panel.pause_value"
+    case speakPanelDirectivesOnly = "speak.panel.directives_only"
     case speakPanelNowPhrase = "speak.panel.now_phrase"
     case speakPanelNowAll = "speak.panel.now_all"
     case speakPanelLoudness = "speak.panel.loudness"

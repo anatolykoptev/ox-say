@@ -135,7 +135,8 @@ public enum PhraseEditing {
 
     /// The rows of a project's phrases, one per chunk the daemon renders (`GET /v1/produce/{id}/chunks`). The state is
     /// `PhraseScript.phraseStates` with each chunk as its own phrase; only a running project has a phrase being made.
-    public static func rows(chunks: [ProduceChunkDetail], jobRunning: Bool) -> [PhraseRowValue] {
+    public static func rows(chunks: [ProduceChunkDetail], jobRunning: Bool,
+                            text: (L10nKey) -> String = { $0.text }) -> [PhraseRowValue] {
         let states = PhraseScript.phraseStates(
             emitting: Array(repeating: true, count: chunks.count),
             chunks: chunks.map { ProduceChunk(index: $0.index, status: $0.status) },
@@ -144,7 +145,7 @@ public enum PhraseEditing {
             let state = states[offset]
             return PhraseRowValue(
                 index: chunk.index,
-                preview: PhraseScript.preview(chunk.text),
+                preview: PhraseScript.preview(chunk.text, directivesOnly: text(.speakPanelDirectivesOnly)),
                 state: !jobRunning && state == .rendering ? .pending : state,
                 style: chunk.style,
                 mood: mood(of: chunk.style),

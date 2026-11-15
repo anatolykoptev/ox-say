@@ -273,50 +273,72 @@ final class MainWindowWiringTests: XCTestCase {
         text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 
+    private func sidebarView() throws -> String {
+        squeezed(MeetingWiringTests.stripComments(try source("MainWindowUI/MainWindowView.swift")))
+    }
+
     /// N4: the sections are one List and Settings is a one-row List under the Advanced switch, both through the same
     /// helper, so both are bound to the model's one `section` and the system draws exactly one highlight between them.
-    /// Mutations: `model.objectWillChange.send()` -> `break`; either `.onKeyPress(` line deleted; `.background(.bar)` deleted -> RED
-    /// (the Shots probe, SHOTS_PROBE=1, exits 1 on the first two as well).
     /// Mutation: MainWindowView, a second `List(` with its own `@State` selection for Settings -> RED (the helper is the
     /// only `List(`); `sidebarList([.settings])` -> any other rows -> RED.
     func testSettingsIsAOneRowListBoundToTheSameSelection() throws {
-        let raw = MeetingWiringTests.stripComments(try source("MainWindowUI/MainWindowView.swift"))
-        let view = squeezed(raw)
+        let view = try sidebarView()
         XCTAssertEqual(view.replacingOccurrences(of: "sidebarList(", with: "").components(separatedBy: "List(").count - 1, 1, "one List builder, used for both lists")
         XCTAssertTrue(view.contains("List(rows, selection: binding(for: rows))"))
         XCTAssertTrue(view.contains("sidebarList(topSections, id: .sections)"))
         XCTAssertTrue(view.contains("sidebarList([.settings], id: .settings)"))
         XCTAssertTrue(view.contains("OneRowList { sidebarList([.settings], id: .settings) }"), "a List has no height of its own")
         XCTAssertTrue(view.contains("get: { rows.contains(model.section) ? model.section : nil }"))
-        // A deselect to nothing is not a choice, but the table is already empty: the getter must be asked again.
+    }
+
+    /// A deselect to nothing is not a choice, but the table is already empty: the getter must be asked again, on the
+    /// next run-loop turn (the setter can run inside a view update, where a synchronous publish warns).
+    /// Mutation: `DispatchQueue.main.async { model.objectWillChange.send() }` -> `model.objectWillChange.send()`;
+    /// or `model.objectWillChange.send()` -> `break` -> RED.
+    func testADroppedDeselectPublishesOnTheNextRunLoopTurn() throws {
+        let view = try sidebarView()
         XCTAssertTrue(view.contains("model.section = s } else {"))
-        // ... on the next run-loop turn: the setter can run inside a view update, where a synchronous publish warns.
-        // Mutation: `DispatchQueue.main.async { model.objectWillChange.send() }` -> `model.objectWillChange.send()` -> RED.
         XCTAssertTrue(view.contains("DispatchQueue.main.async { model.objectWillChange.send() }"),
                       "a dropped deselect leaves the table with no highlight; the publish is deferred")
         XCTAssertEqual(view.components(separatedBy: "objectWillChange.send()").count - 1, 1)
-        // The arrow keys cross from the last section to Settings and back, and hand the keyboard over; a key held with a
-        // modifier is the list's own (`plain:`), the decision is MainWindowSpec.sidebarMove.
-        // Mutation: either `SidebarArrow.isPlain(press.modifiers)` -> `true` -> RED.
+    }
+
+    /// The arrow keys cross from the last section to Settings and back, and hand the keyboard over; a key held with a
+    /// modifier is the list's own (`plain:`), the decision is MainWindowSpec.sidebarMove (SidebarArrow.isPlain decides
+    /// whether the key is plain).
+    /// Mutation: either `.onKeyPress(` line deleted; either `SidebarArrow.isPlain(press.modifiers)` -> `true` -> RED.
+    func testTheArrowKeysCrossBetweenTheTwoLists() throws {
+        let view = try sidebarView()
         XCTAssertTrue(view.contains(".onKeyPress(.downArrow, phases: [.down, .repeat]) { press in move(.down, from: id, plain: SidebarArrow.isPlain(press.modifiers)) }"))
         XCTAssertTrue(view.contains(".onKeyPress(.upArrow, phases: [.down, .repeat]) { press in move(.up, from: id, plain: SidebarArrow.isPlain(press.modifiers)) }"))
         XCTAssertTrue(view.contains("MainWindowSpec.sidebarMove(arrow, from: list, plain: plain"))
         XCTAssertTrue(view.contains("focusedList = hop.list"))
         XCTAssertTrue(view.contains(".focused($focusedList, equals: id)"))
-        // The bottom area has the bar material and a hairline, so a scrolling list does not show through it.
+    }
+
+    /// The bottom area has the bar material and a hairline, so a scrolling list does not show through it; it is a
+    /// safe-area inset of the sections list, the switch above the Settings list. The one-row list's room is named parts.
+    /// Mutation: `.background(.bar)` deleted; `AdvancedSwitch` moved below the Settings list; `room` back to a bare `{ 20 }` -> RED.
+    func testTheBottomAreaLayout() throws {
+        let view = try sidebarView()
         XCTAssertTrue(view.contains("Divider() if switchShown"))
         XCTAssertTrue(view.contains(".background(.bar)"))
-        // The bottom area is a safe-area inset of the sections list, the switch above the Settings list.
         let inset = try XCTUnwrap(view.range(of: ".safeAreaInset(edge: .bottom"), "the bottom area").lowerBound
         let rest = view[inset...]
         let switchAt = try XCTUnwrap(rest.range(of: "AdvancedSwitch(model: model)")).lowerBound
         let settingsAt = try XCTUnwrap(rest.range(of: "sidebarList([.settings], id: .settings)")).lowerBound
         XCTAssertLessThan(switchAt, settingsAt, "the Advanced switch sits directly above Settings")
-        // Source layout: the type's doc comment sits right above it, and the focus state is stored with the other properties.
+        XCTAssertTrue(view.contains("static var room: CGFloat { tableTop + tableBottom + slack }"), "the room is its named parts")
+    }
+
+    /// Source layout: the type's doc comment sits right above it, and the focus state is stored with the other properties.
+    /// The type is found by its name, whatever its access level.
+    /// Mutation: the `@FocusState` property moved below `public init` -> RED.
+    func testMainWindowViewKeepsItsDocCommentAndFocusStateTogether() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let uncut = try String(contentsOf: root.appendingPathComponent("Sources/MainWindowUI/MainWindowView.swift"), encoding: .utf8)
         let lines = uncut.components(separatedBy: "\n")
-        let decl = try XCTUnwrap(lines.firstIndex { $0.hasPrefix("public struct MainWindowView") })
+        let decl = try XCTUnwrap(lines.firstIndex { $0.range(of: #"^(?:(?:public|internal|package|private|fileprivate) )?struct MainWindowView\b"#, options: .regularExpression) != nil })
         XCTAssertTrue(lines[decl - 1].hasPrefix("///"), "the doc comment is above MainWindowView")
         let props = lines[decl...].prefix { !$0.contains("public init") }.filter { $0.contains("let ") || $0.contains("var ") || $0.contains("@") }
         XCTAssertTrue(props.contains { $0.contains("@FocusState") })

@@ -136,13 +136,20 @@ extension MainSection {
 
 /// The one-row Settings list at the height its row needs. A List has no height of its own (`fixedSize` collapses it to 0),
 /// so the height is the row plus the room around it. `contentMargins` does not move the table's own 10 pt above the
-/// first row (probed), so `room` is that 10 pt plus 10 pt below: 4 pt more than the 6 pt measured on macOS 26, as slack for
-/// the row metrics of macOS 14 and 15, which were not measured. The Shots probe fails the run if the row is clipped.
+/// first row (probed), so `room` is that `tableTop`, the `tableBottom` measured on macOS 26, and `slack` for the row metrics
+/// of macOS 14 and 15, which were not measured. The Shots probe fails the run if the row is clipped.
 /// The row heights are the sidebar's for each icon size (System Settings > Appearance, passed down as `sidebarRowSize`):
 /// 24 / 32 / 40 pt, measured on macOS 26 only. An older system draws the same or smaller rows (no clipping, a little more
 /// air below); a row a few points larger still fits the slack, and the largest size is the fallback for a size not known yet.
 struct OneRowList<Rows: View>: View {
-    static var room: CGFloat { 20 }
+    /// Computed, not stored: a generic type has no static stored properties.
+    /// The table's own gap above the first row, which `contentMargins` does not move.
+    static var tableTop: CGFloat { 10 }
+    /// The gap below the row, as measured on macOS 26.
+    static var tableBottom: CGFloat { 6 }
+    /// An estimate, not a measurement: room for the row metrics of macOS 14 and 15.
+    static var slack: CGFloat { 4 }
+    static var room: CGFloat { tableTop + tableBottom + slack }
     @Environment(\.sidebarRowSize) private var rowSize
     @ViewBuilder var rows: () -> Rows
 

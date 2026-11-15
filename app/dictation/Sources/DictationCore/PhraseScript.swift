@@ -80,10 +80,12 @@ public enum PhraseScript {
     /// A row's preview: the phrase's start, whitespace folded, capped.
     /// Directives ([pause …], [style: …]) are the daemon's, not the reader's —
     /// the row shows only the spoken words, stripped the way `emits` strips.
-    public static func preview(_ phrase: String) -> String {
+    /// A phrase that is only directives would show nothing: it shows `directivesOnly` (a blank phrase stays blank).
+    public static func preview(_ phrase: String, directivesOnly: String = "") -> String {
         let words = phrase.replacingOccurrences(of: ScriptBrackets.directivePattern,
                                                 with: "", options: .regularExpression)
         let folded = fold(words)
+        if folded.isEmpty, !fold(phrase).isEmpty { return directivesOnly }
         guard folded.count > previewLength else { return folded }
         return String(folded.prefix(previewLength)) + "…"
     }

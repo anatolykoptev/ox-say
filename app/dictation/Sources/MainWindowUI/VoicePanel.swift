@@ -79,7 +79,7 @@ struct VoicePanel: View {
             Text(L10nKey.speakPanelNeedsProject.text).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         } else if case .phrase(let n)? = scope, let chunk = values.phraseChunks.first(where: { $0.index == n }) {
             LabeledContent(L10nKey.speakPanelPhrase.text) {
-                Text("\(chunk.index + 1). \(PhraseScript.preview(chunk.text))").lineLimit(1).truncationMode(.tail)
+                Text("\(chunk.index + 1). \(PhraseScript.preview(chunk.text, directivesOnly: L10nKey.speakPanelDirectivesOnly.text))").lineLimit(1).truncationMode(.tail)
             }
         } else if scope == .all {
             LabeledContent(L10nKey.speakPanelPhrase.text) { Text(L10nKey.speakPanelAllPhrases.text) }
