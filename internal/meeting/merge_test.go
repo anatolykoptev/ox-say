@@ -55,7 +55,7 @@ const farSide = "so the plan is to ship the release on friday after the review"
 // (the echo stays in the transcript).
 func TestDropEchoRemovesTheFarSideHeardOnTheMic(t *testing.T) {
 	them := words(10, farSide)
-	echo := words(10.3, "plan is to ship the release on friday after review") // recognizer dropped two words
+	echo := words(11.1, "plan is to ship the release on friday after review") // recognizer dropped two words; each word is stamped where it was said
 	own := words(20, "I will prepare the changelog tonight")
 	got, _ := DropEcho(MergeTurns(append(echo, own...), them))
 	var me []string

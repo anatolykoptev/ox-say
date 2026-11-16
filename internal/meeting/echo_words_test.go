@@ -30,9 +30,16 @@ func cat(parts ...[]stt.Word) []stt.Word {
 // is nothing but echo disappears, and what the owner says after, or over, the
 // far side is kept.
 //
-// Mutation (test 1 must go RED): internal/meeting/merge.go DropEcho, delete
-// `out = append(out, rest...)` so a turn that held echo is dropped whole, as
-// before the word-level gate -> "echo and a short answer" loses the answer.
+// Mutations (each RED):
+//   - internal/meeting/merge.go DropEcho, replace `out = append(out, rest...)`
+//     with `_ = rest` (a turn that held echo is dropped whole, as before) ->
+//     "echo and a short answer";
+//   - internal/meeting/echo_words.go alignedWords, drop `&& together(me[i],
+//     far[j])` from pair -> "owner words that also occur in the question, said
+//     later";
+//   - internal/meeting/echo_words.go echoWords, make garbled return true ->
+//     the backchannel and "owner word(s) inside the echo" rows;
+//   - the same, returning false -> "garbled last echo word".
 func TestDropEchoWorksOnWords(t *testing.T) {
 	question := "so is everything good with the new release"
 	cases := []struct {
@@ -81,6 +88,63 @@ func TestDropEchoWorksOnWords(t *testing.T) {
 			them:        spaced(10, 0.4, "we should move the launch to next friday afternoon"),
 			me:          cat(spaced(8, 0.4, "okay so let me think"), spaced(10.2, 0.4, "we should move the launch to next friday afternoon"), spaced(14.2, 0.4, "that works for me")),
 			wantMe:      []string{"okay so let me think", "that works for me"},
+			wantChanged: 1,
+		},
+		{
+			// The recognizer misspelled the last echo word; it is a near-match
+			// of the far-side word spoken then, so it goes with the echo.
+			name:        "garbled last echo word",
+			them:        spaced(10, 0.4, question),
+			me:          spaced(10.2, 0.4, "so is everything good with the new relese"),
+			wantMe:      nil,
+			wantChanged: 1,
+		},
+		// The owner's backchannel next to an echo is the owner's, even while
+		// the far side is still talking: only a word that is evidence of an
+		// echo of a specific far-side word goes.
+		{
+			name:        "backchannel before the echo",
+			them:        spaced(10, 0.4, question),
+			me:          cat(spaced(10, 0.4, "yeah"), spaced(10.8, 0.4, "everything good with the new release")),
+			wantMe:      []string{"yeah"},
+			wantChanged: 1,
+		},
+		{
+			name:        "backchannel after the echo while the far side goes on",
+			them:        spaced(10, 0.4, question+" and then we can ship"),
+			me:          cat(spaced(10.2, 0.4, question), spaced(13.4, 0.3, "right")),
+			wantMe:      []string{"right"},
+			wantChanged: 1,
+		},
+		{
+			name:        "backchannel before the echo, ru",
+			them:        spaced(10, 0.4, "давайте тогда отправим предложение в пятницу до обеда"),
+			me:          cat(spaced(10, 0.3, "да"), spaced(10.9, 0.4, "отправим предложение в пятницу до обеда")),
+			wantMe:      []string{"да"},
+			wantChanged: 1,
+		},
+		{
+			// "good" is in the question, but 1 s earlier than the owner says
+			// it: not an echo of it.
+			name: "owner words that also occur in the question, said later",
+			them: spaced(10, 0.4, question),
+			me: cat(spaced(10.2, 0.4, "so is everything"), []stt.Word{
+				{W: "yeah", S: 12.0, E: 12.2, P: 0.9}, {W: "good", S: 12.3, E: 12.6, P: 0.9}, {W: "ok", S: 12.7, E: 13.0, P: 0.9}}),
+			wantMe:      []string{"yeah good ok"},
+			wantChanged: 1,
+		},
+		{
+			name:        "owner word inside the echo",
+			them:        spaced(10, 0.4, question),
+			me:          cat(spaced(10.2, 0.4, "so is everything"), spaced(11.4, 0.4, "yeah"), spaced(11.8, 0.4, "with the new release")),
+			wantMe:      []string{"yeah"},
+			wantChanged: 1,
+		},
+		{
+			name:        "owner words inside the echo, two of them",
+			them:        spaced(10, 0.4, question),
+			me:          cat(spaced(10.2, 0.4, "so is everything"), spaced(11.4, 0.2, "no wait"), spaced(11.8, 0.4, "with the new release")),
+			wantMe:      []string{"no wait"},
 			wantChanged: 1,
 		},
 	}
