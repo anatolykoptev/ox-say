@@ -76,7 +76,7 @@ final class SpeakWiringTests: XCTestCase {
         let hidden = try XCTUnwrap(rec.range(of: "guard visible else { return }"))
         XCTAssertLessThan(stop.lowerBound, hidden.lowerBound, "even when the window is hidden")
         XCTAssertTrue(window.contains("speakSource.windowClosed()"))
-        XCTAssertTrue(window.contains("self?.speakSource.stopClip(); self?.voiceSource.preview(id)"), "a sample stops the clip")
+        XCTAssertTrue(window.contains("self?.speakSource.stopClip(); self?.cleanSource.stopPlayback(); self?.voiceSource.preview(id)"), "a sample stops the clip and the cleanup comparison")
     }
 
     /// Every stop releases the version handshake, through the one executor; the players are mutually exclusive.

@@ -15,6 +15,9 @@ struct TranscribePage: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 if let notice = model.data.notice { NoticeBar(text: notice) { model.actions.dismissNotice() } }
             }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if model.data.clean.state.isShown(on: model.transcribeState) { CleanBar(model: model) }
+            }
             .toolbar {
                 ToolbarItem {
                     Button(L10nKey.transcribePick.text) { pickingFile = true }

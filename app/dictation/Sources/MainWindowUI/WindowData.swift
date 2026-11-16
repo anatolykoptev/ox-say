@@ -156,13 +156,14 @@ public struct MainWindowData: Equatable {
     public var about: AboutValues
     public var speak: SpeakValues
     public var transcribe: TranscribeValues
+    public var clean: CleanValues
 
     public init(meetings: [MeetingInfo], meetingsLoad: MeetingsLoad = .loaded, details: [String: MeetingDetail],
                 detailLoading: Set<String> = [], detailError: [String: String] = [:], recordingElapsed: TimeInterval? = nil,
                 notice: String? = nil, search: MeetingSearchState = MeetingSearchState(), playback: PlaybackValues? = nil,
                 meetingSettings: MeetingSettingsValues, permissions: [PermissionItem],
                 dictation: DictationValues, voices: VoicesValues, about: AboutValues, speak: SpeakValues = SpeakValues(),
-                transcribe: TranscribeValues = TranscribeValues()) {
+                transcribe: TranscribeValues = TranscribeValues(), clean: CleanValues = CleanValues()) {
         self.meetings = meetings
         self.meetingsLoad = meetingsLoad
         self.details = details
@@ -179,6 +180,7 @@ public struct MainWindowData: Equatable {
         self.about = about
         self.speak = speak
         self.transcribe = transcribe
+        self.clean = clean
     }
 }
 
@@ -275,6 +277,16 @@ public struct MainWindowActions {
     public var transcribeCopy: (String) -> Void = { _ in }
     public var transcribeSave: (String, TranscriptFormat) -> Void = { _, _ in }
     public var transcribeDelete: (String) -> Void = { _ in }
+    /// The cleanup bar on Расшифровка: a file picked or dropped (the app asks where the result goes), the running job
+    /// cancelled, the result revealed in Finder, a finished job or a failure closed, the comparison played or paused, a side
+    /// of it chosen, the position dragged.
+    public var cleanPick: (URL) -> Void = { _ in }
+    public var cleanCancel: () -> Void = {}
+    public var cleanReveal: () -> Void = {}
+    public var cleanDismiss: () -> Void = {}
+    public var cleanPlayPause: () -> Void = {}
+    public var cleanSide: (CleanSide) -> Void = { _ in }
+    public var cleanSeek: (Double) -> Void = { _ in }
 
     public init() {}
 }
