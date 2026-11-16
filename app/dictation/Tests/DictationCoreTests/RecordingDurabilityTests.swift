@@ -127,10 +127,10 @@ final class RecordingDurabilityTests: XCTestCase {
     /// delivered for more than a second or has never delivered.
     /// Mutation: RecordingDurability.onWake, `!micRunning` -> `micRunning` -> RED; `$0 > tapAliveWithin` -> `$0 < ...` -> RED.
     func testWakeRestartsOnlyWhatStopped() {
-        XCTAssertEqual(RecordingDurability.onWake(micRunning: true, tapSilence: 0.01), .init(restartMicrophone: false, rebuildTap: false))
-        XCTAssertEqual(RecordingDurability.onWake(micRunning: false, tapSilence: 0.01), .init(restartMicrophone: true, rebuildTap: false))
-        XCTAssertEqual(RecordingDurability.onWake(micRunning: true, tapSilence: 3600), .init(restartMicrophone: false, rebuildTap: true))
-        XCTAssertEqual(RecordingDurability.onWake(micRunning: true, tapSilence: nil), .init(restartMicrophone: false, rebuildTap: true))
+        XCTAssertEqual(RecordingDurability.onWake(micRunning: true, tapSilence: 0.01), RecordingDurability.WakeActions(restartMicrophone: false, rebuildTap: false))
+        XCTAssertEqual(RecordingDurability.onWake(micRunning: false, tapSilence: 0.01), RecordingDurability.WakeActions(restartMicrophone: true, rebuildTap: false))
+        XCTAssertEqual(RecordingDurability.onWake(micRunning: true, tapSilence: 3600), RecordingDurability.WakeActions(restartMicrophone: false, rebuildTap: true))
+        XCTAssertEqual(RecordingDurability.onWake(micRunning: true, tapSilence: nil), RecordingDurability.WakeActions(restartMicrophone: false, rebuildTap: true))
     }
 
     /// The recorder carries the pieces out (the shim compiles DictationCore only, so this reads the source as text):

@@ -14,6 +14,11 @@ public enum RecordingDurability {
     public struct WakeActions: Equatable {
         public var restartMicrophone: Bool
         public var rebuildTap: Bool
+
+        public init(restartMicrophone: Bool, rebuildTap: Bool) {
+            self.restartMicrophone = restartMicrophone
+            self.rebuildTap = rebuildTap
+        }
     }
 
     /// The tap counts as alive again when it delivered a buffer within this many seconds of the check.
