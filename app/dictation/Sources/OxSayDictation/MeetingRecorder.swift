@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreAudio
 import DictationCore
+import AppKit
 import os
 
 /// Records a meeting as two files in the meeting's directory: me.pcm (the
@@ -82,6 +83,12 @@ final class MeetingRecorder {
     private var tapRecovery = TapRecovery()
     private var tapPeak: Float = 0
     private var micObserver: NSObjectProtocol?
+    /// One line in the log per recording, not one per tick.
+    private var syncFailureLogged = false
+    /// #531: no idle system sleep and no App Nap throttling while the recording runs; ended in `stop`.
+    private let activity = ActivityHold.system
+    /// #531: the channel files are synced to the disk every `RecordingDurability.flushInterval` seconds.
+    private lazy var flusher = PeriodicFlush { [weak self] in self?.flushChannels() }
     private(set) var started: Date?
     /// P0a (macOS 26.5.1): the default layout, main sub-device = the default output, recorded cleanly. Branch A.
     var useMainSubDevice = true
@@ -169,6 +176,9 @@ final class MeetingRecorder {
             }
         }
         started = Date()
+        activity.hold(reason: "OxSay is recording a meeting")
+        syncFailureLogged = false
+        flusher.start()
         // The microphone alone is still a recording: a tap that cannot start is told and retried (`tapStarted`).
         startTap()
         watchOutputDevice()
@@ -203,6 +213,8 @@ final class MeetingRecorder {
     /// Stops both sources, pads both files to the same length and closes them. The numbers go back to the caller.
     @discardableResult
     func stop() -> Summary {
+        flusher.stop()
+        activity.release()
         if let micObserver { NotificationCenter.default.removeObserver(micObserver) }
         micObserver = nil
         micChain.cancel()
@@ -232,6 +244,17 @@ final class MeetingRecorder {
         summary.tapExclusionMissing = tapCounters.exclusionMissing
         started = nil
         return summary
+    }
+
+    /// Syncs both channel files. The writers are taken under the lock and synced outside it, so an audio thread never
+    /// waits for the disk.
+    private func flushChannels() {
+        let (m, t) = writersLock.withLock { (me, them) }
+        let results = [m?.flush(), t?.flush()]
+        if results.contains(false), !syncFailureLogged {
+            syncFailureLogged = true
+            log.error("recording: the disk refused a sync; audio is written but not yet safe from a power loss")
+        }
     }
 
     /// Whether the call is heard through speakers (decided once, when the meeting starts).
