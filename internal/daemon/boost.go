@@ -118,3 +118,34 @@ func (d *Daemon) boostTermsFor(pairs []glossary.Pair) []string {
 	}
 	return terms
 }
+
+// heardIsVetted reports whether a heard form filed by an agent may borrow the evidence of its meant form: a single
+// word that the dictionary does not know as an ordinary word («давайте» is one). A phrase is not looked up. It
+// shares the verdict memo with the boost list; the dictionary is parsed on the first form not judged before and
+// dropped right after. A dictionary that cannot load means "not vetted": no borrowing without the check.
+func (d *Daemon) heardIsVetted(heard string) bool {
+	form := strings.TrimSpace(heard)
+	if form == "" || len(strings.Fields(form)) != 1 {
+		return false
+	}
+	d.tbVMu.Lock()
+	v, ok := d.tbVerdicts[form]
+	d.tbVMu.Unlock()
+	if ok {
+		return !v
+	}
+	ck := wordlists.New()
+	v = ck.Common(form)
+	if err := ck.Err(); err != nil {
+		d.log.Warn("glossary: a word list did not load; the pair cannot borrow evidence", slog.Any("error", err))
+		return false
+	}
+	go debug.FreeOSMemory()
+	d.tbVMu.Lock()
+	if d.tbVerdicts == nil {
+		d.tbVerdicts = map[string]bool{}
+	}
+	d.tbVerdicts[form] = v
+	d.tbVMu.Unlock()
+	return !v
+}

@@ -148,7 +148,7 @@ func (d *Daemon) handleGlossaryAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	p, err := d.Glossary.Add(in.Heard, in.Meant, in.Context)
+	p, err := d.Glossary.AddChecked(in.Heard, in.Meant, in.Context, d.heardIsVetted(in.Heard))
 	if err != nil {
 		writeErr(w, glossaryStatus(err), d.glossaryMessage(err))
 		return

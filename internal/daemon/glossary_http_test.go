@@ -498,3 +498,36 @@ func TestGlossaryErrorsCarryNoHomePath(t *testing.T) {
 		}
 	}
 }
+
+// An agent's one-sentence filing of an ordinary word or a phrase against an established meant stays a candidate:
+// the handler asks the dictionary, and the store lends the meant's evidence only to a vetted single word.
+// Mutation: glossary_http.go handleGlossaryAdd, `d.heardIsVetted(in.Heard)` -> `true` -> RED («давайте» goes active
+// and «давайте начнем» becomes «Devin начнем»).
+func TestGlossaryAddMistakenFilingsStayCandidates(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+	add := func(heard, ctx string) glossary.Pair {
+		t.Helper()
+		rec := call(t, mux, http.MethodPost, "/v1/glossary", `{"heard":"`+heard+`","meant":"Devin","context":"`+ctx+`"}`)
+		var p glossary.Pair
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &p) != nil {
+			t.Fatalf("add %q: %d %s", heard, rec.Code, rec.Body)
+		}
+		return p
+	}
+	add("дэвин", "спроси дэвин сегодня")
+	if p := add("дэвин", "открой дэвин завтра"); p.Status != glossary.Active {
+		t.Fatalf("established meant: %+v", p)
+	}
+	for _, c := range [][2]string{{"давайте", "давайте начнем работу"}, {"у дэвин", "позвони у дэвин вечером"}, {"спроси", "спроси у команды"}} {
+		if p := add(c[0], c[1]); p.Status != glossary.Candidate {
+			t.Errorf("one-sentence filing of %q = %s; want candidate", c[0], p.Status)
+		}
+	}
+	if got := d.corrector()("давайте начнем"); got != "давайте начнем" {
+		t.Errorf("an ordinary sentence was rewritten: %q", got)
+	}
+	if p := add("девин", "закрой девин вечером"); p.Status != glossary.Active {
+		t.Errorf("a new spelling of the term = %s; want active", p.Status)
+	}
+}

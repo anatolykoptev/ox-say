@@ -95,6 +95,8 @@ func containsSeq(hay, needle []string) bool {
 
 type compiled struct {
 	heard []string
+	// stems[k] is nominalStem(heard[k]): "" when that word matches only itself.
+	stems []string
 	meant string
 	// mkey is the folded meant minus its non-word edges; lead and trail are
 	// those edges folded (the "[" and "]" of "[foo]", the "++" of "C++") — a
@@ -112,7 +114,14 @@ func compile(pairs []Pair) []compiled {
 			continue
 		}
 		if h := words(p.Heard); len(h) > 0 {
-			c := compiled{heard: h, meant: p.Meant}
+			c := compiled{heard: h, stems: make([]string, len(h)), meant: p.Meant}
+			// A Cyrillic meant is a Russian word in a case of its own («Кролик», «Москва»): replacing «в маскве» by
+			// stem would write «в Москва». Only a meant in Latin letters stands for every case of the heard word.
+			if !hasCyrillic(p.Meant) {
+				for k, w := range h {
+					c.stems[k] = nominalStem(w)
+				}
+			}
 			mt := tokenize(p.Meant)
 			if len(mt) > 0 && !mt[0].word {
 				c.lead = fold(mt[0].s)
@@ -200,28 +209,60 @@ func alreadyMeant(toks []token, i, end int, c compiled) bool {
 // sides are different lines of a subtitle. It returns the index after the
 // match.
 func match(toks []token, i int, cs []compiled) (compiled, int, bool) {
-	for _, c := range cs {
-		j, ok := i, true
-		for k, h := range c.heard {
-			if k > 0 {
-				if j >= len(toks) || toks[j].word || strings.TrimSpace(toks[j].s) != "" ||
-					strings.IndexByte(toks[j].s, '\n') >= 0 {
-					ok = false
-					break
+	var end int
+	c, ok := firstMatch(cs, func(c compiled, exact bool) bool {
+		j, ok := matchAt(toks, i, c, exact)
+		end = j
+		return ok
+	})
+	return c, end, ok
+}
+
+// firstMatch walks the pairs longest heard form first. Among pairs of the same length an exact heard form beats a
+// stem match, whatever the order of the pairs: «дэвина» filed as its own pair is not swallowed by the pair filed as
+// «дэвин». A longer pair still beats a shorter exact one («дэвин смита» matches «дэвин смит», not «дэвин»).
+func firstMatch(cs []compiled, try func(c compiled, exact bool) bool) (compiled, bool) {
+	for lo := 0; lo < len(cs); {
+		hi := lo
+		for hi < len(cs) && len(cs[hi].heard) == len(cs[lo].heard) {
+			hi++
+		}
+		for _, exact := range []bool{true, false} {
+			for _, c := range cs[lo:hi] {
+				if try(c, exact) {
+					return c, true
 				}
-				j++
 			}
-			if j >= len(toks) || !toks[j].word || fold(toks[j].s) != h {
-				ok = false
-				break
+		}
+		lo = hi
+	}
+	return compiled{}, false
+}
+
+func matchAt(toks []token, i int, c compiled, exact bool) (int, bool) {
+	j := i
+	for k, h := range c.heard {
+		if k > 0 {
+			if j >= len(toks) || toks[j].word || strings.TrimSpace(toks[j].s) != "" ||
+				strings.IndexByte(toks[j].s, '\n') >= 0 {
+				return 0, false
 			}
 			j++
 		}
-		if ok {
-			return c, j, true
+		if j >= len(toks) || !toks[j].word || !sameWord(h, c.stem(k, exact), fold(toks[j].s)) {
+			return 0, false
 		}
+		j++
 	}
-	return compiled{}, 0, false
+	return j, true
+}
+
+// stem is the stem word k of the heard form may match by; none in an exact-only pass.
+func (c compiled) stem(k int, exact bool) string {
+	if exact {
+		return ""
+	}
+	return c.stems[k]
 }
 
 // edges returns what surrounds the word characters of one recognised word.
@@ -318,26 +359,29 @@ func alreadyMeantWords(ws []stt.Word, i, n int, c compiled) bool {
 }
 
 func matchWords(ws []stt.Word, i int, cs []compiled) (compiled, int, bool) {
-	for _, c := range cs {
-		n := len(c.heard)
-		if i+n > len(ws) {
-			continue
-		}
-		ok := true
-		for k, h := range c.heard {
-			w := ws[i+k].W
-			pre, post := edges(w)
-			if key(w) != h || (k < n-1 && post != "") ||
-				(k > 0 && (strings.TrimSpace(pre) != "" || strings.IndexByte(pre, '\n') >= 0)) {
-				ok = false
-				break
-			}
-		}
-		if ok {
-			return c, n, true
+	var n int
+	c, ok := firstMatch(cs, func(c compiled, exact bool) bool {
+		m, ok := matchWordsAt(ws, i, c, exact)
+		n = m
+		return ok
+	})
+	return c, n, ok
+}
+
+func matchWordsAt(ws []stt.Word, i int, c compiled, exact bool) (int, bool) {
+	n := len(c.heard)
+	if i+n > len(ws) {
+		return 0, false
+	}
+	for k, h := range c.heard {
+		w := ws[i+k].W
+		pre, post := edges(w)
+		if !sameWord(h, c.stem(k, exact), key(w)) || (k < n-1 && post != "") ||
+			(k > 0 && (strings.TrimSpace(pre) != "" || strings.IndexByte(pre, '\n') >= 0)) {
+			return 0, false
 		}
 	}
-	return compiled{}, 0, false
+	return n, true
 }
 
 // ApplyResult corrects a recognised result in place: the text, each segment's
