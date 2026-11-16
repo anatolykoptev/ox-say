@@ -122,6 +122,12 @@ jobs:
       - name: swift test
         run: swift test --package-path app/dictation
 
+      # The screenshot harness (app/dictation/Shots) is its own package and nothing else builds it, so it rotted
+      # unnoticed (issue #586). Compile only, one leg: it re-compiles MainWindowUI, and a second arch adds no signal.
+      - name: screenshot harness compiles
+        if: runner.arch == 'ARM64'
+        run: swift build --package-path app/dictation/Shots
+
       - name: build the app bundle
         run: app/dictation/build.sh
 
