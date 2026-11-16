@@ -300,8 +300,8 @@ public struct VoiceoverOptions: Equatable {
 /// `POST /v1/produce` and the job controls.
 public enum ProduceRequest {
     public static func createBody(script: String, title: String, voice: String?, format: ProduceFormat,
-                                  options: VoiceoverOptions) -> Data {
-        createBody(script: script, title: title, voice: voice, format: format, takes: options.takes,
+                                  options: VoiceoverOptions) throws -> Data {
+        try createBody(script: script, title: title, voice: voice, format: format, takes: options.takes,
                    cloneMode: options.cloneMode, loudness: options.loudness, steps: options.steps,
                    seed: options.seed, outPath: options.outPath)
     }
@@ -314,7 +314,7 @@ public enum ProduceRequest {
     public static func createBody(script: String, title: String, voice: String?, format: ProduceFormat,
                                   takes: Int? = nil, cloneMode: String? = nil,
                                   loudness: Double? = nil, steps: Int? = nil,
-                                  seed: Int? = nil, outPath: String? = nil) -> Data {
+                                  seed: Int? = nil, outPath: String? = nil) throws -> Data {
         var body: [String: Any] = ["script": script, "preset": format.preset]
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { body["title"] = trimmed }
@@ -325,13 +325,13 @@ public enum ProduceRequest {
         if let steps { body["inference_timesteps"] = steps }
         if let seed { body["seed"] = seed }
         if let outPath, !outPath.isEmpty { body["out_path"] = outPath }
-        return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
+        return try StudioClient.jsonBody(body)
     }
 
     /// `POST /v1/produce/{id}/delivery`: the batch of changed fields. A knob
     /// goes out only when set (`deliveryEntry` leaves nil fields out the same
     /// way); `loudness_lufs` re-targets the file's loudness without a render.
-    public static func deliveryBody(entries: [DeliveryEntry], loudness: Double?) -> Data {
+    public static func deliveryBody(entries: [DeliveryEntry], loudness: Double?) throws -> Data {
         var body: [String: Any] = ["chunks": entries.map { e in
             var entry: [String: Any] = ["n": e.n]
             if let style = e.style { entry["style"] = style }
@@ -340,20 +340,20 @@ public enum ProduceRequest {
             return entry
         }]
         if let loudness { body["loudness_lufs"] = loudness }
-        return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
+        return try StudioClient.jsonBody(body)
     }
 
     /// `POST /v1/produce/{id}/chunks/{n}`: one action plus its fields.
-    public static func chunkBody(_ body: [String: Any]) -> Data {
-        (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
+    public static func chunkBody(_ body: [String: Any]) throws -> Data {
+        try StudioClient.jsonBody(body)
     }
 
     /// The daemon's cap on a script (produce.go maxProduceChars), about 48 minutes of speech.
     public static let scriptLimit = 40000
 
     /// Resume with the battery allowed: the whole of "Continue on Battery Power".
-    public static func resumeOnBatteryBody() -> Data {
-        (try? JSONSerialization.data(withJSONObject: ["allow_battery": true])) ?? Data()
+    public static func resumeOnBatteryBody() throws -> Data {
+        try StudioClient.jsonBody(["allow_battery": true])
     }
 }
 

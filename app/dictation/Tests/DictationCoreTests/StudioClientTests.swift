@@ -193,6 +193,31 @@ final class StudioClientTests: XCTestCase {
         XCTAssertEqual(ok, Data(#"{"label":"ok"}"#.utf8))
     }
 
+    /// Every request body goes through `jsonBody`: a loudness that is NaN or infinite (a NaN raises an Objective-C
+    /// exception in JSONSerialization, which `try?` cannot catch and would end the app) is refused before anything is
+    /// sent, on each call that takes a Double, and nothing goes to the daemon.
+    /// Mutation: ProduceRequest.createBody (ProduceModels.swift), `try StudioClient.jsonBody(body)` -> `Data()` -> RED
+    /// on the startVoiceover leg; the same edit in deliveryBody -> RED on the deliver leg.
+    func testABodyThatCannotBeEncodedIsNeverSentByTheProduceCalls() async {
+        let (client, seen) = fake(status: 202, body: job)
+        for loudness in [Double.nan, .infinity] {
+            do {
+                _ = try await client.startVoiceover(script: "Hi.", title: "", voice: nil, format: .short,
+                                                    options: VoiceoverOptions(loudness: loudness))
+                XCTFail("start: a loudness of \(loudness) cannot be JSON; the call must throw")
+            } catch {
+                XCTAssertEqual(error as? StudioError, .badResponse)
+            }
+            do {
+                try await client.deliver(id: "j1", entries: [], loudness: loudness)
+                XCTFail("deliver: a loudness of \(loudness) cannot be JSON; the call must throw")
+            } catch {
+                XCTAssertEqual(error as? StudioError, .badResponse)
+            }
+        }
+        XCTAssertNil(seen(), "a body that cannot be encoded must not reach the daemon as an empty POST")
+    }
+
     /// A rename is a PATCH holding only the label (the daemon's strict decode
     /// would refuse anything else); a delete is a DELETE on the voice's path.
     func testRenamePatchesTheLabelAndDeleteSendsDelete() async throws {

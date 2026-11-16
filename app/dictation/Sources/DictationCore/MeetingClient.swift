@@ -125,7 +125,7 @@ extension StudioClient {
     /// PATCH /v1/meetings/{id}/speakers: names, merges and the split. The daemon writes the transcript
     /// again and queues the notes to be written again; the answer is the new state.
     public func editSpeakers(id: String, edits: SpeakerEdits) async throws -> SpeakersState {
-        var request = post(try meetingPath(id, "/speakers"), body: edits.body(), timeout: Self.quickTimeout)
+        var request = post(try meetingPath(id, "/speakers"), body: try edits.body(), timeout: Self.quickTimeout)
         request.httpMethod = "PATCH"
         let data = try await succeed(request)
         guard let state = SpeakersState.decode(data) else { throw StudioError.badResponse }

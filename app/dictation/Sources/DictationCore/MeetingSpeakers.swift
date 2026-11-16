@@ -77,13 +77,13 @@ public struct SpeakerEdits: Equatable {
 
     public var isEmpty: Bool { rename.isEmpty && merge.isEmpty && unmerge.isEmpty && split == nil }
 
-    public func body() -> Data {
+    public func body() throws -> Data {
         var obj: [String: Any] = [:]
         if !rename.isEmpty { obj["rename"] = rename }
         if !merge.isEmpty { obj["merge"] = merge }
         if !unmerge.isEmpty { obj["unmerge"] = unmerge.sorted() }
         if let split { obj["split"] = split }
-        return (try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys])) ?? Data("{}".utf8)
+        return try StudioClient.jsonBody(obj)
     }
 }
 

@@ -21,7 +21,7 @@ final class ProduceModelsTests: XCTestCase {
     // MARK: request
 
     func testCreateBodyUsesTheDaemonsKeys() throws {
-        let body = ProduceRequest.createBody(script: "Привет, мир.", title: " Глава 1 ", voice: "ru-anna", format: .short)
+        let body = try ProduceRequest.createBody(script: "Привет, мир.", title: " Глава 1 ", voice: "ru-anna", format: .short)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         XCTAssertEqual(json["script"] as? String, "Привет, мир.")
         XCTAssertEqual(json["title"] as? String, "Глава 1")
@@ -31,7 +31,7 @@ final class ProduceModelsTests: XCTestCase {
     }
 
     func testCreateBodyLeavesOutAnEmptyTitleAndVoice() throws {
-        let body = ProduceRequest.createBody(script: "Text.", title: "  ", voice: nil, format: .long)
+        let body = try ProduceRequest.createBody(script: "Text.", title: "  ", voice: nil, format: .long)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         XCTAssertEqual(Set(json.keys), ["script", "preset"])
         XCTAssertEqual(json["preset"] as? String, "youtube")
@@ -45,14 +45,14 @@ final class ProduceModelsTests: XCTestCase {
     }
 
     func testResumeBodyAllowsTheBattery() throws {
-        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: ProduceRequest.resumeOnBatteryBody()) as? [String: Any])
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: try ProduceRequest.resumeOnBatteryBody()) as? [String: Any])
         XCTAssertEqual(json["allow_battery"] as? Bool, true)
     }
 
     /// The reel's create: one take per chunk and the reference clone path, on
     /// top of the fields the Studio menu already sends.
     func testCreateBodyWithTakesAndCloneModeCarriesBoth() throws {
-        let body = ProduceRequest.createBody(script: "S.", title: "", voice: nil, format: .short,
+        let body = try ProduceRequest.createBody(script: "S.", title: "", voice: nil, format: .short,
                                              takes: 1, cloneMode: "reference")
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         XCTAssertEqual(json["takes"] as? Int, 1)
@@ -66,11 +66,11 @@ final class ProduceModelsTests: XCTestCase {
     /// decoder answers 400 to a key it does not know.
     /// Mutation: `if let loudness { body["loudness_lufs"] }` removed -> RED.
     func testCreateBodyCarriesTheOptionalKnobsOnlyWhenSet() throws {
-        let plain = ProduceRequest.createBody(script: "x", title: "", voice: nil, format: .short)
+        let plain = try ProduceRequest.createBody(script: "x", title: "", voice: nil, format: .short)
         let plainJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: plain) as? [String: AnyHashable])
         XCTAssertEqual(plainJSON, ["script": "x", "preset": "reels"])
         let tuned = try XCTUnwrap(JSONSerialization.jsonObject(
-            with: ProduceRequest.createBody(script: "x", title: "", voice: nil, format: .short,
+            with: try ProduceRequest.createBody(script: "x", title: "", voice: nil, format: .short,
                                             loudness: -16, steps: 8, seed: 4127, outPath: "/tmp/out.wav")) as? [String: Any])
         XCTAssertEqual(tuned["loudness_lufs"] as? Double, -16)
         XCTAssertEqual(tuned["inference_timesteps"] as? Int, 8)
@@ -95,11 +95,12 @@ final class ProduceModelsTests: XCTestCase {
     /// Without the new options the body is byte-identical to the previous
     /// version's — the same call through the frozen function above, here in
     /// process. Mutation: always emit clone_mode -> RED.
-    func testCreateBodyWithoutTheNewFieldsIsByteIdentical() {
+    func testCreateBodyWithoutTheNewFieldsIsByteIdentical() throws {
         for (script, title, voice, format) in [("Привет, мир.", " Глава 1 ", "ru-anna" as String?, ProduceFormat.short),
                                                ("S.", "", nil, .long),
                                                ("T.", "t", "", .short)] {
-            XCTAssertEqual(ProduceRequest.createBody(script: script, title: title, voice: voice, format: format),
+            let now = try ProduceRequest.createBody(script: script, title: title, voice: voice, format: format)
+            XCTAssertEqual(now,
                            mainCreateBody(script: script, title: title, voice: voice, format: format),
                            "script=\(script) title=\(title) voice=\(voice ?? "nil")")
         }
@@ -110,21 +111,25 @@ final class ProduceModelsTests: XCTestCase {
     /// "92 bytes" is not equal to "92 bytes" on CI). Every produce/design body
     /// must come out with sorted keys, every time. Mutation: drop `.sortedKeys`
     /// from `createBody` -> RED.
-    func testRequestBodiesSerialiseWithSortedKeysEveryTime() {
+    func testRequestBodiesSerialiseWithSortedKeysEveryTime() throws {
         let create = #"{"clone_mode":"x","inference_timesteps":8,"loudness_lufs":-18,"out_path":"o","preset":"reels","script":"S","seed":1,"takes":2,"title":"t","voice":"v"}"#
         let delivery = #"{"chunks":[{"n":1,"pace":1.5,"pause_after":0.5,"style":"calm"}],"loudness_lufs":-18}"#
         let design = #"{"description":"d","takes":3,"text":"t"}"#
         let save = #"{"name":"n","replace":true,"take":"t"}"#
         for _ in 0..<200 {
-            XCTAssertEqual(String(decoding: ProduceRequest.createBody(
+            let createBody = try ProduceRequest.createBody(
                 script: "S", title: "t", voice: "v", format: .short, takes: 2, cloneMode: "x",
-                loudness: -18, steps: 8, seed: 1, outPath: "o"), as: UTF8.self), create)
-            XCTAssertEqual(String(decoding: ProduceRequest.deliveryBody(
-                entries: [DeliveryEntry(n: 1, style: "calm", pauseAfter: 0.5, pace: 1.5)], loudness: -18), as: UTF8.self), delivery)
-            XCTAssertEqual(String(decoding: ProduceRequest.chunkBody(["action": "a", "n": 1, "style": "s"]), as: UTF8.self),
-                           #"{"action":"a","n":1,"style":"s"}"#)
-            XCTAssertEqual(String(decoding: DesignRequest.body(description: "d", text: "t"), as: UTF8.self), design)
-            XCTAssertEqual(String(decoding: DesignRequest.saveBody(name: "n", take: "t", replace: true), as: UTF8.self), save)
+                loudness: -18, steps: 8, seed: 1, outPath: "o")
+            let deliveryBody = try ProduceRequest.deliveryBody(
+                entries: [DeliveryEntry(n: 1, style: "calm", pauseAfter: 0.5, pace: 1.5)], loudness: -18)
+            let chunkBody = try ProduceRequest.chunkBody(["action": "a", "n": 1, "style": "s"])
+            let designBody = try DesignRequest.body(description: "d", text: "t")
+            let saveBody = try DesignRequest.saveBody(name: "n", take: "t", replace: true)
+            XCTAssertEqual(String(decoding: createBody, as: UTF8.self), create)
+            XCTAssertEqual(String(decoding: deliveryBody, as: UTF8.self), delivery)
+            XCTAssertEqual(String(decoding: chunkBody, as: UTF8.self), #"{"action":"a","n":1,"style":"s"}"#)
+            XCTAssertEqual(String(decoding: designBody, as: UTF8.self), design)
+            XCTAssertEqual(String(decoding: saveBody, as: UTF8.self), save)
         }
     }
 
@@ -132,7 +137,7 @@ final class ProduceModelsTests: XCTestCase {
     /// daemon allows the empty batch only because loudness is set.
     func testDeliveryBodyCarriesLoudnessAlone() throws {
         let json = try XCTUnwrap(JSONSerialization.jsonObject(
-            with: ProduceRequest.deliveryBody(entries: [], loudness: -18)) as? [String: Any])
+            with: try ProduceRequest.deliveryBody(entries: [], loudness: -18)) as? [String: Any])
         XCTAssertEqual(json["loudness_lufs"] as? Double, -18)
         XCTAssertEqual((json["chunks"] as? [Any])?.count, 0)
     }

@@ -45,6 +45,18 @@ func TestTranscribeToolTimeoutScales(t *testing.T) {
 	}
 }
 
+// A call can outlast any write deadline: the app's voice add waits up to 120 s for the daemon to normalise (and
+// maybe transcribe) a clip, a transcription runs for hours. go-mcpserver turns an unset WriteTimeout into a disabled
+// one (0) and builds its http.Server from it, so a value set here would cut those answers off mid-flight with the
+// client seeing a dropped connection. The go-mcpserver version in go.mod has no per-route deadline either.
+// Mutation: add `WriteTimeout: 30 * time.Second` to ServerConfig -> RED.
+func TestServerSetsNoWriteDeadline(t *testing.T) {
+	d := newTestDaemon(t, t.TempDir(), nil)
+	if got := d.ServerConfig("test").WriteTimeout; got != 0 {
+		t.Fatalf("WriteTimeout = %s: the server would cut off any answer slower than that (voice add allows 120 s, transcribe hours)", got)
+	}
+}
+
 // A transcription can run for hours (#16); progress notifications every
 // 30 s keep its event stream from looking idle. They route only in SSE mode,
 // so JSONResponse must stay off.
