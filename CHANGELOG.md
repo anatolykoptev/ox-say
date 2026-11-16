@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.1.34](https://github.com/anatolykoptev/ox-say/compare/v0.1.33...v0.1.34) (2026-11-16)
+
+
+### Added
+
+* **clean:** clean up the voice in a file, from the Расшифровка page ([#616](https://github.com/anatolykoptev/ox-say/issues/616)) ([3202e62](https://github.com/anatolykoptev/ox-say/commit/3202e62127cb07f4a4baea0538ab43e8e075bdbf))
+* **glossary:** activation per meant term, Russian case matching, threshold by length ([#588](https://github.com/anatolykoptev/ox-say/issues/588)) ([815862b](https://github.com/anatolykoptev/ox-say/commit/815862b1113b3c900948a3ae7db4167ad04f4624))
+* **meetings:** live captions while a meeting records ([#597](https://github.com/anatolykoptev/ox-say/issues/597)) ([b6cc33c](https://github.com/anatolykoptev/ox-say/commit/b6cc33cc70536ae913998cc29b489059ca74cd01))
+* **meetings:** per-app call tap for verified apps only, with diagnostics and an outside-playback notice ([#608](https://github.com/anatolykoptev/ox-say/issues/608)) ([c82d5f1](https://github.com/anatolykoptev/ox-say/commit/c82d5f126704b3d32c0a6018c7754ef1b7b438ed))
+* **meetings:** sync the recording to disk every 2 s and hold the Mac awake while recording ([#607](https://github.com/anatolykoptev/ox-say/issues/607)) ([cc7bebb](https://github.com/anatolykoptev/ox-say/commit/cc7bebb1580cc2874d4fb42855ee189cc6f6e6fa))
+* **notes:** report the GPU offload the notes child states in /status ([#590](https://github.com/anatolykoptev/ox-say/issues/590)) ([5b47546](https://github.com/anatolykoptev/ox-say/commit/5b47546468dc09e52fe30765edea8859f74ee29b))
+* **voices:** report when the ref_text check could not run ([#589](https://github.com/anatolykoptev/ox-say/issues/589)) ([5a732e6](https://github.com/anatolykoptev/ox-say/commit/5a732e69c827dff49576858aece32c65ff149f8a)), closes [#440](https://github.com/anatolykoptev/ox-say/issues/440)
+* **window:** live captions for the meeting being recorded ([#623](https://github.com/anatolykoptev/ox-say/issues/623)) ([0457f87](https://github.com/anatolykoptev/ox-say/commit/0457f87791080df13963436a8f5abe2950cabd6e))
+
+
+### Fixed
+
+* **clean:** verify.py's contract checks survive python -O ([#591](https://github.com/anatolykoptev/ox-say/issues/591)) ([a5bf7d2](https://github.com/anatolykoptev/ox-say/commit/a5bf7d2cbc712caf19b0c09789b1a2189b99a71d)), closes [#447](https://github.com/anatolykoptev/ox-say/issues/447)
+* **dictation:** refuse the dictation start while a voice take records ([#602](https://github.com/anatolykoptev/ox-say/issues/602)) ([f3e23c9](https://github.com/anatolykoptev/ox-say/commit/f3e23c9fe11aee897a1bed75fa3d9c0d754d4edc))
+* **meetings:** keep the first-time notes folder out of iCloud and meeting audio out of backups ([#605](https://github.com/anatolykoptev/ox-say/issues/605)) ([960c85e](https://github.com/anatolykoptev/ox-say/commit/960c85e4bdc7066fd8de6f58d2873573eb894d36))
+* **shots:** compile the harness again, build it in CI, run render.sh without GNU timeout ([#587](https://github.com/anatolykoptev/ox-say/issues/587)) ([0c1f115](https://github.com/anatolykoptev/ox-say/commit/0c1f1158d2453dbe6f9fcb7a74771c9b7531539d))
+* **shots:** fail loudly when the display is asleep or a capture fails ([#601](https://github.com/anatolykoptev/ox-say/issues/601)) ([24f57e5](https://github.com/anatolykoptev/ox-say/commit/24f57e5c6cb0cbef003d5d1ad97eacc3f3c1c75e))
+* **speak:** a changed voice stales the page; a failed clip is told and cuts nothing ([#606](https://github.com/anatolykoptev/ox-say/issues/606)) ([610da44](https://github.com/anatolykoptev/ox-say/commit/610da44fd8227ff8241213e487ccd203eee203fe))
+* **speak:** a notification target survives a daemon that does not answer ([#592](https://github.com/anatolykoptev/ox-say/issues/592)) ([73ceeaf](https://github.com/anatolykoptev/ox-say/commit/73ceeaf5365a2eed02ad421bf253239eb1d6b809)), closes [#513](https://github.com/anatolykoptev/ox-say/issues/513)
+* **stt:** harden the term-boost wire format; log silent cuts; mutation evidence for [#576](https://github.com/anatolykoptev/ox-say/issues/576) ([#596](https://github.com/anatolykoptev/ox-say/issues/596)) ([def5090](https://github.com/anatolykoptev/ox-say/commit/def509020cbf755ad762666804774f9951f6bd61))
+* **updater:** show why an install was refused; skip releases above this Mac's macOS ([#610](https://github.com/anatolykoptev/ox-say/issues/610)) ([a88a6f3](https://github.com/anatolykoptev/ox-say/commit/a88a6f38da235205add01176b17389631cd44e52))
+
+
+### Changed
+
+* **diar:** remove the pyannote speaker engine ([#594](https://github.com/anatolykoptev/ox-say/issues/594)) ([f28f646](https://github.com/anatolykoptev/ox-say/commit/f28f646990fd646b9154e2d72a9f17a4e05e2acc))
+
+
+### Documentation
+
+* **stt:** the dead-session comment names the 504 drain timeout ([#593](https://github.com/anatolykoptev/ox-say/issues/593)) ([243b81c](https://github.com/anatolykoptev/ox-say/commit/243b81c920b6f7ce8c66e5e550d90f9e9ce15353)), closes [#386](https://github.com/anatolykoptev/ox-say/issues/386)
+
 ## [0.1.33](https://github.com/anatolykoptev/ox-say/compare/v0.1.32...v0.1.33) (2026-11-15)
 
 
