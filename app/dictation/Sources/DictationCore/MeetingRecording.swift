@@ -197,12 +197,18 @@ public struct MeetingExporter {
     private let fm: FileManager
     private let stage: (Data, URL) throws -> Void
     private let replace: ((URL, URL) throws -> Void)?
+    private let home: URL
+    private let probe: ICloudSync.Probe
 
     /// `stage` writes one staged text during a refresh and `replace` moves it into place; tests make them fail.
     public init(defaults: UserDefaults, fm: FileManager = .default,
                 stage: @escaping (Data, URL) throws -> Void = { try $0.write(to: $1) },
-                replace: ((URL, URL) throws -> Void)? = nil) {
+                replace: ((URL, URL) throws -> Void)? = nil,
+                home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                probe: @escaping ICloudSync.Probe = ICloudSync.probe) {
         self.defaults = defaults
+        self.home = home
+        self.probe = probe
         self.fm = fm
         self.stage = stage
         self.replace = replace
@@ -249,7 +255,7 @@ public struct MeetingExporter {
             return .alreadyExported
         }
         do {
-            let dir = try NotesExport.write(info: info, in: MeetingSettings.folder(defaults), fm: fm)
+            let dir = try NotesExport.write(info: info, in: MeetingSettings.folder(defaults, home: home, probe: probe), fm: fm)
             MeetingSettings.markExported(info.id, defaults)
             MeetingSettings.setExportPath(info.id, dir.path, defaults)
             MeetingSettings.setExportHashes(info.id, NotesExport.hashes(of: info), defaults)

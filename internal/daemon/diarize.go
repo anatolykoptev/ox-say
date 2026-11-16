@@ -102,8 +102,8 @@ func runDiarizer(ctx context.Context, cfg *config.Config, pcmPath string) ([]byt
 	if st.Size() > diarMaxPCMBytes() {
 		return nil, &meeting.DiarUnavailableError{Reason: meeting.DiarTooLong}
 	}
-	work := filepath.Join(filepath.Dir(pcmPath), meeting.WorkDir)
-	if err := os.MkdirAll(work, 0o700); err != nil {
+	work, err := meeting.MakeWorkDir(filepath.Dir(pcmPath))
+	if err != nil {
 		return nil, err
 	}
 	out := filepath.Join(work, meeting.DiarizationJSON)

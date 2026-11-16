@@ -62,7 +62,19 @@ public final class PcmChannelWriter {
     /// `t0` is the meeting's start, in the same nanosecond clock `append` is given.
     public convenience init(url: URL, t0: UInt64) throws {
         _ = FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        Self.excludeFromBackup(url)
         try self.init(handle: FileHandle(forWritingTo: url), t0: t0)
+    }
+
+    /// Leaves the channel file out of Time Machine and other backups, before any audio is in it. Retention deletes the
+    /// audio on a schedule and a backup would keep it; the transcript and notes next to it are not marked and stay in the
+    /// user's backup. A refusal is not an error: a recording that cannot be marked is still a recording.
+    @discardableResult
+    static func excludeFromBackup(_ url: URL) -> Bool {
+        var target = url
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        do { try target.setResourceValues(values); return true } catch { return false }
     }
 
     init(handle: FileHandle, t0: UInt64) {

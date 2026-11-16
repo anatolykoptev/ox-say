@@ -24,6 +24,26 @@ final class PcmChannelWriterTests: XCTestCase {
         XCTAssertEqual(mode, 0o600, "audio is private")
     }
 
+    /// The channel file is audio that retention deletes on a schedule: a backup must not keep it. The mark is set when the
+    /// file is made, before any sample is in it, and only on that file (the transcript next to it is not marked).
+    /// Mutation: PcmChannelWriter.init(url:t0:), delete the `Self.excludeFromBackup(url)` line -> RED.
+    func testANewChannelFileIsExcludedFromBackup() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-pcm-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let channel = dir.appendingPathComponent("me.pcm")
+        let transcript = dir.appendingPathComponent("transcript.md")
+        try Data("kept".utf8).write(to: transcript)
+        let w = try PcmChannelWriter(url: channel, t0: 1_000)
+        defer { w.finish(atNanos: 1_000) }
+        // Read back through the raw attribute Time Machine reads (what `tmutil addexclusion` writes), not through the
+        // API that set it.
+        func mark(_ url: URL) -> Bool { getxattr(url.path, "com.apple.metadata:com_apple_backup_excludeItem", nil, 0, 0, 0) > 0 }
+        XCTAssertTrue(mark(channel), "me.pcm is not excluded from backup")
+        XCTAssertFalse(mark(transcript), "the transcript beside the audio must stay in the user's backup")
+        XCTAssertFalse(mark(dir), "the meeting directory must stay in the user's backup")
+    }
+
     /// A channel that starts late is padded, so its samples sit at their time in the meeting.
     /// Mutation: PcmChannelWriter.append, change `expected - written > Self.gapTolerance`
     /// to `false` -> RED (the late channel's words land seconds early).
