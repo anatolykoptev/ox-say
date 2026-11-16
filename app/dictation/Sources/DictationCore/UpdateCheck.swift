@@ -23,6 +23,45 @@ public enum UpdateError: Error, Equatable, CustomStringConvertible {
     }
 }
 
+/// The macOS a release needs, published in its notes (#494) as one hidden line,
+/// `<!-- ox-say-min-macos: 14.2 -->`, which the release workflow appends from the
+/// packaged app's `LSMinimumSystemVersion`. The updater reads it from the body it
+/// already fetches: a Mac below the floor is told so instead of being offered an
+/// install get.sh would refuse. Every failure to read it means "no floor known":
+/// the release is offered as before.
+public enum ReleaseFloor {
+    /// The first marker in `body`; nil when there is none or its value is not dotted numbers.
+    public static func minimum(inBody body: String) -> String? {
+        guard let re = try? NSRegularExpression(pattern: #"<!--\s*ox-say-min-macos:\s*([0-9]+(?:\.[0-9]+){0,2})\s*-->"#),
+              let m = re.firstMatch(in: body, range: NSRange(body.startIndex..., in: body)),
+              let r = Range(m.range(at: 1), in: body) else { return nil }
+        return String(body[r])
+    }
+
+    /// True only when both versions parse and `host` is older than `floor`, compared per component
+    /// ("14.10" is newer than "14.2"; a missing component is 0).
+    public static func isBelow(host: String, floor: String) -> Bool {
+        guard let h = components(host), let f = components(floor) else { return false }
+        for i in 0..<max(h.count, f.count) {
+            let a = i < h.count ? h[i] : 0, b = i < f.count ? f[i] : 0
+            if a != b { return a < b }
+        }
+        return false
+    }
+
+    static func components(_ version: String) -> [Int]? {
+        let parts = version.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+        guard !parts.isEmpty, parts.allSatisfy({ $0 != nil }) else { return nil }
+        return parts.map { $0! }
+    }
+
+    /// This Mac's macOS as "14.2" or "14.2.1".
+    public static var currentHost: String {
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        return v.patchVersion == 0 ? "\(v.majorVersion).\(v.minorVersion)" : "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
+    }
+}
+
 /// The latest published GitHub release of ox-say, against the tag the app
 /// bundle was built from.
 public struct UpdateChecker {

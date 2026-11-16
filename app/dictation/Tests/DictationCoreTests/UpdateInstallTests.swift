@@ -587,6 +587,59 @@ final class UpdateInstallRobustnessTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(counted.polls, 90)
     }
 
+    // #494: the alert says WHY the installer refused. get.sh's refusal sentence is the fixture, and the pin test keeps
+    // it equal to what get.sh prints (test-lib-install.sh section L runs the real get.sh and checks the same text).
+    private static let floorRefusal = "ox-say needs macOS 14.2 or later; this is 13.6."
+
+    func testTheFixtureIsTheSentenceGetShPrints() throws {
+        let getSh = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("get.sh")
+        let text = try String(contentsOf: getSh, encoding: .utf8)
+        XCTAssertTrue(text.contains("echo \"ox-say needs macOS 14.2 or later; this is $macos.\" >&2"))
+        XCTAssertTrue(Self.floorRefusal.hasPrefix("ox-say needs macOS 14.2 or later; this is "))
+    }
+
+    func testTheReasonIsTheLastReadableLineOfTheInstallersOutput() {
+        let reason = UpdateInstaller.refusalReason
+        XCTAssertEqual(reason("\(Self.floorRefusal)\n"), Self.floorRefusal)
+        XCTAssertEqual(reason("###  12%\r####  40%\rprogress m.gguf.part 100 bytes\n\(Self.floorRefusal)\nprogress m.gguf.part 200 bytes\n\n  \n"),
+                       Self.floorRefusal, "ticker lines and blanks after the sentence are skipped")
+        XCTAssertEqual(reason("first\r\(Self.floorRefusal)\r"), Self.floorRefusal, "a carriage return ends a line")
+        XCTAssertEqual(reason("bad\u{1b}[31m thing\u{7}\n"), "bad[31m thing", "control characters are dropped")
+        XCTAssertNil(reason(""))
+        XCTAssertNil(reason("progress a 1 bytes\n\n"))
+        let long = reason(String(repeating: "x", count: 500))
+        XCTAssertEqual(long?.count, UpdateInstaller.reasonLimit)
+        XCTAssertTrue(long?.hasSuffix("…") == true)
+    }
+
+    /// Run for real: the installer's last sentence reaches the failure, and what the log held BEFORE the installer
+    /// started (the download step's output) does not.
+    /// Mutation: UpdateInstall.swift run(), `installerStart` -> `0` -> RED here (the stale line is quoted).
+    func testAFailedInstallerCarriesItsOwnLastSentence() async throws {
+        let rig = try ScriptRig()
+        defer { rig.cleanUp() }
+        let logURL = rig.dir.appendingPathComponent("log")
+        FileManager.default.createFile(atPath: logURL.path, contents: Data("stale: written before the installer\n".utf8))
+        let log = try FileHandle(forWritingTo: logURL)
+        try log.seekToEnd()
+        defer { try? log.close() }
+        let read: (UInt64) -> String? = { since in
+            guard let data = try? Data(contentsOf: logURL), Int(since) <= data.count else { return nil }
+            return String(decoding: data.dropFirst(Int(since)), as: UTF8.self)
+        }
+        func fail(printing script: String) async -> UpdateInstaller.Failure? {
+            await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: log, scriptSource: rig.source,
+                                      installerOutput: read,
+                                      installer: { _, _, _ in .init(argv: ["/bin/sh", "-c", script], environment: [:]) },
+                                      installedVersion: { "0.1.21" }, daemonVersion: { nil })
+        }
+        let said = await fail(printing: "echo 'progress m.part 5 bytes'; echo '\(Self.floorRefusal)' >&2; exit 1")
+        XCTAssertEqual(said, .installerFailed(status: 1, reason: Self.floorRefusal))
+        let silent = await fail(printing: "exit 2")
+        XCTAssertEqual(silent, .installerFailed(status: 2, reason: nil), "nothing printed since the start: no stale quote")
+    }
+
     /// The call site watches by default (a nil watch would leave the installer unbounded).
     /// Mutation: UpdateInstall.swift run(), the default `IdleWatch(idleLimit: installerIdleLimit` -> `.infinity` -> RED.
     func testRunWatchesTheInstallerByDefault() throws {
@@ -734,6 +787,9 @@ final class UpdateFailureL10nTests: XCTestCase {
         (.installerFailed(status: 1),
          "The installer exited with status 1.",
          "Установщик завершился с кодом 1."),
+        (.installerFailed(status: 1, reason: "ox-say needs macOS 14.2 or later; this is 13.6."),
+         "The installer exited with status 1 and said: ox-say needs macOS 14.2 or later; this is 13.6.",
+         "Установщик завершился с кодом 1 и сообщил: ox-say needs macOS 14.2 or later; this is 13.6."),
         (.installerTimedOut(seconds: 1500),
          "The installer made no progress for 25 minutes and was stopped. Downloaded files are kept — run Update again to continue.",
          "Установка не продвигалась 25 мин и была остановлена. Скачанное сохранено — запустите обновление снова, чтобы продолжить."),

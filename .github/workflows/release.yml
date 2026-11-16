@@ -603,6 +603,13 @@ jobs:
     permissions:
       contents: write
     steps:
+      # First: the checkout cleans the workspace, so it must come before anything is downloaded. The script comes
+      # from the workflow commit (a release tag can predate it), like the upgrade gate's; see the notes step below.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          sparse-checkout: scripts/release-notes-floor.sh
+          persist-credentials: false
+
       # No merge-multiple: each leg lands in its own directory, so one leg's
       # SHA256SUMS cannot overwrite the other's.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -633,6 +640,27 @@ jobs:
             dist/ox-say-macos-x86_64.tar.gz
             dist/ox-say-macos-arm64.tar.gz
             dist/SHA256SUMS
+
+      # The macOS floor goes into the release notes as a hidden line (#494): the in-app updater reads it from the
+      # body it already fetches and tells a Mac below the floor why it is not offered this release. The value is
+      # read from the signed package itself. The script comes from the workflow commit (a release tag can predate
+      # it), like the upgrade gate's. A package without a readable floor fails the run before the release is
+      # published, so the previous release stays the latest, as for any failed check.
+      - name: Publish the macOS floor in the release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          # gh release view does not find a draft by tag; the list does
+          id=$(gh api "repos/$GH_REPO/releases?per_page=100" --jq "map(select(.tag_name == \"$TAG\"))[0].id")
+          [ -n "$id" ] && [ "$id" != null ] || { echo "no release for $TAG" >&2; exit 1; }
+          gh api "repos/$GH_REPO/releases/$id" --jq .body > notes.md
+          sh scripts/release-notes-floor.sh dist/ox-say-macos-arm64.tar.gz notes.md
+          sh scripts/release-notes-floor.sh dist/ox-say-macos-x86_64.tar.gz "$RUNNER_TEMP/x86-notes.md"
+          [ "$(tail -n 1 notes.md)" = "$(tail -n 1 "$RUNNER_TEMP/x86-notes.md")" ] || { echo "the two packages disagree on the floor" >&2; exit 1; }
+          gh api -X PATCH "repos/$GH_REPO/releases/$id" -F body=@notes.md --jq '.body | split("\n") | last'
 
       - name: Publish the release
         env:

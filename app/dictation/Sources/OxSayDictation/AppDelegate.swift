@@ -1340,7 +1340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Renders the prompt; the pure decision is UpdatePrompt.make.
     private func present(_ prompt: UpdatePrompt) {
         switch prompt {
-        case .upToDate, .developmentBuild:
+        case .upToDate, .developmentBuild, .unsupported:
             runAlert(UpdateDialogs.prompt(prompt))
         case .available(let remote, let local, let notes, let url):
             confirmInstall(remote: remote, local: local, notes: notes, url: url)
@@ -1387,6 +1387,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/ox-say/update.log")
     }
 
+    /// What the installer printed since byte `since` of the update log, its last 8 KB at most: the failed alert
+    /// quotes the installer's last sentence (UpdateInstaller.refusalReason).
+    private static func updateLogText(since: UInt64) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: updateLogURL) else { return nil }
+        defer { try? handle.close() }
+        guard let end = try? handle.seekToEnd() else { return nil }
+        try? handle.seek(toOffset: max(since, end > 8192 ? end - 8192 : 0))
+        return (try? handle.readToEnd()).flatMap { String(decoding: $0, as: UTF8.self) }
+    }
+
     /// Opens (truncating) the update log; nil when the directory or file cannot
     /// be created, in which case the installer's output is discarded.
     private static func openUpdateLog() -> FileHandle? {
@@ -1420,6 +1430,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let log = Self.openUpdateLog()
             let statusClient = studioClient!
             let failure = await UpdateInstaller.run(kind: kind, tag: tag, log: log,
+                                                    installerOutput: Self.updateLogText(since:),
                                                     installedVersion: Self.diskVersion,
                                                     daemonVersion: { (try? await statusClient.status(timeout: UpdateInstaller.daemonCheckTimeout))?.version })
             try? log?.close()

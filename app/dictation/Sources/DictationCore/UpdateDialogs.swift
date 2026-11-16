@@ -37,6 +37,9 @@ public enum UpdateDialogs {
             return UpdateDialog(title: text(.updateUptodateTitle), text: fill(.updateUptodateText, text, version), buttons: [text(.commonOk)])
         case .developmentBuild(let version):
             return UpdateDialog(title: text(.updateDevTitle), text: fill(.updateDevText, text, version), buttons: [text(.commonOk)])
+        case .unsupported(let remote, let local, let floor, let host):
+            return UpdateDialog(title: fill(.updateUnsupportedTitle, text, remote),
+                                text: fill(.updateUnsupportedText, text, floor, host, local), buttons: [text(.commonOk)])
         case .failed(let reason):
             return UpdateDialog(title: text(.updateCheckFailedTitle), text: reason, buttons: [text(.commonRetry), text(.commonOk)])
         case .available(let remote, let local, let notes, let url):

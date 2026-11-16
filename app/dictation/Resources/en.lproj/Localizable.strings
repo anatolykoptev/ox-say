@@ -421,6 +421,9 @@
 "update.failed.download_start" = "The download could not start: %@.";
 "update.failed.not_script" = "The downloaded installer was empty or not a script.";
 "update.failed.installer_exit" = "The installer exited with status %@.";
+"update.unsupported.title" = "OxSay %@ needs a newer macOS";
+"update.unsupported.text" = "It needs macOS %@ or later; this Mac has macOS %@. OxSay stays on v%@ here.";
+"update.failed.installer_reason" = "The installer exited with status %@ and said: %@";
 "update.failed.installer_timeout" = "The installer made no progress for %@ minutes and was stopped. Downloaded files are kept — run Update again to continue.";
 "update.failed.installer_start" = "The installer could not start: %@.";
 "update.failed.version_unchanged" = "The version did not change: expected %1$@ after the install, found %2$@.";
