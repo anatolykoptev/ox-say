@@ -336,7 +336,7 @@ final class MainWindowSource {
         a.speakNewText = { [weak self] in self?.speakSource.newText() }
         a.speakSelect = { [weak self] id in self?.speakSource.select(id) }
         a.speakTextChanged = { [weak self] text in self?.speakSource.textChanged(text) }
-        a.speakVoiceChanged = { _ in }
+        a.speakVoiceChanged = { [weak self] voice in self?.speakSource.voiceChanged(voice) }
         a.speakQualityChanged = { [weak self] quality in self?.speakSource.qualityChanged(quality) }
         a.speakNewReel = { [weak self] in self?.speakSource.newReel() }
         a.speakOpenDocument = { [weak self] url in self?.speakSource.openDocument(url) }

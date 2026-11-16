@@ -64,13 +64,14 @@ final class SpeakStudioWiringTests: XCTestCase {
 
     /// A project's track sounds through the one player and `ClipAudio`: the same exclusion, handshake release and
     /// recording gate as a clip, and the audio is read only when a start needs it.
-    /// Mutation: SpeakSource.playPause, drop `audio.playPause(` for a direct `player.play` -> RED.
+    /// Mutation: SpeakSource.playPause, drop `audio.playPause(` for a direct `player.play(wav:)` -> RED.
     func testAProjectTrackPlaysThroughClipAudioAndPerform() throws {
         let speak = try source("OxSayDictation/SpeakSource.swift")
         let play = try body(speak, of: "func playPause() {")
         XCTAssertTrue(play.contains("guard let track = selectedTrack() else { return }"))
         XCTAssertTrue(play.contains("perform(audio.playPause(recordingRunning: host.meetings()?.recordingElapsed != nil), track: track)"))
-        XCTAssertEqual(speak.components(separatedBy: "player.play(").count - 1, 1, "one player.play, inside perform")
+        XCTAssertEqual(speak.components(separatedBy: "player.playPrepared(").count - 1, 1, "one player start, inside perform")
+        XCTAssertFalse(speak.contains("player.play(wav"), "no start bypasses prepare")
         let selected = try body(speak, of: "private func selectedTrack() -> (() -> Data?)? {")
         XCTAssertTrue(selected.contains("selectedProject"))
         XCTAssertTrue(speak.contains("options: .mappedIfSafe"), "a long track is mapped, not copied")
@@ -93,7 +94,7 @@ final class SpeakStudioWiringTests: XCTestCase {
         XCTAssertTrue(sync.contains("RunLoop.main.add(timer, forMode: .common)"), "the cursor keeps moving while a menu is open")
         XCTAssertTrue(sync.contains("positionTimer?.invalidate()"))
         XCTAssertTrue(sync.contains("Waveform.fraction(time: self.player.currentTime, duration: self.player.duration)"))
-        XCTAssertTrue(speak.contains("self.perform(self.audio.finished())"), "the natural end goes through perform")
+        XCTAssertTrue(speak.contains("self.perform(self.audio.finished(successfully: successfully))"), "the natural end goes through perform")
         try XCTAssertTrue(body(speak, of: "func stopClip() {").contains("perform(audio.stop())"))
         let view = try source("MainWindowUI/WaveformView.swift")
         XCTAssertTrue(view.contains("accessibilityReduceMotion"))

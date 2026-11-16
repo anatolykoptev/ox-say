@@ -11,6 +11,16 @@ extension SpeakPhase {
         if case .generating = self { return false }
         return true
     }
+
+    /// Whether what the page shows — a clip, or why a take failed — no longer matches the editor after the text or the
+    /// voice behind it changed. Then the page goes back to its editing state and the clip stays in the list. A take being
+    /// made is not stale: its request carries the text and voice it started with.
+    public var staleAfterInputChange: Bool {
+        switch self {
+        case .ready, .failed: return true
+        case .idle, .generating: return false
+        }
+    }
 }
 
 /// A problem with the text that is known before any request, in the sentence the person reads.
