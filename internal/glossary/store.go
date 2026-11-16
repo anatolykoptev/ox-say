@@ -84,12 +84,49 @@ func hash8(s string) string {
 func ID(heard string) string { return hash8(key(heard)) }
 
 // needed is how many distinct sentences an agent's pair needs before it
-// applies: a single word can be a real word in other sentences, so it needs more.
+// applies. A single word can be a real word in other sentences, so it needs
+// more: two for a heard form of at least five letters, three below that (a
+// short form collides with ordinary words far more often). A multi-word form
+// needs two.
 func needed(heard string) int {
-	if len(words(heard)) == 1 {
-		return 3
+	ws := words(heard)
+	if len(ws) != 1 {
+		return 2
 	}
-	return 2
+	n := 0
+	for _, r := range ws[0] {
+		if unicode.IsLetter(r) {
+			n++
+		}
+	}
+	if n >= 5 {
+		return 2
+	}
+	return 3
+}
+
+// promote activates the candidates of one meant form that have enough evidence.
+// The evidence is counted per meant: the distinct sentences any non-rejected
+// spelling of it was heard in, so a term the recogniser writes a different way
+// each time still reaches the threshold. Each candidate applies its own
+// threshold (needed) and must itself have been filed with a sentence: a pair
+// filed with no context never activates on a sibling's evidence. A rejected
+// pair counts for nothing.
+func promote(pairs []Pair, meant string) {
+	sentences := map[string]struct{}{}
+	for _, p := range pairs {
+		if p.Meant == meant && p.Status != Rejected {
+			for _, h := range p.Sightings {
+				sentences[h] = struct{}{}
+			}
+		}
+	}
+	for i := range pairs {
+		p := &pairs[i]
+		if p.Meant == meant && p.Status == Candidate && len(p.Sightings) > 0 && len(sentences) >= needed(p.Heard) {
+			p.Status = Active
+		}
+	}
 }
 
 func (s *Store) load() ([]Pair, error) {
@@ -172,9 +209,7 @@ func (s *Store) Add(heard, meant, context string) (Pair, error) {
 			p.Sightings = append(p.Sightings, h)
 		}
 	}
-	if p.Status == Candidate && len(p.Sightings) >= needed(heard) {
-		p.Status = Active
-	}
+	promote(pairs, meant)
 	if err := s.save(pairs); err != nil {
 		return Pair{}, err
 	}

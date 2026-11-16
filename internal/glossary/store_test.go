@@ -15,8 +15,10 @@ func newTestStore(t *testing.T) *Store {
 	return s
 }
 
-// A multi-word pair needs two different sentences, a single word three; the same sentence twice counts once.
-// Mutation: store.go needed, return 1 -> RED (a pair from one sentence becomes active).
+// A multi-word pair needs two different sentences, a single word of five letters or more two, a shorter one three;
+// the same sentence twice counts once.
+// Mutation: store.go needed, return 1 -> RED (a pair from one sentence becomes active). Mutation: store.go needed,
+// `n >= 5` -> `n >= 99` -> RED (a 6-letter word needs three sentences).
 func TestAddActivatesOnDistinctSentences(t *testing.T) {
 	s := newTestStore(t)
 	p, err := s.Add("окс сей", "OxSay", "сделай окс сей релиз")
@@ -30,13 +32,110 @@ func TestAddActivatesOnDistinctSentences(t *testing.T) {
 	if p, _ = s.Add("окс сей", "OxSay", "открой окс сей план"); p.Status != Active {
 		t.Fatalf("second sentence = %+v; want active", p)
 	}
-	for i, ctx := range []string{"про Воксей один", "про Воксей два"} {
-		if p, _ = s.Add("Воксей", "OxSay", ctx); p.Status != Candidate {
-			t.Fatalf("single word after %d sentences = %+v; want candidate", i+1, p)
+	if p, _ = s.Add("Воксей", "Voksey", "про Воксей один"); p.Status != Candidate {
+		t.Fatalf("6-letter word after 1 sentence = %+v; want candidate", p)
+	}
+	if p, _ = s.Add("Воксей", "Voksey", "про Воксей два"); p.Status != Active {
+		t.Fatalf("6-letter word after 2 sentences = %+v; want active", p)
+	}
+	for i, ctx := range []string{"про вокс один", "про вокс два"} {
+		if p, _ = s.Add("вокс", "Vox", ctx); p.Status != Candidate {
+			t.Fatalf("4-letter word after %d sentences = %+v; want candidate", i+1, p)
 		}
 	}
-	if p, _ = s.Add("Воксей", "OxSay", "про Воксей три"); p.Status != Active {
-		t.Fatalf("single word after 3 sentences = %+v; want active", p)
+	if p, _ = s.Add("вокс", "Vox", "про вокс три"); p.Status != Active {
+		t.Fatalf("4-letter word after 3 sentences = %+v; want active", p)
+	}
+}
+
+// The evidence for a pair is the distinct sentences any spelling of its meant form was heard in: a term the
+// recogniser spells differently each time still activates, in any filing order, and each spelling applies its
+// own length threshold. A sentence two spellings share counts once; a rejected spelling, a context-free filing
+// and another meant form add nothing.
+// Mutation: store.go promote, count only p's own Sightings (use `len(p.Sightings) >= needed(p.Heard)`) -> RED.
+func TestActivationCountsPerMeantTerm(t *testing.T) {
+	status := func(s *Store, heard string) Status {
+		t.Helper()
+		list, _ := s.List()
+		for _, p := range list {
+			if p.Heard == heard {
+				return p.Status
+			}
+		}
+		t.Fatalf("no pair for %q", heard)
+		return ""
+	}
+	// Three spellings, one sentence each: the meant form has three sentences.
+	forward := []struct{ heard, ctx string }{
+		{"квантекс", "открой квантекс сегодня"}, {"кантекс", "запусти кантекс завтра"}, {"квантэкс", "закрой квантэкс вечером"},
+	}
+	for _, order := range [][]int{{0, 1, 2}, {2, 1, 0}, {1, 2, 0}} {
+		s := newTestStore(t)
+		for _, i := range order {
+			if _, err := s.Add(forward[i].heard, "Quantex", forward[i].ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, f := range forward {
+			if got := status(s, f.heard); got != Active {
+				t.Errorf("order %v: %q is %s; want active (three sentences for the meant form)", order, f.heard, got)
+			}
+		}
+	}
+
+	s := newTestStore(t)
+	s.Add("квантекс", "Quantex", "открой квантекс сегодня")
+	if got := status(s, "квантекс"); got != Candidate {
+		t.Fatalf("one sentence: %s", got)
+	}
+	s.Add("кантекс", "Quantex", "открой кантекс сегодня")
+	if got := status(s, "кантекс"); got != Active {
+		t.Errorf("a second spelling in a second sentence: %s; want active (6+ letters need two)", got)
+	}
+	if got := status(s, "квантекс"); got != Active {
+		t.Errorf("the first spelling: %s; want active once the meant form has two sentences", got)
+	}
+	// Short spellings need three sentences for the meant form: two are not enough, the third activates all of them.
+	s = newTestStore(t)
+	s.Add("квх", "Qvx", "открой квх один")
+	s.Add("квкс", "Qvx", "открой квкс два")
+	if status(s, "квх") != Candidate || status(s, "квкс") != Candidate {
+		t.Fatal("two sentences activated a short spelling")
+	}
+	s.Add("квэкс", "Qvx", "открой квэкс три")
+	for _, h := range []string{"квх", "квкс", "квэкс"} {
+		if got := status(s, h); got != Active {
+			t.Errorf("%q after three sentences: %s; want active", h, got)
+		}
+	}
+
+	// The same sentence heard as two spellings is one sentence.
+	s = newTestStore(t)
+	s.Add("квантекс", "Quantex", "открой квантекс или кантекс")
+	s.Add("кантекс", "Quantex", "открой квантекс или кантекс")
+	if got := status(s, "кантекс"); got != Candidate {
+		t.Errorf("one sentence, two spellings: %s; want candidate", got)
+	}
+
+	// A rejected spelling is not evidence, a filing with no sentence activates nothing, another meant form is separate.
+	s = newTestStore(t)
+	rej, _ := s.Add("квантекс", "Quantex", "открой квантекс сегодня")
+	s.Reject(rej.ID)
+	s.Add("кантекс", "Quantex", "открой кантекс сегодня")
+	if got := status(s, "кантекс"); got != Candidate {
+		t.Errorf("after a rejected sibling: %s; want candidate", got)
+	}
+	s2 := newTestStore(t)
+	s2.Add("квантекс", "Quantex", "открой квантекс сегодня")
+	s2.Add("кантекс", "Quantix", "открой кантекс сегодня")
+	if got := status(s2, "кантекс"); got != Candidate {
+		t.Errorf("another meant form: %s; want candidate", got)
+	}
+	s3 := newTestStore(t)
+	s3.Add("квантекс", "Quantex", "открой квантекс сегодня")
+	s3.Add("кантекс", "Quantex", "открой кантекс сегодня")
+	if p, _ := s3.Add("квантэкс", "Quantex", ""); p.Status != Candidate {
+		t.Errorf("a context-free filing of a spelling: %s; want candidate", p.Status)
 	}
 }
 
