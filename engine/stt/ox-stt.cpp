@@ -1487,10 +1487,11 @@ int serve(const args & a) {
                     emsg = "VAD failed";
                 }
             }
-            // Erased from the map and drained or failed: dead seals the
-            // session — an /audio still holding it sees dead and 404s instead
-            // of enqueueing work nobody waits on; on the error path queued
-            // and in-flight jobs drop their results.
+            // Erased from the map and drained, failed or timed out (the 504
+            // drain timeout seals it too): dead seals the session — an /audio
+            // still holding it sees dead and 404s instead of enqueueing work
+            // nobody waits on; on the error path queued and in-flight jobs
+            // drop their results.
             s->dead = true;
             if (status != 0) {
                 s->cv.notify_all();
