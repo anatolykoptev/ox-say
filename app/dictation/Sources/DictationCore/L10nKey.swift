@@ -222,6 +222,7 @@ public enum L10nKey: String, CaseIterable {
     case meetingLiveBehind = "meeting.live.behind"
     case meetingLiveUnavailable = "meeting.live.unavailable"
     case meetingLiveOff = "meeting.live.off"
+    case meetingLiveUnreadable = "meeting.live.unreadable"
     case meetingLiveLatest = "meeting.live.latest"
     case meetingAudioDeleted = "meeting.audio_deleted"
     case meetingSpeakerYou = "meeting.speaker.you"

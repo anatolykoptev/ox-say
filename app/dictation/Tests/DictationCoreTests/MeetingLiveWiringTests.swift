@@ -45,6 +45,9 @@ final class MeetingLiveWiringTests: XCTestCase {
         XCTAssertTrue(read.contains("feed.apply(answer)"))
         XCTAssertTrue(read.contains("model.data.live[id] = feed"))
         XCTAssertTrue(read.contains("if !answer.state.recording {"), "the loop ends with the recording")
+        XCTAssertTrue(read.contains("feed.pollFailed()"), "a failed poll is counted, not swallowed")
+        let sync = try body(try source("OxSayDictation/MainWindowSource.swift"), of: "private func syncLive() {")
+        XCTAssertTrue(sync.contains("LivePolling.delay(failures:"), "the poll slows down after repeated failures")
     }
 
     /// A recording meeting shows the captions in place of the tabs, fed from the window's own data.
@@ -57,6 +60,6 @@ final class MeetingLiveWiringTests: XCTestCase {
         XCTAssertTrue(main.contains("if recording {"))
         XCTAssertTrue(main.contains("LiveCaptionsView(feed: model.data.live[info.id] ?? LiveFeed(), ownerName: info.ownerLabel ?? \"\")"))
         let captions = try source("MainWindowUI/LiveCaptionsView.swift")
-        XCTAssertTrue(captions.contains("LiveNotice.key(for: feed.state)"))
+        XCTAssertTrue(captions.contains("LiveNotice.key(for: feed)"))
     }
 }
