@@ -41,6 +41,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"sync"
 	"time"
 
@@ -118,6 +120,9 @@ type notesFit struct {
 	spawn   notesSpawn
 	fit     string
 	why     string
+	// offload is what the last spawn's own log said it put on the GPU; nil until that child has reported (a
+	// finishPlan clears it, so an older child's count never describes the next one).
+	offload *notesOffload
 	// now is the clock; tests inject it.
 	now func() time.Time
 }
@@ -291,6 +296,7 @@ func (d *Daemon) makeNotesRoom(ctx context.Context) {
 func (d *Daemon) finishPlan(res config.NotesResolution, p notesPlan) notesPlan {
 	d.fit.mu.Lock()
 	d.fit.spawn = notesSpawn{set: true, resPath: res.Path, model: p.model}
+	d.fit.offload = nil
 	d.fit.mu.Unlock()
 	return d.recordPlan(p)
 }
@@ -381,6 +387,64 @@ func (d *Daemon) recordPlan(p notesPlan) notesPlan {
 			slog.String("model", filepath.Base(p.model)), slog.Int("fit_target_mib", p.fitMiB))
 	}
 	return p
+}
+
+// notesOffload is how many of the model's layers llama.cpp put on the GPU, of how many it has (the output layer
+// counts as one).
+type notesOffload struct {
+	GPULayers   int `json:"gpu_layers"`
+	TotalLayers int `json:"total_layers"`
+}
+
+// notesOffloadedRE is the line llama.cpp prints once the weights are placed ("load_tensors: offloaded 33/33 layers to
+// GPU", src/llama-model.cpp at the pinned commit). It is an info-level line, so it is in the child's log at the
+// default verbosity — the fitter's own per-device layer counts are trace-level, and a debug level also logs prompts
+// (TestTheNotesChildNeverRunsAtDebugVerbosity). By then the fitter has written its choice into n_gpu_layers.
+var notesOffloadedRE = regexp.MustCompile(`offloaded (\d+)/(\d+) layers to GPU`)
+
+// parseNotesOffload reads the last offload line of a child's log. ok is false when there is none or it makes no
+// sense (a count above the total, a total of 0): an absent answer is "unknown", never "on the CPU".
+func parseNotesOffload(log []byte) (notesOffload, bool) {
+	all := notesOffloadedRE.FindAllSubmatch(log, -1)
+	if len(all) == 0 {
+		return notesOffload{}, false
+	}
+	m := all[len(all)-1]
+	n, err1 := strconv.Atoi(string(m[1]))
+	total, err2 := strconv.Atoi(string(m[2]))
+	if err1 != nil || err2 != nil || total <= 0 || n > total {
+		return notesOffload{}, false
+	}
+	return notesOffload{GPULayers: n, TotalLayers: total}, true
+}
+
+// recordNotesOffload reads what the child spawned since mark said about its offload and keeps it for /status. A
+// child that was already running wrote no such line since mark, and the earlier answer stands. Layers count whole
+// layers: a mixture-of-experts model whose expert tensors the fitter overflows to the CPU still counts those layers
+// as offloaded; the notes models shipped here are dense.
+func (d *Daemon) recordNotesOffload(mark int64) {
+	o, ok := parseNotesOffload(d.notesLogSince(mark))
+	if !ok {
+		return
+	}
+	d.fit.mu.Lock()
+	d.fit.offload = &o
+	d.fit.mu.Unlock()
+	if o.GPULayers < o.TotalLayers {
+		d.log.Info("the notes engine keeps part of the model on the CPU, so notes are slower",
+			slog.Int("gpu_layers", o.GPULayers), slog.Int("total_layers", o.TotalLayers))
+	}
+}
+
+// offloadSnapshot is the offload /status reports; nil when the child has not said.
+func (d *Daemon) offloadSnapshot() *notesOffload {
+	d.fit.mu.Lock()
+	defer d.fit.mu.Unlock()
+	if d.fit.offload == nil {
+		return nil
+	}
+	o := *d.fit.offload
+	return &o
 }
 
 // fitSnapshot is what /status reports.

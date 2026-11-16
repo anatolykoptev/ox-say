@@ -94,9 +94,15 @@ type notesStatus struct {
 	// start raised the fit target; "fallback_4b" — the compact model ran instead (an
 	// automatic choice only); "unchecked" — the GPU budget could not be
 	// read, so llama.cpp fitted with its default margin. FitReason says why,
-	// in plain words, and carries the --fit-target in MiB. Empty means CPU decode (no fitter) or no start yet.
+	// in plain words, and carries the --fit-target in MiB. Empty means CPU decode (no fitter) or no start yet. Fit is the
+	// PLAN: "full" says what llama.cpp's fitter was asked for, not what it chose (see Offload).
 	Fit       string `json:"fit,omitempty"`
 	FitReason string `json:"fit_reason,omitempty"`
+	// Offload is what the notes child's own log said it placed on the GPU, read after it started: Fit is the plan
+	// ("full" is what we asked llama.cpp's fitter for), this is the outcome. gpu_layers below total_layers means
+	// part of the model decodes on the CPU. Absent until the child has said (an older engine, a log line that did
+	// not parse): unknown, not CPU.
+	Offload *notesOffload `json:"offload,omitempty"`
 }
 
 // notesBinPath is the path ox-llm is spawned by: always absolute, because the
@@ -429,6 +435,9 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 	for err != nil && ctx.Err() == nil && c.d.notesStartOOMed(mark) && c.d.notesEscalate() {
 		mark = notesLogMark(c.d.Cfg.EngineLogDir)
 		base, err = c.d.LLMSup.EnsureReady(ctx)
+	}
+	if err == nil {
+		c.d.recordNotesOffload(mark)
 	}
 	if err != nil {
 		err = fmt.Errorf("the notes model failed to start: %w", err)
@@ -1117,6 +1126,7 @@ func (d *Daemon) notesStatus() notesStatus {
 	out := notesStatus{Installing: running, InstallErr: ierr, InstallCode: icode,
 		Model: res.ID, Source: res.Source, Fallback: d.notesFallback(res)}
 	out.Fit, out.FitReason = d.fitSnapshot()
+	out.Offload = d.offloadSnapshot()
 	if running {
 		if file, want, _ := d.notes.target(); file != "" && want > 0 {
 			if st, err := os.Stat(file + ".part"); err == nil {
