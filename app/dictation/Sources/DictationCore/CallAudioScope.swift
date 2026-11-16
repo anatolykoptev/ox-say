@@ -63,4 +63,13 @@ public enum CallAudioScope {
         case (.call(let have), .call(let want)): return !want.isSubset(of: have)
         }
     }
+
+    /// The scope to build the tap with when it is (re)built for any reason, a route change included: the one the call's
+    /// processes now give, except that a tap on the call never falls back to the whole Mac because its processes
+    /// vanished for a moment or CoreAudio failed to list them. The old set is kept; a rebuild that cannot use it fails and
+    /// leaves the running tap in place.
+    public static func scopeForRebuild(current: TapScope, wanted: TapScope) -> TapScope {
+        if case .call = current, wanted == .global { return current }
+        return wanted
+    }
 }

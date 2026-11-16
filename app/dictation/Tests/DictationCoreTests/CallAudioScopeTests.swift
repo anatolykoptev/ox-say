@@ -67,6 +67,15 @@ final class CallAudioScopeTests: XCTestCase {
         XCTAssertFalse(CallAudioScope.needsRebuild(current: .global, wanted: .global))
     }
 
+    /// A rebuild (a route change) never widens a call's tap to the whole Mac; leaving the fallback and changing the set work.
+    /// Mutation: CallAudioScope.scopeForRebuild, delete the `if case .call = current, wanted == .global` line -> RED.
+    func testARebuildNeverWidensACallTapToTheWholeMac() {
+        XCTAssertEqual(CallAudioScope.scopeForRebuild(current: .call([1, 2]), wanted: .global), .call([1, 2]))
+        XCTAssertEqual(CallAudioScope.scopeForRebuild(current: .call([1, 2]), wanted: .call([3])), .call([3]))
+        XCTAssertEqual(CallAudioScope.scopeForRebuild(current: .global, wanted: .call([3])), .call([3]))
+        XCTAssertEqual(CallAudioScope.scopeForRebuild(current: .global, wanted: .global), .global)
+    }
+
     private func source(_ name: String) throws -> String {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -78,7 +87,8 @@ final class CallAudioScopeTests: XCTestCase {
     /// reads the app's sources as text).
     /// Mutations: SystemAudioTap.build, `.call` case back to `stereoGlobalTapButExcludeProcesses` -> RED;
     /// MeetingController.start, `callBundleID: callBundleID(for: source)` removed -> RED;
-    /// MeetingRecorder.startTap, `scope: scope` removed from `tap.start` -> RED (does not compile: not counted),
+    /// MeetingController.tapScopeChanged, delete the `host.notify(` line -> RED; MeetingRecorder.tapStarted, delete `onTapScope?(scope)` -> RED;
+    /// MeetingRecorder.start, delete `watchScope()` -> RED; MeetingRecorder.startTap, `scope: scope` removed from `tap.start` -> RED (does not compile: not counted),
     /// `wantedScope()` replaced by `.global` -> RED.
     func testTheCallsProcessesReachTheTap() throws {
         let tap = try source("SystemAudioTap.swift")
@@ -86,9 +96,16 @@ final class CallAudioScopeTests: XCTestCase {
         XCTAssertTrue(tap.contains("case .global: description = CATapDescription(stereoGlobalTapButExcludeProcesses: excluded)"))
         let controller = try source("MeetingController.swift")
         XCTAssertTrue(controller.contains("callBundleID: callBundleID(for: source)"))
-        XCTAssertTrue(controller.contains("recorder.onTapScope"), "the fallback is told to the user")
+        XCTAssertTrue(controller.contains("recorder.onTapScope = { [weak self] scope in self?.tapScopeChanged(scope) }"))
+        let told = try XCTUnwrap(controller.range(of: "private func tapScopeChanged(_ scope: TapScope) {"))
+        let toldBody = String(controller[told.upperBound...].prefix(400))
+        XCTAssertTrue(toldBody.contains("guard scope == .global else { return }") && toldBody.contains("host.notify(L10nKey.noticeMeetingTapGlobal.text)"),
+                      "the fallback is told to the user")
+        XCTAssertTrue(controller.contains("liveCall = nil"), "a stopped watcher forgets the call")
         let recorder = try source("MeetingRecorder.swift")
-        XCTAssertTrue(recorder.contains("let scope = wantedScope()"))
+        XCTAssertTrue(recorder.contains("let scope = CallAudioScope.scopeForRebuild(current: tapScope, wanted: wantedScope())"))
+        XCTAssertTrue(recorder.contains("onTapScope?(scope)"), "the recorder reports the scope the tap really runs with")
+        XCTAssertTrue(recorder.contains("        watchScope()\n"), "the rescan is started with the recording")
         XCTAssertTrue(recorder.contains("CallAudioScope.scope(callBundleID: callBundleID, processes: processes, ownPID: getpid())"))
         XCTAssertTrue(recorder.contains("CallAudioScope.needsRebuild(current: self.tapScope, wanted: self.wantedScope())"))
     }

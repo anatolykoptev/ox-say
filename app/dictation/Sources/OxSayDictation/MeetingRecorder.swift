@@ -342,7 +342,7 @@ final class MeetingRecorder {
     /// Starts or rebuilds the tap off the main thread; the answer comes back to `tapStarted` on main.
     private func startTap() {
         let token = tapRecovery.token
-        let scope = wantedScope()
+        let scope = CallAudioScope.scopeForRebuild(current: tapScope, wanted: wantedScope())
         tap.start(scope: scope, excludingPIDs: [getpid()], withMainSubDevice: useMainSubDevice) { [weak self] outcome in
             self?.tapStarted(outcome, token: token, scope: scope)
         }

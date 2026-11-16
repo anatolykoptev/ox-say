@@ -311,8 +311,7 @@ final class MeetingController: NSObject, MeetingFeature {
     /// The other side's scope changed, or was first set: a fallback to the whole Mac is told once per change.
     private func tapScopeChanged(_ scope: TapScope) {
         guard scope == .global else { return }
-        let text = L10nKey.noticeMeetingTapGlobal.text
-        host.notify(text)
+        host.notify(L10nKey.noticeMeetingTapGlobal.text)
         log.info("system audio tap: scope is the whole Mac (the call's process is not known)")
     }
 
@@ -589,6 +588,9 @@ final class MeetingController: NSObject, MeetingFeature {
         } else {
             watcher.stop()
             host.callActivity.setCallSeen(false)
+            // A stopped watcher no longer knows which call is live: a recording started by hand must not take the last one
+            // it saw for the app of a different call (#530).
+            liveCall = nil
         }
         // Off means no offers: a prompt or consent badge that is still up must not keep asking.
         if !OfferLifetime.offersAllowed(mode: mode) {
