@@ -54,6 +54,7 @@ func (d *Daemon) Transcribe(ctx context.Context, in TranscribeInput) (*stt.Resul
 		GPU:          d.Cfg.STTGPU,
 		Timeout:      d.Cfg.STTTimeout,
 		MaxAudio:     d.Cfg.STTMaxAudio,
+		Log:          d.log,
 	}
 	if !in.NoBoost {
 		opts.Boost = d.sttBoost()

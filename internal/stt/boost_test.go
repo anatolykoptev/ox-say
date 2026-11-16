@@ -153,16 +153,12 @@ func TestCLIRetriesUnboostedOnUsageError(t *testing.T) {
 
 // The usage-error retry says so, once per process, and never prints a term. An engine older than the daemon is
 // otherwise invisible: every dictation silently loses its glossary list.
-// Mutation: stt.go, drop the slog.Warn in the usage-error retry -> RED.
+// Mutation: stt.go, never warn in the usage-error retry -> RED.
 func TestCLIUnboostedRetryIsLogged(t *testing.T) {
 	var buf bytes.Buffer
-	old := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(old) })
-	warnedUnboosted.Store(false)
-
 	dir := t.TempDir()
 	opts, _ := fakeOpts(t, dir)
+	opts.Log = slog.New(slog.NewTextHandler(&buf, nil))
 	t.Setenv("OXSAY_FAKE_STT_REJECT_TERMS", "1")
 	src := testutil.WriteTinyWAV(t, dir, "in.wav")
 	opts.Boost = testBoost
