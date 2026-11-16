@@ -435,7 +435,8 @@ final class MainWindowSource {
         liveTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self, await self.readLive(id) else { return }
-                try? await Task.sleep(nanoseconds: UInt64(LivePolling.interval * 1_000_000_000))
+                let delay = LivePolling.delay(failures: self.model.data.live[id]?.failures ?? 0)
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
         }
     }
@@ -454,14 +455,18 @@ final class MainWindowSource {
             let answer = try await host.client.liveCaptions(id: id, after: feed.cursor)
             guard !Task.isCancelled else { return false }
             feed.apply(answer)
-            model.data.live[id] = feed
+            if model.data.live[id] != feed { model.data.live[id] = feed }
             if !answer.state.recording {
                 stopLive()
                 refresh()
                 return false
             }
         } catch {
-            // the next poll asks again from the same cursor
+            // The next poll asks again from the same cursor; a run of failures is counted, so the view says so and the
+            // poll slows down (`LivePolling.delay`) instead of asking a dead daemon every 2 s behind "Listening".
+            guard !Task.isCancelled else { return false }
+            feed.pollFailed()
+            model.data.live[id] = feed
         }
         return true
     }

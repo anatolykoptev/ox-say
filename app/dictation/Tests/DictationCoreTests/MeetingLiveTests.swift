@@ -93,4 +93,25 @@ final class MeetingLiveTests: XCTestCase {
             XCTAssertEqual(error as? StudioError, .badResponse)
         }
     }
+
+    /// Polls that fail one after another are counted; three in a row slow the poll to 10 s and give the view its
+    /// notice; one answer ends it.
+    /// Mutation: MeetingLive.swift LivePolling.delay, `failures >= failuresBeforeBackoff` -> `failures > failuresBeforeBackoff` -> RED;
+    /// LiveFeed.apply, delete `failures = 0` -> RED.
+    func testRepeatedFailedPollsBackOffAndSayTheCaptionsCannotBeRead() {
+        var feed = LiveFeed()
+        XCTAssertEqual(LivePolling.delay(failures: feed.failures), 2)
+        feed.pollFailed(); feed.pollFailed()
+        XCTAssertFalse(feed.unreadable)
+        XCTAssertNil(LiveNotice.key(for: feed))
+        XCTAssertEqual(LivePolling.delay(failures: feed.failures), 2)
+        feed.pollFailed()
+        XCTAssertTrue(feed.unreadable)
+        XCTAssertEqual(LivePolling.delay(failures: feed.failures), 10)
+        XCTAssertEqual(LiveNotice.key(for: feed), .meetingLiveUnreadable)
+        feed.apply(answer([(1, "me", "back")], next: 1))
+        XCTAssertEqual(feed.failures, 0)
+        XCTAssertFalse(feed.unreadable)
+        XCTAssertEqual(LivePolling.delay(failures: feed.failures), 2)
+    }
 }

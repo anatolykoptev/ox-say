@@ -94,10 +94,19 @@ public struct LiveFeed: Equatable {
     /// The `after` of the next poll: the last caption held (0: none yet).
     public private(set) var cursor = 0
     public private(set) var state: LiveCaptionState?
+    /// Polls that failed one after another; an answer resets it.
+    public private(set) var failures = 0
 
     public init() {}
 
+    /// A poll that got no answer (the daemon down, a 404, a 500).
+    public mutating func pollFailed() { failures += 1 }
+
+    /// Several failed polls in a row: the window says it cannot read the captions and asks less often.
+    public var unreadable: Bool { failures >= LivePolling.failuresBeforeBackoff }
+
     public mutating func apply(_ answer: LiveAnswer) {
+        failures = 0
         state = answer.state
         for caption in answer.captions where caption.seq > cursor {
             captions.append(caption)
@@ -112,6 +121,14 @@ public struct LiveFeed: Equatable {
 /// When the open window asks for live captions: only while it is visible and the chosen meeting is being recorded.
 public enum LivePolling {
     public static let interval: TimeInterval = 2
+    /// After this many failed polls in a row the poll slows to `backoffInterval`.
+    public static let failuresBeforeBackoff = 3
+    public static let backoffInterval: TimeInterval = 10
+
+    /// How long to wait before the next poll.
+    public static func delay(failures: Int) -> TimeInterval {
+        failures >= failuresBeforeBackoff ? backoffInterval : interval
+    }
 
     public static func needed(visible: Bool, selected: MeetingInfo?) -> Bool {
         guard visible, let selected else { return false }
@@ -121,6 +138,11 @@ public enum LivePolling {
 
 /// The sentence under the live view when the captions are not simply flowing; nil when they are.
 public enum LiveNotice {
+    /// The feed's notice: unreadable polls first, then what the daemon said.
+    public static func key(for feed: LiveFeed) -> L10nKey? {
+        feed.unreadable ? .meetingLiveUnreadable : key(for: feed.state)
+    }
+
     public static func key(for state: LiveCaptionState?) -> L10nKey? {
         guard let state else { return nil }
         if !state.enabled { return .meetingLiveOff }

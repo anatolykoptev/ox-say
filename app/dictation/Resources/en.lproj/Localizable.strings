@@ -229,6 +229,7 @@
 "meeting.live.behind" = "Live text is behind.";
 "meeting.live.unavailable" = "Live text is paused: the speech engine is not available right now.";
 "meeting.live.off" = "Live captions are off on this Mac.";
+"meeting.live.unreadable" = "Captions can't be read right now. The recording continues.";
 "meeting.live.latest" = "Jump to Latest";
 "meeting.audio_deleted" = "The audio was deleted after the keep period. The notes and the transcript are still here.";
 "meeting.speaker.you" = "You";

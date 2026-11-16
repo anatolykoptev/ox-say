@@ -23,7 +23,8 @@ struct LiveCaptionsView: View {
     var body: some View {
         VStack(spacing: 0) {
             if feed.captions.isEmpty {
-                waiting
+                // With a notice to give, that is the answer: "Listening" would say the opposite.
+                if LiveNotice.key(for: feed) == nil { waiting } else { Color.clear.frame(maxHeight: .infinity) }
             } else {
                 list
             }
@@ -92,10 +93,10 @@ struct LiveCaptionsView: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if let key = LiveNotice.key(for: feed.state) {
-                Label(key.text, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout).foregroundStyle(.orange)
-                    .symbolRenderingMode(.hierarchical)
+            if let key = LiveNotice.key(for: feed) {
+                // Only the icon is tinted: orange text on the bar is too faint to read.
+                Label { Text(key.text).foregroundStyle(.secondary) } icon: { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
+                    .font(.callout)
             }
             Text(L10nKey.meetingLivePreview.text).font(.footnote).foregroundStyle(.secondary)
         }
@@ -132,6 +133,9 @@ private struct CaptionRow: View {
         }
         .padding(.horizontal, 10).padding(.top, showsHeader ? 8 : 0).padding(.bottom, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
+        // Every row says who spoke, also a continuation row that shows no header. A `String`, not a literal: a name
+        // is not a localization key.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(name), \(MeetingBadgeModel.clock(caption.start)). \(caption.text)")
     }
 }
