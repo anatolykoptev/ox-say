@@ -155,7 +155,7 @@ func TestApplyWordsMatchesInflectedForms(t *testing.T) {
 
 // The guard against over-matching, measured on the Russian dictionary the daemon ships (lower-case, flagged
 // entries = lemmas): of the entries that may be matched by stem, at most 1.8% share their stem with another
-// entry. It is 1.6% as shipped, 2.0% with a 4-letter minimum stem, 2.5% with 3, and about half without the
+// entry. It is 1.6% as shipped, 2.0% with a 4-letter minimum stem, 2.5% with 3, and 49% without the
 // noun-ending rule.
 // Mutation: stem.go minStemRunes = 3 -> RED; nominalStem, drop the nounEndings check -> RED.
 func TestStemMatchingIsRareOnOrdinaryWords(t *testing.T) {
