@@ -109,6 +109,7 @@
 "badge.copy_consent" = "Copy consent phrase";
 "badge.collapse" = "Fold to a dot";
 "badge.expand" = "Show the full badge";
+"notice.meeting.tap_global" = "The call app could not be told apart, so the other side of this recording is everything this Mac plays, music and videos in other apps included.";
 "notice.meeting.plate_hidden.title" = "OxSay is recording";
 "notice.meeting.plate_hidden" = "The recording badge cannot be shown over this screen. The recording goes on; stop it from the OxSay menu bar icon.";
 "notice.meeting.prompt_hidden" = "Open the OxSay menu bar icon and choose Record Meeting to record it.";

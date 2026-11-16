@@ -105,6 +105,7 @@ final class MeetingController: NSObject, MeetingFeature {
         }
         recorder.onMicrophoneFailed = { [weak self] in self?.host.notify(L10nKey.noticeMeetingMicLost.text) }
         recorder.onMicrophoneRecovered = { [weak self] in self?.host.notify(L10nKey.noticeMeetingMicRecovered.text) }
+        recorder.onTapScope = { [weak self] scope in self?.tapScopeChanged(scope) }
         badge.onStop = { [weak self] in self?.stop() }
         badge.onDontRecord = { [weak self] in self?.dontRecordThisOne() }
         badge.onRecord = { [weak self] in self?.recordFromPrompt() }
@@ -278,7 +279,7 @@ final class MeetingController: NSObject, MeetingFeature {
                     return
                 }
                 guard let dir = info.dir else { throw StudioError.badResponse }
-                try recorder.start(into: URL(fileURLWithPath: dir, isDirectory: true))
+                try recorder.start(into: URL(fileURLWithPath: dir, isDirectory: true), callBundleID: callBundleID(for: source))
                 current = (info, origin)
                 syncCallActivity()
                 monitor = RecordingMonitor()
@@ -297,6 +298,22 @@ final class MeetingController: NSObject, MeetingFeature {
             }
             render()
         }
+    }
+
+    /// The app whose sound is "the other side" (#530): the call the watcher last saw, when it is the one being recorded
+    /// (a call started by hand, from the menu, takes whatever call is live). nil when no call is known, which records
+    /// everything the Mac plays and says so.
+    private func callBundleID(for source: String) -> String? {
+        guard let call = liveCall, source == "manual" || call.source == source else { return nil }
+        return call.bundleID
+    }
+
+    /// The other side's scope changed, or was first set: a fallback to the whole Mac is told once per change.
+    private func tapScopeChanged(_ scope: TapScope) {
+        guard scope == .global else { return }
+        let text = L10nKey.noticeMeetingTapGlobal.text
+        host.notify(text)
+        log.info("system audio tap: scope is the whole Mac (the call's process is not known)")
     }
 
     /// A start that did not become a recording says why — in the log, in the status line, on the plate until it is
@@ -389,7 +406,14 @@ final class MeetingController: NSObject, MeetingFeature {
         playingPolledAt = Date()
         let me = getpid()
         guard let processes = CoreAudioProps.audioProcesses() else { return }
-        if processes.contains(where: { $0.runningOutput && $0.pid != me }) {
+        // With the tap on the call's processes, only their sound counts as "something is playing": music elsewhere does
+        // not make a quiet far side look like a silent tap.
+        let scope = recorder.tapScope
+        func inScope(_ id: AudioObjectID) -> Bool {
+            if case .call(let ids) = scope { return ids.contains(id) }
+            return true
+        }
+        if processes.contains(where: { $0.runningOutput && $0.pid != me && inScope($0.objectID) }) {
             if playingSince == nil { playingSince = Date() }
         } else {
             playingSince = nil
