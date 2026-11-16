@@ -10,11 +10,12 @@
 #   ox-diar     from engine/diar, a Swift package on FluidAudio's Core ML models (speaker diarization), arm64
 #   ox-clean    from engine/clean, a Swift package on a Core ML mask model (voice cleanup), arm64 and x86_64
 #   ox-aec      from engine/aec on the pinned freedesktop webrtc-audio-processing (meeting echo
-#               cancellation, AEC3), meson+ninja into a static lib, arm64 and x86_64
+#               cancellation, AEC3), meson+ninja into a static lib, arm64 and x86_64; opt-in only —
+#               a full build skips it (and needs no meson) unless OX_SAY_WITH_AEC=1
 # The first three carry engine/patches/ggml on their ggml tree, on both architectures: on
 # unified memory the patches are inert or bug fixes (engine/README.md).
 #
-# Usage: [OX_SAY_ONLY=stt|aec] engine/build.sh [work-dir]  (default: build/engine)
+# Usage: [OX_SAY_ONLY=stt|aec] [OX_SAY_WITH_AEC=1] engine/build.sh [work-dir]  (default: build/engine)
 # Output: <work-dir>/out/{tts-server,ox-stt,ox-align,ox-llm,ox-diar (arm64),ox-clean,audiocpp_server (arm64),
 #                        each <bin>.metallib (+<bin>-tensor.metallib on a
 #                        macOS 26 SDK) when the Metal toolchain is present,
@@ -28,6 +29,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/want-audiocpp.sh"
 # shellcheck source=want-diar.sh
 . "$here/want-diar.sh"
+# shellcheck source=want-aec.sh
+. "$here/want-aec.sh"
 # shellcheck source=lib-check.sh
 . "$here/lib-check.sh"
 
@@ -219,7 +222,7 @@ build_ox_aec() {
     local apm="$work/webrtc-audio-processing" apmb stamp actual
     apmb="$apm/build-$arch"
     command -v meson >/dev/null 2>&1 && command -v ninja >/dev/null 2>&1 || {
-        echo "engine/build.sh: ox-aec needs meson and ninja on PATH (pip install meson ninja, or brew install meson)" >&2
+        echo "engine/build.sh: ox-aec needs meson and ninja on PATH: pip install meson ninja, or brew install meson ninja" >&2
         exit 1
     }
     stamp=$( { echo "$WEBRTC_APM_REPO $WEBRTC_APM_COMMIT"
@@ -307,6 +310,14 @@ build_ox_aec() {
         echo "engine/build.sh: the abseil subproject has no LICENSE" >&2
         exit 1
     fi
+    # The rest of what the binary statically contains: pffft and rnnoise ship
+    # licence files; the Olesen FFT under modules/third_party/fft ships one;
+    # Ooura ships only its header notice, extracted like yyjson's below.
+    cp "$apm/webrtc/third_party/pffft/LICENSE" "$out/licenses/pffft.LICENSE"
+    cp "$apm/webrtc/third_party/rnnoise/COPYING" "$out/licenses/rnnoise.COPYING"
+    cp "$apm/webrtc/modules/third_party/fft/LICENSE" "$out/licenses/webrtc-fft-olesen.LICENSE"
+    sed -n '1,\|\*/|p' "$apm/webrtc/common_audio/third_party/ooura/fft_size_128/ooura_fft.cc" \
+        > "$out/licenses/ooura-fft.LICENSE"
     echo "built $out/ox-aec"
 }
 
@@ -621,7 +632,12 @@ if audiocpp_gate "$arch" "$out"; then
 fi
 
 # --- ox-aec on the full-build path (OX_SAY_ONLY=aec already ran it above and exited) ---
-build_ox_aec
+# Opt-in only: the full build must not need meson/ninja, and no installer or
+# package stage yet ships the binary. aec_gate also drops a stale binary and
+# its licence files when the flag is off.
+if aec_gate "$out"; then
+    build_ox_aec
+fi
 
 # Licence files copied out of read-only checkouts keep their 0400/0444 mode; an install over an earlier one cannot
 # open such a file for writing (the 0.1.30 update failure). Ship them 0644.
