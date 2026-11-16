@@ -53,7 +53,7 @@ public final class PeriodicFlush {
         lock.withLock {
             guard timer == nil else { return }
             let t = DispatchSource.makeTimerSource(queue: queue)
-            t.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(100))
+            t.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(max(1, min(100, Int(interval * 100)))))
             t.setEventHandler { [action] in action() }
             t.resume()
             timer = t

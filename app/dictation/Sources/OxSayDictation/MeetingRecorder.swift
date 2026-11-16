@@ -84,6 +84,8 @@ final class MeetingRecorder {
     private var tapPeak: Float = 0
     private var micObserver: NSObjectProtocol?
     private var wakeObserver: NSObjectProtocol?
+    /// One line in the log per recording, not one per tick.
+    private var syncFailureLogged = false
     /// #531: no idle system sleep and no App Nap throttling while the recording runs; ended in `stop`.
     private let activity = ActivityHold.system
     /// #531: the channel files are synced to the disk every `RecordingDurability.flushInterval` seconds.
@@ -176,6 +178,7 @@ final class MeetingRecorder {
         }
         started = Date()
         activity.hold(reason: "OxSay is recording a meeting")
+        syncFailureLogged = false
         flusher.start()
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.macWoke()
@@ -253,8 +256,11 @@ final class MeetingRecorder {
     /// waits for the disk.
     private func flushChannels() {
         let (m, t) = writersLock.withLock { (me, them) }
-        m?.flush()
-        t?.flush()
+        let results = [m?.flush(), t?.flush()]
+        if results.contains(false), !syncFailureLogged {
+            syncFailureLogged = true
+            log.error("recording: the disk refused a sync; audio is written but not yet safe from a power loss")
+        }
     }
 
     /// The Mac woke mid-recording: what the system stopped is started again. The tap gets a second to show it is still

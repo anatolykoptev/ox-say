@@ -39,12 +39,28 @@ final class RecordingDurabilityTests: XCTestCase {
         let w = PcmChannelWriter(handle: handle, t0: 1_000, sync: { fd in
             // A live descriptor: F_GETFD answers, and it is a different number from the handle's own (a dup).
             seen.append(fcntl(fd, F_GETFD) != -1 && fd != handle.fileDescriptor)
+            return true
         })
         w.append([0.1, 0.1], atNanos: 1_000)
         w.flush()
         w.flush()
         XCTAssertEqual(seen, [true, true])
         XCTAssertEqual(w.flushCount, 2)
+        w.finish(atNanos: 1_000)
+    }
+
+    /// A sync the disk refuses is visible: `flush` says so and the writer counts it, so the recorder can log it.
+    /// Mutation: PcmChannelWriter.flush, `if !ok { lock.withLock { syncFailed += 1 } }` deleted -> RED.
+    func testARefusedSyncIsCountedAndReported() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let handle = try { _ = FileManager.default.createFile(atPath: url.path, contents: nil); return try FileHandle(forWritingTo: url) }()
+        var answers = [false, true]
+        let w = PcmChannelWriter(handle: handle, t0: 1_000, sync: { _ in answers.removeFirst() })
+        XCTAssertFalse(w.flush())
+        XCTAssertEqual(w.syncFailures, 1)
+        XCTAssertTrue(w.flush())
+        XCTAssertEqual(w.syncFailures, 1, "a later good sync does not erase the count")
         w.finish(atNanos: 1_000)
     }
 
@@ -55,7 +71,7 @@ final class RecordingDurabilityTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         var calls = 0
         let handle = try { _ = FileManager.default.createFile(atPath: url.path, contents: nil); return try FileHandle(forWritingTo: url) }()
-        let w = PcmChannelWriter(handle: handle, t0: 1_000, sync: { _ in calls += 1 })
+        let w = PcmChannelWriter(handle: handle, t0: 1_000, sync: { _ in calls += 1; return true })
         w.finish(atNanos: 1_000)
         w.flush()
         XCTAssertEqual(calls, 0)
@@ -138,6 +154,7 @@ final class RecordingDurabilityTests: XCTestCase {
     /// outside the writers' lock.
     /// Mutations: MeetingRecorder.start, delete `flusher.start()` -> RED; delete `activity.hold(` -> RED;
     /// MeetingRecorder.stop, delete `flusher.stop()` -> RED; delete `activity.release()` -> RED;
+    /// MeetingRecorder.start, delete the `self?.macWoke()` line of the wake observer -> RED;
     /// MeetingRecorder.flushChannels, delete the `t?.flush()` line -> RED.
     func testTheRecorderStartsAndEndsTheFlushAndTheActivity() throws {
         let file = URL(fileURLWithPath: #filePath)
@@ -152,9 +169,15 @@ final class RecordingDurabilityTests: XCTestCase {
                 .compactMap { rest.range(of: $0)?.lowerBound }
             return String(rest[..<(ends.min() ?? rest.endIndex)])
         }
-        let start = try body(of: "func start(into dir: URL) throws {")
+        let start = try body(of: "func start(into dir: URL")
         XCTAssertTrue(start.contains("flusher.start()"))
         XCTAssertTrue(start.contains("activity.hold("))
+        XCTAssertTrue(start.contains("NSWorkspace.didWakeNotification"), "the wake is listened for")
+        XCTAssertTrue(start.contains("self?.macWoke()"), "and acted on")
+        let woke = try body(of: "private func macWoke() {")
+        XCTAssertTrue(woke.contains("restartMicrophone()"))
+        XCTAssertTrue(woke.contains("self.startTap()"))
+        XCTAssertTrue(woke.contains("RecordingDurability.onWake("))
         let stop = try body(of: "func stop() -> Summary {")
         XCTAssertTrue(stop.contains("flusher.stop()"))
         XCTAssertTrue(stop.contains("activity.release()"))
