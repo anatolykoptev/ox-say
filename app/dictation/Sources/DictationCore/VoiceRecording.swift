@@ -77,6 +77,10 @@ public struct VoiceRecording: Equatable {
         }
     }
 
+    /// The microphone is held by the take right now: only `.recording`. A kept take (`.review`, mic already released) and
+    /// one being sent (`.saving`) are `isWork` but hold no microphone, so they must not refuse a dictation (#442).
+    public var isRecordingMic: Bool { phase == .recording }
+
     // MARK: prompts
 
     /// Three passages to read aloud, 12-18 s each at reading pace; Russian for a Russian window, English otherwise.

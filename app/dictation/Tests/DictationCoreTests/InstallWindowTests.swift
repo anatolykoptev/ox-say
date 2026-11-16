@@ -61,10 +61,35 @@ final class InstallWindowTests: XCTestCase {
     /// Mutation: AppDelegate, delete the `controller.startAllowed = ...` line -> RED.
     func testTheControllerIsAskedAboutTheInstall() {
         let app = Self.appSource()
-        XCTAssertTrue(app.contains("controller.startAllowed = { [weak self] in UpdateGate.allowsNewDaemonWork(installing: self?.updateInstalling ?? false) }"),
-                      "the dictation key is not gated by the install")
-        XCTAssertTrue(app.contains("controller.onStartRefused = { [weak self] in self?.notice(L10nKey.noticeUpdatingDictation.text) }"),
+        XCTAssertTrue(app.contains("controller.startAllowed = { [weak self] in self?.dictationStartRefusal == nil }"),
+                      "the dictation key is not gated")
+        XCTAssertTrue(app.contains("if let refusal = self?.dictationStartRefusal { self?.notice(refusal.message()) }"),
                       "a refused press is silent")
+    }
+
+    /// #442: the start gate is fed the live install flag and "the take holds the microphone" (not `recordingVoice`, which is
+    /// also true for a take kept for review or being sent: a review sheet left open must not disable dictation).
+    /// Mutation: AppDelegate.dictationStartRefusal, `holdingMicrophone` -> `recordingVoice` -> RED.
+    func testTheStartGateIsFedTheLiveInstallAndVoiceTakeState() {
+        let body = Self.body("private var dictationStartRefusal: DictationStartRefusal? {", in: Self.appSource())
+        XCTAssertTrue(body.contains("installing: updateInstalling"), body)
+        XCTAssertTrue(body.contains("recordingVoice: mainWindow.source?.holdingMicrophone ?? false"), body)
+        XCTAssertFalse(body.contains("recordingVoice: mainWindow.source?.recordingVoice"), "a kept take is `isWork`, it holds no microphone")
+    }
+
+    /// #442: a voice take blocks the dictation start, an install does too, and the install is named first.
+    /// Mutation: UpdateInstall.swift `DictationStartRefusal.decide`, delete `if recordingVoice { return .voiceTake }` -> RED.
+    func testADictationMayNotStartOverAVoiceTake() {
+        XCTAssertEqual(DictationStartRefusal.decide(installing: false, recordingVoice: true), .voiceTake)
+        XCTAssertEqual(DictationStartRefusal.decide(installing: true, recordingVoice: false), .updating)
+        XCTAssertEqual(DictationStartRefusal.decide(installing: true, recordingVoice: true), .updating)
+        XCTAssertNil(DictationStartRefusal.decide(installing: false, recordingVoice: false), "an idle app dictates")
+    }
+
+    /// Each refusal shows its own sentence (the key is the stand-in for the words; the two files are checked by LocalizationTests).
+    func testEachRefusalShowsItsOwnSentence() {
+        XCTAssertEqual(DictationStartRefusal.voiceTake.message(text: { $0.rawValue }), "notice.dictation.blocked_voice")
+        XCTAssertEqual(DictationStartRefusal.updating.message(text: { $0.rawValue }), "notice.updating.dictation")
     }
 
     /// Speak Selection and the Services entry both need the daemon: both refuse, before any text is captured.
