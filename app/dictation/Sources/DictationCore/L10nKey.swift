@@ -935,4 +935,9 @@ public enum L10nKey: String, CaseIterable {
     case cleanErrTimedOut = "clean.err.timed_out"
     case cleanErrInterrupted = "clean.err.interrupted"
     case cleanErrFailed = "clean.err.failed"
+    case cleanErrWriteFailed = "clean.err.write_failed"
+    case cleanErrUnsupportedStreams = "clean.err.unsupported_streams"
+    case cleanErrUnreadableAudio = "clean.err.unreadable_audio"
+    case cleanErrBusyAfterCancel = "clean.err.busy_after_cancel"
+    case cleanInstalling = "clean.installing"
 }

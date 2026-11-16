@@ -39,7 +39,8 @@ final class CleanClientTests: XCTestCase {
             (409, "busy", .busy), (503, "busy", .busySystem), (503, "gpu_busy", .gpuBusy),
             (503, "models_downloading", .modelDownloading), (503, "models_download_failed", .modelDownloadFailed),
             (503, "models_missing", .notInstalled), (503, "models_unusable", .notInstalled), (503, "engine_missing", .notInstalled),
-            (503, "os_too_old", .osTooOld), (507, "disk_space", .diskFull), (502, "engine_output", .diskFull),
+            (503, "os_too_old", .osTooOld), (507, "disk_space", .diskFull), (502, "engine_output", .writeFailed),
+            (422, "unsupported_streams", .unsupportedStreams), (502, "engine_input", .unreadableAudio),
             (409, "exists", .outputExists), (409, "same_file", .sameFile), (403, "forbidden_path", .forbidden),
             (404, "not_found", .notFound), (422, "no_audio", .noAudio), (422, "unsupported_channels", .channels),
             (422, "too_long", .tooLong), (400, "invalid_request", .badOutput), (504, "engine_timeout", .timedOut),
@@ -68,8 +69,8 @@ final class CleanClientTests: XCTestCase {
 
     func testEveryProblemHasWordsInBothLanguages() {
         let all: [CleanProblem] = [.busy, .busySystem, .gpuBusy, .modelDownloading, .modelDownloadFailed, .notInstalled, .osTooOld,
-                                   .diskFull, .outputExists, .sameFile, .forbidden, .notFound, .noAudio, .channels, .tooLong,
-                                   .badOutput, .timedOut, .interrupted, .failed]
+                                   .diskFull, .writeFailed, .outputExists, .sameFile, .forbidden, .notFound, .noAudio, .channels, .tooLong,
+                                   .badOutput, .unsupportedStreams, .unreadableAudio, .timedOut, .interrupted, .failed]
         let keys = Set(all.map(\.key))
         XCTAssertEqual(keys.count, all.count, "two problems share one sentence")
     }
@@ -101,6 +102,31 @@ final class CleanClientTests: XCTestCase {
     func testTheTimeoutHasAFloorAndScalesWithTheFile() {
         XCTAssertEqual(StudioClient.cleanTimeout(forSeconds: nil), 1800)
         XCTAssertEqual(StudioClient.cleanTimeout(forSeconds: 600), 1800)
-        XCTAssertEqual(StudioClient.cleanTimeout(forSeconds: 4 * 3600), 7200)
+        // The slowest Mac (Intel, CPU only) gets the engine 1.0 x the audio, after the 120 s quiet wait, plus the margin.
+        XCTAssertEqual(StudioClient.cleanTimeout(forSeconds: 4 * 3600), 4 * 3600 + 120 + 300)
+    }
+
+    /// The client must outlast the daemon: its limit is derived from the daemon's own numbers, which are read from
+    /// `internal/daemon/clean.go` so a change there fails here.
+    /// Mutation: CleanClient.swift `cleanSlowestFloor = 2.0` -> 4.0, or `cleanQuietWait = 120` -> 60 -> RED.
+    func testTheClientOutlastsTheDaemonsAllowance() throws {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { root.deleteLastPathComponent() }
+        let go = try String(contentsOf: root.appendingPathComponent("internal/daemon/clean.go"), encoding: .utf8)
+        func number(_ name: String) throws -> Double {
+            let range = try XCTUnwrap(go.range(of: "\\b\(name)\\s*=\\s*([0-9.]+)", options: .regularExpression), name)
+            let digits = go[range].split(separator: "=").last.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+            return try XCTUnwrap(Double(digits), name)
+        }
+        let floor = try number("cleanFloorIntelCPUOnly")
+        XCTAssertEqual(StudioClient.cleanSlowestFloor, floor)
+        let wait = try XCTUnwrap(go.range(of: "cleanQuietCap\\s*=\\s*([0-9]+) \\* time.Second", options: .regularExpression), "cleanQuietCap")
+        let seconds = go[wait].split(separator: "=").last.flatMap { $0.split(separator: "*").first }.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        XCTAssertEqual(StudioClient.cleanQuietWait, Double(seconds))
+        // Whatever the length, the client allows more than the quiet wait plus the daemon's engine allowance.
+        for audio in [60, 3600, 36_000] as [Double] {
+            let daemon = StudioClient.cleanQuietWait + audio / (StudioClient.cleanSlowestFloor / 2)
+            XCTAssertGreaterThan(StudioClient.cleanTimeout(forSeconds: audio), daemon)
+        }
     }
 }

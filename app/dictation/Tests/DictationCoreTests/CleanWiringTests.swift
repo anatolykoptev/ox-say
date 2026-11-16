@@ -55,6 +55,15 @@ final class CleanWiringTests: XCTestCase {
         XCTAssertTrue(app.contains("chooseCleanOutput:"))
     }
 
+    /// Leaving the file page stops the comparison: no sound plays on Встречи or Диктовка with no control for it.
+    /// Mutation: MainWindowSource.swift, delete `if section != .transcribe { self?.cleanSource.stopPlayback() }` -> RED.
+    func testLeavingTheFilePageStopsTheComparison() throws {
+        let window = try source("OxSayDictation/MainWindowSource.swift")
+        let sink = try XCTUnwrap(window.range(of: "routeSaver = Publishers.CombineLatest3("))
+        let body = String(window[sink.lowerBound...].prefix(900))
+        XCTAssertTrue(body.contains("if section != .transcribe { self?.cleanSource.stopPlayback() }"), body)
+    }
+
     /// Closing the window stops the sound, never the job.
     func testClosingTheWindowStopsTheSoundNotTheJob() throws {
         let window = try source("OxSayDictation/MainWindowSource.swift")

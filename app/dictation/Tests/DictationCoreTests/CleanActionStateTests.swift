@@ -47,6 +47,17 @@ final class CleanActionStateTests: XCTestCase {
         XCTAssertTrue(CleanActionState.failed("x").isShown(on: .loading))
     }
 
+    /// While the model downloads there is no button to press: the bar says so (a failure from before does not hide it).
+    /// Mutation: CleanActionState.of, remove `if clean.installing { return .installing }` -> RED.
+    func testWhileTheModelDownloadsThereIsNoButton() {
+        let downloading = CleanStatus(available: false, reasonCode: "models_missing", installing: true)
+        XCTAssertEqual(state(downloading), .installing)
+        XCTAssertEqual(state(downloading, error: "Скачиваю"), .installing)
+        XCTAssertEqual(state(downloading, working: CleanWork(name: "a.mov")), .working(name: "a.mov", cancelling: false))
+        XCTAssertTrue(CleanActionState.installing.isShown(on: .empty))
+        XCTAssertFalse(CleanActionState.installing.isShown(on: .offline("x")))
+    }
+
     func testStatusDecodesVoiceClean() throws {
         let a = try XCTUnwrap(DaemonStatus.decode(Data(#"{"version":"v1","voice_clean":{"available":false,"reason_code":"models_missing","installing":true}}"#.utf8)))
         XCTAssertEqual(a.voiceClean, CleanStatus(available: false, reasonCode: "models_missing", installing: true))

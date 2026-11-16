@@ -29,13 +29,20 @@ public final class CleanSession {
     /// Called after every change of the above.
     public var onChange: () -> Void = {}
 
+    /// How long after a cancel the daemon may still be stopping the job (its kill grace is 5 s, the job's own wind-down a
+    /// little more): a `busy` answer inside it is that, not another file.
+    static let cancelSettle: TimeInterval = 10
+
     private let ops: CleanOps
     private let text: (L10nKey) -> String
+    private let now: () -> Date
     private var job: Task<Void, Never>?
+    private var cancelledAt: Date?
 
-    public init(ops: CleanOps, text: @escaping (L10nKey) -> String = { $0.text }) {
+    public init(ops: CleanOps, text: @escaping (L10nKey) -> String = { $0.text }, now: @escaping () -> Date = Date.init) {
         self.ops = ops
         self.text = text
+        self.now = now
     }
 
     public var state: CleanActionState {
@@ -46,13 +53,21 @@ public final class CleanSession {
     public var isWorking: Bool { working != nil }
 
     public func sentence(_ error: Error) -> String {
-        if let error = error as? CleanError { return error.problem.sentence(text: text) }
+        if let error = error as? CleanError {
+            // The daemon stays busy for a few seconds after a cancel: say that, not "another file is being cleaned".
+            if error.problem == .busy, let cancelledAt, now().timeIntervalSince(cancelledAt) < Self.cancelSettle {
+                return text(.cleanErrBusyAfterCancel)
+            }
+            return error.problem.sentence(text: text)
+        }
         return StudioError.plain(error, text: text)
     }
 
     /// The daemon's last `/status`.
     public func statusRead(_ status: DaemonStatus?) {
         self.status = status
+        // A failure that said "the model is downloading" must not outlive the download it was about.
+        if status?.voiceClean?.installing == true { failure = nil }
         onChange()
     }
 
@@ -96,6 +111,7 @@ public final class CleanSession {
         guard var work = working, !work.cancelling else { return }
         work.cancelling = true
         working = work
+        cancelledAt = now()
         job?.cancel()
         onChange()
     }

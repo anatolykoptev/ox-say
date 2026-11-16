@@ -920,7 +920,7 @@
 "clean.err.model_downloading" = "Downloading the cleanup model, about 131 MB. Try again in a minute.";
 "clean.err.model_download_failed" = "The cleanup model could not be downloaded. Check your internet connection and try again.";
 "clean.err.not_installed" = "Not installed. Reinstall OxSay.";
-"clean.err.disk_full" = "The result could not be written: check the free space on the disk.";
+"clean.err.disk_full" = "The disk has no room for the result. Free some space and try again.";
 "clean.err.exists" = "A file with that name already exists. Pick another name.";
 "clean.err.same_file" = "The cleaned copy cannot replace the original. Pick another name.";
 "clean.err.forbidden" = "Meeting recordings and dictation are never cleaned: cleanup works only on your own files.";
@@ -928,7 +928,12 @@
 "clean.err.no_audio" = "The file has no sound.";
 "clean.err.channels" = "Only mono or stereo can be cleaned. This file has more than two channels.";
 "clean.err.too_long" = "The file is too long to clean.";
-"clean.err.bad_output" = "The file was not accepted: make sure it is working audio or video, and keep the extension of the suggested name.";
+"clean.err.bad_output" = "It cannot be saved like that. Check that the original is working audio or video, and that the place for the result exists and suits the format.";
 "clean.err.timed_out" = "The cleanup took too long and was stopped. The original is unchanged.";
 "clean.err.interrupted" = "The cleanup was interrupted. The original is unchanged.";
 "clean.err.failed" = "The voice could not be cleaned. The original is unchanged.";
+"clean.err.write_failed" = "The result could not be written. Check that the chosen place is writable and that the disk has free space.";
+"clean.err.unsupported_streams" = "The file has tracks that cannot be stored in the chosen format. Save the result in another format, for example .mkv.";
+"clean.err.unreadable_audio" = "The sound of this file could not be read. It may be damaged: try another file.";
+"clean.err.busy_after_cancel" = "The previous cleanup is still finishing. Try again in a few seconds.";
+"clean.installing" = "The cleanup model is downloading, about 131 MB. It happens once; the button returns when the model is ready.";

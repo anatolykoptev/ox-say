@@ -94,6 +94,26 @@ final class CleanSessionTests: XCTestCase {
         s.cancel()
     }
 
+    /// The daemon stays busy a few seconds after a cancel: a `busy` answer inside that time says it is finishing.
+    /// Mutation: CleanSession.swift `cancelSettle` 10 -> 0 -> RED (the first assertion).
+    func testBusyRightAfterACancelSaysTheDaemonIsFinishing() async {
+        var clock = Date(timeIntervalSince1970: 1_000)
+        let s = CleanSession(ops: CleanOps(clean: { _, _, _, _ in throw CleanError(.busy) }), now: { clock })
+        s.statusRead(available)
+        s.start(input: input, output: output, overwrite: false)
+        await until(s) { if case .failed = $0 { return true } else { return false } }
+        XCTAssertEqual(s.state, .failed(CleanProblem.busy.sentence()), "no cancel yet: the daemon really has another file")
+        // Cancel a hanging job, then a busy answer five seconds later.
+        let hang = CleanSession(ops: hanging(), now: { clock })
+        hang.statusRead(available)
+        hang.start(input: input, output: output, overwrite: false)
+        hang.cancel()
+        await until(hang) { if case .working = $0 { return false } else { return true } }
+        XCTAssertEqual(hang.sentence(CleanError(.busy)), L10nKey.cleanErrBusyAfterCancel.text)
+        clock = clock.addingTimeInterval(11)
+        XCTAssertEqual(hang.sentence(CleanError(.busy)), CleanProblem.busy.sentence(), "after the settle time it is a real busy")
+    }
+
     func testTransportErrorsAreStudioSentences() async {
         let s = session(CleanOps(clean: { _, _, _, _ in throw StudioError.daemonUnreachable }))
         s.start(input: input, output: output, overwrite: false)

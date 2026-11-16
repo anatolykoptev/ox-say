@@ -125,6 +125,7 @@ final class MainWindowSource {
             self?.cleanSource.stopPlayback()
             host.stopSpeechPlayer()
         }
+        cleanSource.statusRefreshed = { [weak self] in self?.schedulePolling() }
         cleanSource.stopOtherAudio = { [weak self] in
             self?.voiceSource.stopPreview()
             self?.stopPlayback()
@@ -140,6 +141,8 @@ final class MainWindowSource {
         let openVoiceover = model.$data.map(\.speak.routeProjectID).removeDuplicates()
         routeSaver = Publishers.CombineLatest3(model.$section, model.$selectedMeeting, openVoiceover).dropFirst().sink { [weak self] section, meeting, speak in
             WindowRestoration.save(MainRoute(section: section, meetingID: meeting, speakID: speak), to: defaults)
+            // The comparison belongs to the file page: leaving it leaves no sound with no control.
+            if section != .transcribe { self?.cleanSource.stopPlayback() }
             // Arriving on Озвучка with the daemon down reads at once (the backoff grew on passes made elsewhere) and starts
             // its recheck without waiting for another refresh pass.
             Task { @MainActor in
@@ -424,7 +427,8 @@ final class MainWindowSource {
         // The next read is due when a meeting is still being processed, or when Озвучка is in view and the daemon does not
         // answer (it backs off, so a daemon that never comes up is asked rarely): whichever is sooner.
         let meetings = MeetingsPolling.needed(visible: visible, meetings: model.data.meetings, writer: model.data.meetingSettings.notesWriter)
-        let due = [meetings ? MeetingsPolling.interval : nil, speakSource.recheckDelay(visible: visible, section: model.section)].compactMap { $0 }
+        let due = [meetings ? MeetingsPolling.interval : nil, speakSource.recheckDelay(visible: visible, section: model.section),
+                   cleanSource.recheckDelay(visible: visible)].compactMap { $0 }
         guard let delay = due.min() else { return }
         pollTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))

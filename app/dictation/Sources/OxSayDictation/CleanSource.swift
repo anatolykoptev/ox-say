@@ -26,6 +26,9 @@ final class CleanSource {
     private var shownDone: CleanDone?
     /// Stops whatever else sounds in the window (a meeting, a voice sample, a voiceover); the window wires it.
     var stopOtherAudio: () -> Void = {}
+    /// The status was re-read because of a failure: the window reschedules its polling (a model download starts one).
+    var statusRefreshed: () -> Void = {}
+    private var lastFailure: String?
 
     init(model: MainWindowModel, host: MainWindowHost) {
         self.model = model
@@ -54,6 +57,11 @@ final class CleanSource {
     /// The daemon's /status was read: the bar offers the button, or says why it cannot.
     func statusRead() { session.statusRead(host.daemonStatus()) }
 
+    /// While the model downloads the window reads the status every few seconds, so the button comes back by itself.
+    func recheckDelay(visible: Bool) -> TimeInterval? {
+        visible && session.status?.voiceClean?.installing == true ? 5 : nil
+    }
+
     private func sync() {
         let state = session.state
         // A finished job that was closed, or replaced by a new one, stops its sound and forgets its position.
@@ -64,6 +72,18 @@ final class CleanSource {
             shownDone = done
         }
         model.data.clean.state = state
+        // A new failure may be "the model is downloading": read the status once, so the bar says so and offers no button.
+        let failed: String? = { if case .failed(let sentence) = state { return sentence } else { return nil } }()
+        if failed != lastFailure {
+            lastFailure = failed
+            if failed != nil {
+                Task { @MainActor [weak self] in
+                    await self?.host.refreshStatus()
+                    self?.statusRead()
+                    self?.statusRefreshed()
+                }
+            }
+        }
     }
 
     /// A file picked or dropped on the bar: asks where the copy goes, then cleans. Everything that can go wrong before the

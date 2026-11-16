@@ -40,6 +40,8 @@ public enum CleanProblem: Equatable {
     case osTooOld
     /// The result could not be written: no space, or the disk refused it.
     case diskFull
+    /// The result could not be written for a reason the daemon did not name (the engine's output step failed).
+    case writeFailed
     case outputExists
     /// The chosen result would overwrite the original.
     case sameFile
@@ -49,8 +51,13 @@ public enum CleanProblem: Equatable {
     case noAudio
     case channels
     case tooLong
-    /// The result's name or kind does not fit the file (the extension, a picture in an audio name).
+    /// The request was refused as invalid: the picked file is not readable media, or the place for the result is not
+    /// usable (folder missing, a kind that does not fit the file).
     case badOutput
+    /// A track of the file cannot be stored in the chosen container.
+    case unsupportedStreams
+    /// The engine could not read the audio it was given.
+    case unreadableAudio
     case timedOut
     case interrupted
     /// Everything the engine or the audio tools can fail with; the details are in the daemon's log.
@@ -65,7 +72,10 @@ public enum CleanProblem: Equatable {
         case "models_download_failed": return .modelDownloadFailed
         case "models_missing", "models_unusable", "engine_missing": return .notInstalled
         case "os_too_old": return .osTooOld
-        case "disk_space", "engine_output": return .diskFull
+        case "disk_space": return .diskFull
+        case "engine_output": return .writeFailed
+        case "unsupported_streams": return .unsupportedStreams
+        case "engine_input": return .unreadableAudio
         case "exists": return .outputExists
         case "same_file": return .sameFile
         case "forbidden_path": return .forbidden
@@ -90,6 +100,9 @@ public enum CleanProblem: Equatable {
         case .notInstalled: return .cleanErrNotInstalled
         case .osTooOld: return .cleanReasonOSTooOld
         case .diskFull: return .cleanErrDiskFull
+        case .writeFailed: return .cleanErrWriteFailed
+        case .unsupportedStreams: return .cleanErrUnsupportedStreams
+        case .unreadableAudio: return .cleanErrUnreadableAudio
         case .outputExists: return .cleanErrExists
         case .sameFile: return .cleanErrSameFile
         case .forbidden: return .cleanErrForbidden
@@ -115,11 +128,20 @@ public struct CleanError: Error, Equatable {
 }
 
 extension StudioClient {
-    /// The time limit of one cleanup request: half the recording's length, never under half an hour. The daemon answers when
-    /// the file is done (it waits up to two minutes for a quiet machine first, and its first run compiles the model), so the
-    /// limit only has to outlast the slowest honest run; a hung daemon is the case it exists for.
+    /// The slowest speed floor the daemon sizes its engine allowance on, in times real time: an Intel Mac without a
+    /// discrete GPU (`cleanFloorIntelCPUOnly`); the daemon allows the engine `audio / (floor / 2)`. A test reads both numbers
+    /// from `internal/daemon/clean.go`.
+    static let cleanSlowestFloor = 2.0
+    /// How long the daemon waits for a quiet machine before it starts (`cleanQuietCap`), in seconds.
+    static let cleanQuietWait: TimeInterval = 120
+    /// Room for the upload of nothing, ffmpeg before and after the engine, and the first run's model compile.
+    static let cleanMargin: TimeInterval = 300
+
+    /// The time limit of one cleanup request: what the daemon may take at most (the quiet wait, then the engine's allowance
+    /// for the slowest Mac, then a margin), and never under half an hour. The daemon answers when the file is done, so the
+    /// client must outlast it; a hung daemon is the case the limit exists for.
     public static func cleanTimeout(forSeconds seconds: Double?) -> TimeInterval {
-        max(1800, 0.5 * (seconds ?? 0))
+        max(1800, (seconds ?? 0) / (cleanSlowestFloor / 2) + cleanQuietWait + cleanMargin)
     }
 
     /// POST /v1/audio/clean: cleans the voice of the file at `input` and writes the result to `output` (a video keeps its

@@ -61,6 +61,8 @@ public enum CleanActionState: Equatable {
     case unavailable(reason: String)
     /// Ready. `firstUse`: the model is not on this Mac yet, so the first file downloads it before it is cleaned.
     case idle(firstUse: Bool)
+    /// The first cleanup is downloading the model: no button until it has finished.
+    case installing
     case working(name: String, cancelling: Bool)
     case done(CleanDone)
     case failed(String)
@@ -83,6 +85,7 @@ public enum CleanActionState: Equatable {
                 case "engine_missing": return .unavailable(reason: text(.cleanReasonEngineMissing))
                 default: return .unavailable(reason: text(.cleanReasonUnknown))
                 }
+                if clean.installing { return .installing }
             }
         }
         if let error { return .failed(error) }
@@ -94,7 +97,7 @@ public enum CleanActionState: Equatable {
     public func isShown(on page: TranscribePageState) -> Bool {
         switch self {
         case .working, .done, .failed: return true
-        case .idle, .unavailable:
+        case .idle, .unavailable, .installing:
             switch page {
             case .offline, .loading: return false
             case .empty, .list, .working: return true

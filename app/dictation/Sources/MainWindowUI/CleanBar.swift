@@ -41,6 +41,16 @@ struct CleanBar: View {
                     : firstUse ? "\(L10nKey.cleanCaption.text) \(L10nKey.cleanCaptionFirstUse.text)" : L10nKey.cleanCaption.text) {
                 Button(L10nKey.cleanPick.text) { pickingFile = true }
             }
+        case .installing:
+            HStack(spacing: 12) {
+                ProgressView().controlSize(.small)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10nKey.cleanTitle.text)
+                    Text(L10nKey.cleanInstalling.text).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 12)
+            }
+            .accessibilityElement(children: .combine)
         case .working(let name, let cancelling):
             HStack(spacing: 12) {
                 ProgressView().controlSize(.small)
@@ -102,6 +112,7 @@ struct CleanBar: View {
                        labelKey: playback.isPlaying ? .playPause : .playPlay) { model.actions.cleanPlayPause() }
             Slider(value: Binding(get: { min(playback.position, length) }, set: { model.actions.cleanSeek($0) }), in: 0...length)
                 .accessibilityLabel(L10nKey.playPosition.text)
+                .accessibilityValue(Self.clock(playback.position))
             Text("\(Self.clock(playback.position)) / \(Self.clock(length))")
                 .font(.caption).monospacedDigit().foregroundStyle(.secondary)
         }
