@@ -44,7 +44,7 @@ final class MeetingWiringTests: XCTestCase {
 
     private func startTapCaptures(_ recorder: String) -> Bool {
         guard let body = body(recorder, of: "private func startTap() {") else { return false }
-        return body.contains("let token = tapRecovery.token") && body.contains("self?.tapStarted(outcome, token: token)")
+        return body.contains("let token = tapRecovery.token") && body.contains("self?.tapStarted(outcome, token: token, scope: scope)")
     }
 
     private func controller() throws -> String { try source("OxSayDictation/MeetingController.swift") }
@@ -142,7 +142,7 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertFalse(recorder.contains("micRetry"), "no unguarded asyncAfter chain is left")
         let rebuild = try XCTUnwrap(body(recorder, of: "private func scheduleTapRebuild(after delay: TimeInterval) {"))
         XCTAssertTrue(rebuild.contains("self.startTap()"))
-        let started = try XCTUnwrap(body(recorder, of: "private func tapStarted(_ outcome: SystemAudioTap.StartOutcome, token: Int) {"))
+        let started = try XCTUnwrap(body(recorder, of: "private func tapStarted(_ outcome: SystemAudioTap.StartOutcome, token: Int, scope: TapScope) {"))
         XCTAssertTrue(started.contains("case .recovered: onSystemAudioRecovered?()"))
         let failed = started
         XCTAssertTrue(failed.contains("scheduleTapRebuild(after: delay)"))
@@ -172,8 +172,8 @@ final class MeetingWiringTests: XCTestCase {
     /// Mutation: SystemAudioTap.start, move `old.teardown()` before `build(` -> RED.
     func testTheTapBuildsBeforeItTearsDown() throws {
         let tap = try source("OxSayDictation/SystemAudioTap.swift")
-        let start = try XCTUnwrap(body(tap, of: "private func startNow(excludingPIDs pids: [pid_t], withMainSubDevice: Bool, epoch requested: Int) throws -> Bool {"))
-        let built = try XCTUnwrap(start.range(of: "try build(excluded: excluded, withMainSubDevice: withMainSubDevice)"))
+        let start = try XCTUnwrap(body(tap, of: "private func startNow(scope: TapScope, excludingPIDs pids: [pid_t], withMainSubDevice: Bool, epoch requested: Int) throws -> Bool {"))
+        let built = try XCTUnwrap(start.range(of: "try build(scope: scope, excluded: excluded, withMainSubDevice: withMainSubDevice)"))
         let torn = try XCTUnwrap(start.range(of: "old.teardown()"))
         XCTAssertLessThan(built.lowerBound, torn.lowerBound)
         XCTAssertFalse(start.contains("stop()"), "no teardown before the new tap runs")
@@ -194,13 +194,13 @@ final class MeetingWiringTests: XCTestCase {
         let tap = try source("OxSayDictation/SystemAudioTap.swift")
         XCTAssertFalse(recorder.contains("try tap.start("), "no synchronous start from the recorder")
         let startTap = try XCTUnwrap(body(recorder, of: "private func startTap() {"))
-        XCTAssertTrue(startTap.contains("tap.start(excludingPIDs: [getpid()], withMainSubDevice: useMainSubDevice)"))
-        let start = try XCTUnwrap(body(tap, of: "func start(excludingPIDs pids: [pid_t], withMainSubDevice: Bool, completion: @escaping (StartOutcome) -> Void) {"))
+        XCTAssertTrue(startTap.contains("tap.start(scope: scope, excludingPIDs: [getpid()], withMainSubDevice: useMainSubDevice)"))
+        let start = try XCTUnwrap(body(tap, of: "func start(scope: TapScope, excludingPIDs pids: [pid_t], withMainSubDevice: Bool, completion: @escaping (StartOutcome) -> Void) {"))
         XCTAssertTrue(start.contains("control.async"))
         XCTAssertTrue(start.contains("DispatchQueue.main.async { completion(outcome) }"))
         XCTAssertTrue(tap.contains("private func startNow("), "the blocking part is private")
         XCTAssertEqual(tap.components(separatedBy: "Thread.sleep").count - 1, 1)
-        let now = try XCTUnwrap(body(tap, of: "private func startNow(excludingPIDs pids: [pid_t], withMainSubDevice: Bool, epoch requested: Int) throws -> Bool {"))
+        let now = try XCTUnwrap(body(tap, of: "private func startNow(scope: TapScope, excludingPIDs pids: [pid_t], withMainSubDevice: Bool, epoch requested: Int) throws -> Bool {"))
         XCTAssertTrue(now.contains("Thread.sleep"), "the only sleep is inside the blocking part")
     }
 
@@ -630,7 +630,7 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(recorder.contains("var onSystemAudioFailed: (() -> Void)?"))
         XCTAssertTrue(recorder.contains("var onMicrophoneFailed: (() -> Void)?"))
         XCTAssertTrue(recorder.contains("case .failed(let error): kind = .failed; failure = error"))
-        let failed = try XCTUnwrap(body(recorder, of: "private func tapStarted(_ outcome: SystemAudioTap.StartOutcome, token: Int) {"))
+        let failed = try XCTUnwrap(body(recorder, of: "private func tapStarted(_ outcome: SystemAudioTap.StartOutcome, token: Int, scope: TapScope) {"))
         XCTAssertTrue(failed.contains("log.error(\"system audio tap: failed: \\(String(describing: failure), privacy: .public)\")"), "the reason goes to the log")
         let chain = try XCTUnwrap(recorder.range(of: "private lazy var micChain = RetryChain("))
         XCTAssertTrue(recorder[chain.lowerBound...].prefix(700).contains("self?.onMicrophoneFailed?()"))
