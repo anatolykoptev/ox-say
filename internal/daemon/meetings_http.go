@@ -33,6 +33,7 @@ func (d *Daemon) meetingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/meetings/{id}", d.handleMeetingGet)
 	mux.HandleFunc("PATCH /v1/meetings/{id}", d.handleMeetingRename)
 	mux.HandleFunc("GET /v1/meetings/{id}/audio", d.handleMeetingAudio)
+	mux.HandleFunc("GET /v1/meetings/{id}/live", d.handleMeetingLive)
 	mux.HandleFunc("POST /v1/meetings/{id}/finish", d.handleMeetingFinish)
 	mux.HandleFunc("POST /v1/meetings/{id}/notes", d.handleMeetingNotes)
 	mux.HandleFunc("DELETE /v1/meetings/{id}", d.handleMeetingDelete)
@@ -155,6 +156,7 @@ func (d *Daemon) handleMeetingCreate(w http.ResponseWriter, r *http.Request) {
 		d.writeMeetingErr(w, err)
 		return
 	}
+	d.live.ensure(m.ID)
 	writeJSON(w, http.StatusCreated, createMeetingResponse{Manifest: d.publicManifest(m), Dir: dir})
 }
 
@@ -383,24 +385,64 @@ func (d *Daemon) handleMeetingDelete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (d *Daemon) handleMeetingSettings(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, d.Meet.Store.Settings())
+// meetingSettingsAnswer is the meeting settings as the app reads them: the stored retention and the live-captions
+// choice resolved against this Mac's default (LiveCaptionsDefault says which that is).
+type meetingSettingsAnswer struct {
+	RetentionDays       int  `json:"retention_days"`
+	LiveCaptions        bool `json:"live_captions"`
+	LiveCaptionsDefault bool `json:"live_captions_default"`
 }
 
+func (d *Daemon) settingsAnswer() meetingSettingsAnswer {
+	return meetingSettingsAnswer{
+		RetentionDays:       d.Meet.Store.Settings().RetentionDays,
+		LiveCaptions:        d.liveEnabled(),
+		LiveCaptionsDefault: d.liveDefault(),
+	}
+}
+
+func (d *Daemon) handleMeetingSettings(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, d.settingsAnswer())
+}
+
+// handleMeetingSettingsSet changes the fields it is given and keeps the rest. Pointers: an absent retention_days
+// must not read as 0, which is "never delete", and an absent live_captions must not read as "off".
 func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request) {
-	// A pointer: an absent field must not read as 0, which is "never delete".
 	var in struct {
-		RetentionDays *int `json:"retention_days"`
+		RetentionDays *int  `json:"retention_days"`
+		LiveCaptions  *bool `json:"live_captions"`
+		// What GET answers beside the settings: a client that sends the answer back is not refused. Read, never stored.
+		LiveCaptionsDefault *bool `json:"live_captions_default"`
 	}
 	if err := decodeStrict(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if in.RetentionDays == nil {
-		writeErr(w, http.StatusBadRequest, "retention_days is required")
+	if in.RetentionDays == nil && in.LiveCaptions == nil {
+		writeErr(w, http.StatusBadRequest, "retention_days or live_captions is required")
 		return
 	}
-	if err := d.Meet.Store.SetSettings(meeting.Settings{RetentionDays: *in.RetentionDays}); err != nil {
+	// One read-modify-write (UpdateSettings): the base is the file as stored, not Settings(), which shows the default
+	// when the file is unusable — writing that back would restart a retention sweep that is paused on purpose — and a
+	// concurrent request for the other field cannot be overwritten by what this one read.
+	err := d.Meet.Store.UpdateSettings(func(cur meeting.Settings, loadErr error) (meeting.Settings, error) {
+		if loadErr != nil {
+			// An explicit retention choice still repairs an unusable file, as it always did; a live-captions-only
+			// change has no valid retention to write beside it, so it is refused.
+			if in.RetentionDays == nil {
+				return cur, loadErr
+			}
+			cur = meeting.Settings{}
+		}
+		if in.RetentionDays != nil {
+			cur.RetentionDays = *in.RetentionDays
+		}
+		if in.LiveCaptions != nil {
+			cur.LiveCaptions = in.LiveCaptions
+		}
+		return cur, nil
+	})
+	if err != nil {
 		if errors.Is(err, os.ErrInvalid) {
 			writeErr(w, http.StatusBadRequest, "retention_days must be one of 0, 7, 30, 90")
 			return
@@ -408,7 +450,8 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 		d.writeMeetingErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, d.Meet.Store.Settings())
+	d.live.reconcile()
+	writeJSON(w, http.StatusOK, d.settingsAnswer())
 }
 
 // handleNotesModelInstall starts the download of a notes model. The app's

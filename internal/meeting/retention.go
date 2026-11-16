@@ -24,6 +24,10 @@ var RetentionChoices = []int{0, 7, 30, 90}
 // how long audio is kept after a meeting ends; 0 keeps it forever.
 type Settings struct {
 	RetentionDays int `json:"retention_days"`
+	// LiveCaptions is the user's choice of live captions while recording; nil is "never chosen", which the daemon
+	// answers with the Mac's default (on for Apple Silicon, off for Intel). A pointer so a settings file written
+	// before the option existed is not read as "off".
+	LiveCaptions *bool `json:"live_captions,omitempty"`
 }
 
 func validRetention(days int) bool { return slices.Contains(RetentionChoices, days) }
@@ -59,6 +63,20 @@ func (s *Store) Settings() Settings {
 		return Settings{RetentionDays: DefaultRetention}
 	}
 	return st
+}
+
+// UpdateSettings changes the settings file as one step: change gets what is stored (or why it cannot be read) and
+// returns what to store. Two requests that each change a different field cannot overwrite one another with the
+// stale value they read: a retention the user picked is the setting that decides whether audio is deleted.
+func (s *Store) UpdateSettings(change func(cur Settings, loadErr error) (Settings, error)) error {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+	cur, err := s.LoadSettings()
+	next, cerr := change(cur, err)
+	if cerr != nil {
+		return cerr
+	}
+	return s.SetSettings(next)
 }
 
 // SetSettings saves the settings; a retention outside RetentionChoices is refused.
@@ -150,6 +168,8 @@ func transcriptReadable(dir string) bool {
 var (
 	// audioFiles are moved out one by one, the far side's first (retiredNames).
 	audioFiles = []string{ThemPCM, MePCM}
+	// liveFiles are the audio as text (live captions): they go with the audio and are moved out beside it (retiredNames).
+	liveFiles = []string{LiveJSONL}
 	// workFiles live inside WorkDir, which is removed whole.
 	workFiles = []string{DiarizationJSON}
 	// keptFiles stay for the life of the meeting.
@@ -195,4 +215,4 @@ func (r *Runner) deleteAudio(m Manifest, days int) bool {
 
 // retiredNames are what retention moves out of a meeting, in this order: audioFiles, then the work directory (which
 // holds workFiles and the piece caches).
-var retiredNames = []string{ThemPCM, MePCM, WorkDir}
+var retiredNames = []string{ThemPCM, MePCM, LiveJSONL, WorkDir}
