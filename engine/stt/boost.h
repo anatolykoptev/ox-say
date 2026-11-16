@@ -493,7 +493,7 @@ class run {
 // positive number is the weight; every other field is a spoken form (an alias the model writes when the
 // term is said aloud, e.g. "GitHub\tГитхаб\tГитхаб"), so "OxSay\t2.5\tОкс Сей" is weight 2.5 with the
 // alias "Окс Сей", and "OxSay\tОкс Сей" is weight 1 with the same alias. Only the second field can be a
-// weight; a number further along is an alias. Surrounding whitespace is trimmed, blank and '#' lines are
+// weight; a number further along is an alias. Surrounding whitespace is trimmed, blank lines are
 // skipped, duplicate written forms dropped (first wins), terms and aliases under 3 characters (code
 // points) dropped — the paper filtered 2-letter phrases to limit false accepts — at most 200 terms and 8
 // aliases per term kept. A weight that is not a finite positive number is just an alias, unless the field
