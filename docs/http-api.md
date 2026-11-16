@@ -50,11 +50,11 @@ Glossary routes (the heard → meant pairs applied to recognised text):
 
 | Route | Description |
 |-------|-------------|
-| `GET /v1/glossary` | `{"pairs":[…]}` — every pair: `id`, `heard`, `meant`, `status` (`candidate`/`active`/`rejected`), `sightings` (hashes only), `seen`, `added` |
+| `GET /v1/glossary` | `{"pairs":[…]}` — every pair: `id`, `heard`, `meant`, `status` (`candidate`/`active`/`rejected`), `sightings` (hashes only), `seen`, `added`, and `vetted` when present (the dictionary found the heard form a single non-ordinary word, so it may activate on the evidence of other spellings of its meant form) |
 | `POST /v1/glossary` | `{"heard","meant","context"}` — file a pair. The context must contain the heard form and only its hash is kept; `409` when the heard form already maps to another term, `400` on an invalid pair (heard: 1–4 words of letters, digits, spaces, `'` and `-` only; meant: ≤ 4 words, ≤ 60 chars, letters/digits/spaces and `. - + _ ' #` only) |
 | `POST /v1/glossary/<id>/approve` | Make the pair active (also reactivates a rejected one). Owner-only — `403` without `Authorization: Bearer <owner token>` |
 | `POST /v1/glossary/<id>/reject` | Stop the pair applying; it stays as a tombstone a later `add` cannot reactivate. Owner-only — `403` without `Authorization: Bearer <owner token>` |
-| `POST /v1/glossary/<id>/edit` | `{"meant"}` — give the pair another meant form (same validation as `add`; heard, id and sightings stay; a rejected pair comes back as a candidate). Owner-only — `403` without `Authorization: Bearer <owner token>` |
+| `POST /v1/glossary/<id>/edit` | `{"meant"}` — give the pair another meant form (same validation as `add`; heard and id stay; the sightings are cleared, they vouched for the old meant; a rejected pair comes back as a candidate). Owner-only — `403` without `Authorization: Bearer <owner token>` |
 | `DELETE /v1/glossary/<id>` | Remove the pair for good, no tombstone (an agent may file the heard form again as a new candidate). Owner-only — `403` without `Authorization: Bearer <owner token>` |
 
 Approve, reject, edit and purge are owner-only. The daemon creates `$OX_SAY_HOME/owner.token` on first start

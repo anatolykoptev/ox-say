@@ -84,7 +84,7 @@ var simOrdinary = struct{ plain, nearMiss []string }{
 }
 
 // simResult runs the stream against a fresh store and returns recall and false-match counts.
-func simResult(t *testing.T) (hit, total, falsePlain, nPlain, falseNear, nNear int) {
+func simResult(t *testing.T) (hit, total, falsePlain, nPlain, falseNear, nNear int, borrowed []string) {
 	t.Helper()
 	s := newTestStore(t)
 	frame := 0
@@ -116,6 +116,12 @@ func simResult(t *testing.T) (hit, total, falsePlain, nPlain, falseNear, nNear i
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, p := range pairs {
+		switch p.Heard {
+		case "давайте", "у квантекс", "спроси":
+			borrowed = append(borrowed, p.Heard)
+		}
+	}
 	for _, tm := range simTerms {
 		for _, f := range tm.forms {
 			for _, form := range simForms(f.heard) {
@@ -142,26 +148,31 @@ func simResult(t *testing.T) (hit, total, falsePlain, nPlain, falseNear, nNear i
 	return
 }
 
-// The numbers of the simulation. Before this change (per-spelling counting, no stemming, three sentences for every
-// single word) recall was 3/80 and 2/7 of the sentences with a mistakenly filed word were changed (only «вол»,
-// filed from three sentences, was active); after it recall is 64/80. Taking one change away from the final code:
-// per-spelling counting 22/80, no stemming 16/80, a threshold of three for every single word 59/80. The mistaken
-// «машина» pair, now active from two sentences, changes its five sentences too (7/7): that is the price of the
-// lower threshold, which the owner's approval of a candidate (and the Rejected tombstone) is there to catch. The
-// near-misses (a derivation, a short stem) stay untouched before and after. The 16 misses are the
-// cases of a spelling Snowball strips as a verb («зорвен»), of «арк» (a stem under five letters) and of the
-// four-letter «рукс» and «рукз».
-// Mutation: store.go Add, `promote(pairs, meant)` -> the old per-pair line -> RED (recall 22/80).
-// Mutation: store.go needed, `n >= 5` -> `n >= 99` -> RED (recall 59/80).
+// The numbers of the simulation, 90 held-out sentences, 9 ordinary sentences with a mistakenly filed word, 19
+// near-misses. On main (per-spelling counting, no stemming, three sentences for every single word): recall 3/90,
+// 2/9 changed. With round one of this change (pooled evidence for every spelling, stems with the adjective
+// endings): 74/90, 9/9, because the three mistakes filed once each against an established meant went active.
+// Final: recall 72/90 and 6/9 changed; the three mistakes stay candidates. Taking one change away from the final
+// code: see the PR body. The mistaken «машина» pair, now active from two sentences, changes its sentences too:
+// that is the price of the lower threshold, which the owner's approval of a candidate (and the Rejected
+// tombstone) is there to catch. The near-misses (a derivation, a short stem, an adjective of the same stem) stay
+// untouched. The 18 misses are the cases of a spelling Snowball strips as a verb («зорвен»), of «арк» (a stem
+// under five letters), of the four-letter «рукс» and «рукз», and the instrumental of the feminine «фарвина».
+// Mutation: store.go Add, `promote(pairs, meant)` -> the old per-pair line -> RED (recall).
+// Mutation: store.go needed, `n >= 5` -> `n >= 99` -> RED (recall).
+// Mutation: store.go promote, `p.Vetted &&` dropped -> RED (the mistakes go active).
 // Mutation: stem.go sameWord, `nominalStem(w) == hs` -> `russian.Stem(w, false) == hs` -> RED («машинный» is changed).
 func TestMiningSimulation(t *testing.T) {
-	hit, total, falsePlain, nPlain, falseNear, nNear := simResult(t)
-	t.Logf("recall %d/%d (%.1f%%); ordinary sentences with a mistakenly filed word changed %d/%d; near-misses changed %d/%d",
-		hit, total, 100*float64(hit)/float64(total), falsePlain, nPlain, falseNear, nNear)
-	if min := 64; hit < min {
+	hit, total, falsePlain, nPlain, falseNear, nNear, borrowed := simResult(t)
+	t.Logf("recall %d/%d (%.1f%%); ordinary sentences with a mistakenly filed word changed %d/%d; near-misses changed %d/%d; mistakes active %v",
+		hit, total, 100*float64(hit)/float64(total), falsePlain, nPlain, falseNear, nNear, borrowed)
+	if min := 72; hit < min {
 		t.Errorf("recall %d/%d, want at least %d", hit, total, min)
 	}
 	if falseNear != 0 {
 		t.Errorf("%d near-miss sentences were changed, want 0", falseNear)
+	}
+	if len(borrowed) != 0 {
+		t.Errorf("mistaken filings against an established meant went active on its evidence: %v", borrowed)
 	}
 }

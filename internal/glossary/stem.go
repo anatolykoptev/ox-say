@@ -10,18 +10,21 @@ import (
 
 // minStemRunes is the shortest stem that may stand for a word. A short stem is shared by unrelated words («вол» is
 // also «воля», «пол» is also «поле»): on the lower-case, flagged entries of the Russian dictionary in
-// internal/wordlists, 4.2% of the entries matched by stem share it with another entry at a 3-letter minimum, 3.5%
-// at 4 and 2.9% at 5 (TestStemMatchingIsRareOnOrdinaryWords). A heard form whose stem is shorter than this
+// internal/wordlists, 2.5% of the entries matched by stem share it with another entry at a 3-letter minimum, 2.0%
+// at 4 and 1.6% at 5 (TestStemMatchingIsRareOnOrdinaryWords). A heard form whose stem is shorter than this
 // matches only itself.
 const minStemRunes = 5
 
 // nounEndings are the case endings of a noun, and nothing else: matching goes through the Snowball stemmer, but
 // a word whose stemmed-off tail is not one of these is a derivation or a verb form («курс» / «курсив»,
-// «охрана» / «охранить»), not another case of the same name, and is not matched.
+// «охрана» / «охранить»), not another case of the same name, and is not matched. The endings a noun shares
+// with an adjective («ой ей ою ею») are left out: «дорога» would rewrite «человек дорогой», «ворон» «вороной».
+// A feminine name loses its instrumental («с фарвиной») to that; a missed case is visible and the form can be
+// filed, a rewritten word of ordinary speech is not.
 var nounEndings = map[string]bool{"": true}
 
 func init() {
-	for _, e := range strings.Fields("а я у ю е ы и ом ем ой ей ою ею ам ям ами ями ах ях ов ев") {
+	for _, e := range strings.Fields("а я у ю е ы и ом ем ам ям ами ями ах ях ов ев") {
 		nounEndings[e] = true
 	}
 }

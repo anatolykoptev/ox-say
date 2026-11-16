@@ -19,9 +19,10 @@ import (
 func TestNominalStemGuard(t *testing.T) {
 	for _, c := range []struct{ w, want string }{
 		{"гитхаб", "гитхаб"}, {"гитхабе", "гитхаб"}, {"дэвин", "дэвин"}, {"дэвина", "дэвин"}, {"дэвином", "дэвин"},
-		{"машина", "машин"}, {"машины", "машин"}, {"машиной", "машин"}, {"хормозов", "хормоз"},
+		{"машина", "машин"}, {"машины", "машин"}, {"машине", "машин"}, {"хормозов", "хормоз"},
 		{"вол", ""}, {"воля", ""}, {"воле", ""}, {"поле", ""}, {"пол", ""}, {"школа", ""}, {"окс", ""}, // a stem under 5 letters
 		{"машинный", ""}, {"странный", ""}, {"работать", ""}, {"платить", ""}, // a derivation or a verb form
+		{"машиной", ""}, {"дорогой", ""}, {"вороной", ""}, // an ending a noun shares with an adjective
 		{"github", ""}, {"гит-хаб", ""}, {"дэвин2", ""}, // not Russian letters only
 	} {
 		if got := nominalStem(c.w); got != c.want {
@@ -57,6 +58,23 @@ func TestApplyMatchesInflectedForms(t *testing.T) {
 		if got, _ := Apply(c.in, pairs); got != c.want {
 			t.Errorf("Apply(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// A noun and the adjective that shares its stem are different words: a pair filed as the noun leaves the adjective
+// alone, and a feminine name is not matched in the instrumental («ой»), which is the price.
+// Mutation: stem.go nounEndings, add «ой ей ою ею» back -> RED.
+func TestAdjectiveOfTheSameStemIsLeftAlone(t *testing.T) {
+	for _, c := range []struct{ heard, text string }{
+		{"дорога", "человек дорогой"}, {"ворон", "вороной конь"}, {"меньше", "меньшой брат"}, {"старше", "старшой брат"},
+		{"фарвина", "с фарвиной"},
+	} {
+		if got, _ := Apply(c.text, []Pair{{Heard: c.heard, Meant: "Latin", Status: Active}}); got != c.text {
+			t.Errorf("pair %q rewrote %q to %q", c.heard, c.text, got)
+		}
+	}
+	if got, _ := Apply("у фарвины и фарвине", []Pair{{Heard: "фарвина", Meant: "Farvina", Status: Active}}); got != "у Farvina и Farvina" {
+		t.Errorf("other cases of the feminine name: %q", got)
 	}
 }
 
@@ -136,8 +154,8 @@ func TestApplyWordsMatchesInflectedForms(t *testing.T) {
 }
 
 // The guard against over-matching, measured on the Russian dictionary the daemon ships (lower-case, flagged
-// entries = lemmas): of the entries that may be matched by stem, at most 4% share their stem with another
-// entry. It is 2.9% as shipped, 3.5% with a 4-letter minimum stem, 4.2% with 3, and 49% without the
+// entries = lemmas): of the entries that may be matched by stem, at most 1.8% share their stem with another
+// entry. It is 1.6% as shipped, 2.0% with a 4-letter minimum stem, 2.5% with 3, and about half without the
 // noun-ending rule.
 // Mutation: stem.go minStemRunes = 3 -> RED; nominalStem, drop the nounEndings check -> RED.
 func TestStemMatchingIsRareOnOrdinaryWords(t *testing.T) {
@@ -181,7 +199,7 @@ func TestStemMatchingIsRareOnOrdinaryWords(t *testing.T) {
 		t.Fatalf("only %d dictionary entries are matched by stem; the dictionary or the stemmer changed", keyed)
 	}
 	t.Logf("%d entries matched by stem, %d share a stem with another (%.1f%%)", keyed, shared, 100*float64(shared)/float64(keyed))
-	if rate := float64(shared) / float64(keyed); rate > 0.04 {
-		t.Errorf("%.1f%% of the entries share a stem with another entry; want at most 4%%", 100*rate)
+	if rate := float64(shared) / float64(keyed); rate > 0.018 {
+		t.Errorf("%.1f%% of the entries share a stem with another entry; want at most 1.8%%", 100*rate)
 	}
 }

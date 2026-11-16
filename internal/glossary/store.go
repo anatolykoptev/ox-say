@@ -55,11 +55,12 @@ type Pair struct {
 	Status    Status   `json:"status"`
 	Sightings []string `json:"sightings,omitempty"` // hashes of distinct sentences
 	Seen      int      `json:"seen"`
-	// Ordinary: the heard form is ordinary words of its language (the daemon asks the dictionary when the pair is
-	// filed). Such a pair activates only on its own sentences, never on the evidence of its meant form's other
-	// spellings.
-	Ordinary bool      `json:"ordinary,omitempty"`
-	Added    time.Time `json:"added"`
+	// Vetted: the dictionary was consulted when the pair was filed and the heard form is a single word that is not
+	// ordinary words of its language. Only a vetted pair may activate on the evidence of its meant form's other
+	// spellings; a pair with no verdict (filed with no dictionary, or before this field) activates on its own
+	// sentences alone.
+	Vetted bool      `json:"vetted,omitempty"`
+	Added  time.Time `json:"added"`
 }
 
 type file struct {
@@ -110,12 +111,12 @@ func needed(heard string) int {
 }
 
 // promote activates the candidates of one meant form that have enough evidence. A pair has its own evidence:
-// the distinct sentences it was heard in, against its own threshold (needed). A single-word spelling that is not
-// ordinary words may also borrow: the distinct sentences any non-rejected spelling of the meant form was heard
-// in are pooled, so a term the recogniser writes a different way each time still activates. An ordinary word
-// («давайте») or a phrase never borrows: a mistaken filing against an established meant would activate on its
-// first sentence. Every candidate must itself have been filed with a sentence, and a rejected pair counts for
-// nothing.
+// the distinct sentences it was heard in, against its own threshold (needed). A vetted spelling (a single word
+// the dictionary does not know as ordinary) may also borrow: the distinct sentences any non-rejected spelling of
+// the meant form was heard in are pooled, so a term the recogniser writes a different way each time still
+// activates. An ordinary word («давайте»), a phrase, or a pair with no verdict never borrows: a mistaken filing
+// against an established meant would activate on its first sentence. Every candidate must itself have been
+// filed with a sentence, and a rejected pair counts for nothing.
 func promote(pairs []Pair, meant string) {
 	sentences := map[string]struct{}{}
 	for _, p := range pairs {
@@ -131,7 +132,7 @@ func promote(pairs []Pair, meant string) {
 			continue
 		}
 		need := needed(p.Heard)
-		borrow := !p.Ordinary && len(words(p.Heard)) == 1
+		borrow := p.Vetted && len(words(p.Heard)) == 1
 		if len(p.Sightings) >= need || (borrow && len(sentences) >= need) {
 			p.Status = Active
 		}
@@ -185,7 +186,7 @@ func (s *Store) Active() ([]Pair, error) {
 	return out, nil
 }
 
-// Add is AddChecked for a caller that has no dictionary: the heard form is taken not to be ordinary words.
+// Add is AddChecked for a caller that has no dictionary: the pair is not vetted, so it never borrows evidence.
 func (s *Store) Add(heard, meant, context string) (Pair, error) {
 	return s.AddChecked(heard, meant, context, false)
 }
@@ -193,9 +194,9 @@ func (s *Store) Add(heard, meant, context string) (Pair, error) {
 // AddChecked files a pair or counts another sighting of it. context is the sentence
 // the heard form came from; it must contain the heard form, and only its hash
 // is kept. A pair with no context is filed but never activates on its own.
-// ordinary says the heard form is ordinary words of its language (wordlists.Common); the caller computes it,
-// the store never loads a dictionary. It is sticky: once a pair was filed as ordinary it stays so.
-func (s *Store) AddChecked(heard, meant, context string, ordinary bool) (Pair, error) {
+// vetted says the caller consulted the dictionary and the heard form is a single word that is not ordinary words
+// of its language (wordlists.Common); the caller computes it, the store never loads a dictionary. It is sticky.
+func (s *Store) AddChecked(heard, meant, context string, vetted bool) (Pair, error) {
 	heard, meant, context = strings.TrimSpace(heard), strings.TrimSpace(meant), strings.TrimSpace(context)
 	if err := validate(heard, meant); err != nil {
 		return Pair{}, err
@@ -220,7 +221,7 @@ func (s *Store) AddChecked(heard, meant, context string, ordinary bool) (Pair, e
 	}
 	p := &pairs[i]
 	p.Seen++
-	p.Ordinary = p.Ordinary || ordinary
+	p.Vetted = p.Vetted || vetted
 	if context != "" {
 		if h := hash8(key(context)); !slices.Contains(p.Sightings, h) && len(p.Sightings) < maxSightings {
 			p.Sightings = append(p.Sightings, h)
@@ -258,10 +259,12 @@ func (s *Store) Approve(id string) (Pair, error) { return s.setStatus(id, Active
 func (s *Store) Reject(id string) (Pair, error) { return s.setStatus(id, Rejected) }
 
 // Edit replaces the meant form of a pair. It keeps the id, the heard form and
-// the sightings, and re-runs the same validation as Add. An active pair stays
+// the status, and re-runs the same validation as Add. An active pair stays
 // active and a candidate stays a candidate; a rejected one comes back as a
-// candidate, because the owner has just chosen a new meaning for it. A pair
-// that is not active loses its sightings and count: they backed the old meant.
+// candidate, because the owner has just chosen a new meaning for it. The
+// sightings vouched for the old meant, so they are cleared for every pair —
+// otherwise they would be pooled as evidence for the new one; a pair that is
+// not active also loses its count.
 func (s *Store) Edit(id, meant string) (Pair, error) {
 	meant = strings.TrimSpace(meant)
 	s.mu.Lock()
@@ -278,12 +281,11 @@ func (s *Store) Edit(id, meant string) (Pair, error) {
 		return Pair{}, err
 	}
 	pairs[i].Meant = meant
+	pairs[i].Sightings = nil
 	if pairs[i].Status != Active {
-		// The sightings vouched for the old meaning. Kept, one agent filing of the new meant would reach the
-		// activation threshold and settle a pair the owner only re-opened: activation needs fresh evidence or
-		// an owner approve. An active pair stays active with its evidence.
+		// One agent filing of the new meant must not reach the activation threshold and settle a pair the owner
+		// only re-opened: activation needs fresh evidence or an owner approve.
 		pairs[i].Status = Candidate
-		pairs[i].Sightings = nil
 		pairs[i].Seen = 0
 	}
 	if err := s.save(pairs); err != nil {

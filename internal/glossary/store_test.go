@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+// addV files a pair as the daemon does for a single word the dictionary does not know as ordinary: vetted.
+func addV(s *Store, heard, meant, ctx string) (Pair, error) {
+	return s.AddChecked(heard, meant, ctx, true)
+}
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	s := NewStore(t.TempDir())
@@ -72,7 +77,7 @@ func TestActivationCountsPerMeantTerm(t *testing.T) {
 	for _, order := range [][]int{{0, 1, 2}, {2, 1, 0}, {1, 2, 0}} {
 		s := newTestStore(t)
 		for _, i := range order {
-			if _, err := s.Add(forward[i].heard, "Quantex", forward[i].ctx); err != nil {
+			if _, err := addV(s, forward[i].heard, "Quantex", forward[i].ctx); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -84,11 +89,11 @@ func TestActivationCountsPerMeantTerm(t *testing.T) {
 	}
 
 	s := newTestStore(t)
-	s.Add("квантекс", "Quantex", "открой квантекс сегодня")
+	addV(s, "квантекс", "Quantex", "открой квантекс сегодня")
 	if got := status(s, "квантекс"); got != Candidate {
 		t.Fatalf("one sentence: %s", got)
 	}
-	s.Add("кантекс", "Quantex", "открой кантекс сегодня")
+	addV(s, "кантекс", "Quantex", "открой кантекс сегодня")
 	if got := status(s, "кантекс"); got != Active {
 		t.Errorf("a second spelling in a second sentence: %s; want active (6+ letters need two)", got)
 	}
@@ -97,12 +102,12 @@ func TestActivationCountsPerMeantTerm(t *testing.T) {
 	}
 	// Short spellings need three sentences for the meant form: two are not enough, the third activates all of them.
 	s = newTestStore(t)
-	s.Add("квх", "Qvx", "открой квх один")
-	s.Add("квкс", "Qvx", "открой квкс два")
+	addV(s, "квх", "Qvx", "открой квх один")
+	addV(s, "квкс", "Qvx", "открой квкс два")
 	if status(s, "квх") != Candidate || status(s, "квкс") != Candidate {
 		t.Fatal("two sentences activated a short spelling")
 	}
-	s.Add("квэкс", "Qvx", "открой квэкс три")
+	addV(s, "квэкс", "Qvx", "открой квэкс три")
 	for _, h := range []string{"квх", "квкс", "квэкс"} {
 		if got := status(s, h); got != Active {
 			t.Errorf("%q after three sentences: %s; want active", h, got)
@@ -111,73 +116,89 @@ func TestActivationCountsPerMeantTerm(t *testing.T) {
 
 	// The same sentence heard as two spellings is one sentence.
 	s = newTestStore(t)
-	s.Add("квантекс", "Quantex", "открой квантекс или кантекс")
-	s.Add("кантекс", "Quantex", "открой квантекс или кантекс")
+	addV(s, "квантекс", "Quantex", "открой квантекс или кантекс")
+	addV(s, "кантекс", "Quantex", "открой квантекс или кантекс")
 	if got := status(s, "кантекс"); got != Candidate {
 		t.Errorf("one sentence, two spellings: %s; want candidate", got)
 	}
 
 	// A rejected spelling is not evidence, a filing with no sentence activates nothing, another meant form is separate.
 	s = newTestStore(t)
-	rej, _ := s.Add("квантекс", "Quantex", "открой квантекс сегодня")
+	rej, _ := addV(s, "квантекс", "Quantex", "открой квантекс сегодня")
 	s.Reject(rej.ID)
-	s.Add("кантекс", "Quantex", "открой кантекс сегодня")
+	addV(s, "кантекс", "Quantex", "открой кантекс сегодня")
 	if got := status(s, "кантекс"); got != Candidate {
 		t.Errorf("after a rejected sibling: %s; want candidate", got)
 	}
 	s2 := newTestStore(t)
-	s2.Add("квантекс", "Quantex", "открой квантекс сегодня")
-	s2.Add("кантекс", "Quantix", "открой кантекс сегодня")
+	addV(s2, "квантекс", "Quantex", "открой квантекс сегодня")
+	addV(s2, "кантекс", "Quantix", "открой кантекс сегодня")
 	if got := status(s2, "кантекс"); got != Candidate {
 		t.Errorf("another meant form: %s; want candidate", got)
 	}
 	s3 := newTestStore(t)
-	s3.Add("квантекс", "Quantex", "открой квантекс сегодня")
-	s3.Add("кантекс", "Quantex", "открой кантекс сегодня")
-	if p, _ := s3.Add("квантэкс", "Quantex", ""); p.Status != Candidate {
+	addV(s3, "квантекс", "Quantex", "открой квантекс сегодня")
+	addV(s3, "кантекс", "Quantex", "открой кантекс сегодня")
+	if p, _ := addV(s3, "квантэкс", "Quantex", ""); p.Status != Candidate {
 		t.Errorf("a context-free filing of a spelling: %s; want candidate", p.Status)
 	}
 }
 
-// Evidence of the meant form is borrowed only by a single-word spelling that is not ordinary words: against an
-// established meant, one-sentence filings of an ordinary word and of a phrase stay candidates, and a new spelling
-// of the term still activates. A phrase or an ordinary word needs its own sentences.
-// Mutation: store.go promote, `!p.Ordinary &&` dropped -> RED («давайте» activates on its first sentence).
+// Evidence of the meant form is borrowed only by a vetted spelling: a single word the dictionary does not know as
+// ordinary. Against an established meant, one-sentence filings of an ordinary word, of a phrase and of a pair with
+// no verdict (a store file from before the verdict existed) stay candidates, and a vetted new spelling still
+// activates; each of them activates on its own sentences.
+// Mutation: store.go promote, `p.Vetted &&` dropped -> RED (the unvetted «давайте» activates).
 // Mutation: store.go promote, `len(words(p.Heard)) == 1` -> `true` -> RED («у квантекс» activates).
-func TestOrdinaryWordAndPhraseNeverBorrowEvidence(t *testing.T) {
+func TestOnlyAVettedSingleWordBorrowsEvidence(t *testing.T) {
 	s := newTestStore(t)
-	s.Add("квантекс", "Quantex", "открой квантекс сегодня")
-	if p, _ := s.Add("квантекс", "Quantex", "запусти квантекс завтра"); p.Status != Active {
+	addV(s, "квантекс", "Quantex", "открой квантекс сегодня")
+	if p, _ := addV(s, "квантекс", "Quantex", "запусти квантекс завтра"); p.Status != Active {
 		t.Fatalf("established meant: %+v", p)
 	}
 	for _, c := range []struct {
 		heard, ctx string
-		ordinary   bool
+		vetted     bool
 	}{
-		{"давайте", "давайте начнем работу", true},
-		{"у квантекс", "позвони у квантекс вечером", false},
-		{"спроси", "спроси у команды", true},
+		{"давайте", "давайте начнем работу", false}, // the dictionary knows it
+		{"у квантекс", "позвони у квантекс вечером", true},
+		{"спроси", "спроси у команды", false},
 	} {
-		p, err := s.AddChecked(c.heard, "Quantex", c.ctx, c.ordinary)
+		p, err := s.AddChecked(c.heard, "Quantex", c.ctx, c.vetted)
 		if err != nil || p.Status != Candidate {
 			t.Errorf("AddChecked(%q) = %+v, %v; want a candidate", c.heard, p, err)
 		}
 	}
-	if p, _ := s.AddChecked("кантекс", "Quantex", "закрой кантекс вечером", false); p.Status != Active {
-		t.Errorf("a new single-word spelling = %+v; want active on the meant's evidence", p)
+	if p, _ := addV(s, "кантекс", "Quantex", "закрой кантекс вечером"); p.Status != Active {
+		t.Errorf("a vetted new single-word spelling = %+v; want active on the meant's evidence", p)
 	}
-	// their own sentences still activate them
-	if p, _ := s.AddChecked("давайте", "Quantex", "давайте закончим сегодня", true); p.Status != Active {
+	if p, _ := s.AddChecked("давайте", "Quantex", "давайте закончим сегодня", false); p.Status != Active {
 		t.Errorf("an ordinary word on its own two sentences = %+v; want active", p)
 	}
-	if p, _ := s.AddChecked("у квантекс", "Quantex", "открой у квантекс отчет", false); p.Status != Active {
+	if p, _ := s.AddChecked("у квантекс", "Quantex", "открой у квантекс отчет", true); p.Status != Active {
 		t.Errorf("a phrase on its own two sentences = %+v; want active", p)
 	}
-	// the flag is sticky: a later filing from a caller with no dictionary does not clear it
-	t2 := newTestStore(t)
-	t2.AddChecked("давайте", "Quantex", "давайте один", true)
-	if p, _ := t2.Add("давайте", "Quantex", "давайте два раз"); !p.Ordinary {
-		t.Errorf("Ordinary cleared by Add: %+v", p)
+	// a pair with no verdict never borrows, whoever files the next spelling: a store file written before the
+	// field existed
+	old := newTestStore(t)
+	raw := `{"version":1,"pairs":[
+	 {"id":"` + ID("квантекс") + `","heard":"квантекс","meant":"Quantex","status":"active","sightings":["aaaaaaaa","bbbbbbbb"],"seen":2,"added":"2026-11-13T12:00:00Z"},
+	 {"id":"` + ID("давайте") + `","heard":"давайте","meant":"Quantex","status":"candidate","sightings":["cccccccc"],"seen":1,"added":"2026-11-13T12:00:00Z"}]}`
+	if err := os.WriteFile(old.path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	addV(old, "кантекс", "Quantex", "закрой кантекс вечером")
+	list, _ := old.List()
+	for _, p := range list {
+		if p.Heard == "давайте" && p.Status != Candidate {
+			t.Errorf("a pair with no verdict activated on a sibling's filing: %+v", p)
+		}
+	}
+	// the verdict is sticky: a later filing from a caller with no dictionary does not clear it
+	v := newTestStore(t)
+	addV(v, "кантекс", "Quantex", "кантекс один")
+	if p, _ := v.Add("кантекс", "Quantex", "кантекс два раз"); !p.Vetted {
+		t.Errorf("Vetted cleared by Add: %+v", p)
 	}
 }
 
@@ -325,7 +346,7 @@ func TestEditRevalidatesAndKeepsStatus(t *testing.T) {
 		t.Fatalf("unknown id: err = %v, want ErrNotFound", err)
 	}
 	got, err := s.Edit(p.ID, " OxPulse ")
-	if err != nil || got.Meant != "OxPulse" || got.Status != Active || got.ID != p.ID || got.Heard != "окс сей" || len(got.Sightings) != 2 || got.Seen != 2 {
+	if err != nil || got.Meant != "OxPulse" || got.Status != Active || got.ID != p.ID || got.Heard != "окс сей" || len(got.Sightings) != 0 || got.Seen != 2 {
 		t.Fatalf("edit active = %+v, %v", got, err)
 	}
 	if _, err := s.Reject(p.ID); err != nil {
@@ -388,7 +409,26 @@ func TestEditOfARejectedPairNeedsFreshEvidence(t *testing.T) {
 	if q, _ = s.Approve(q.ID); q.Status != Active {
 		t.Fatal(q)
 	}
-	if e, _ := s.Edit(q.ID, "OxPulse"); e.Status != Active || len(e.Sightings) != 2 {
+	if e, _ := s.Edit(q.ID, "OxPulse"); e.Status != Active || len(e.Sightings) != 0 {
 		t.Fatalf("edit active = %+v", e)
+	}
+}
+
+// The sightings of an edited pair vouched for the old meant: they are not pooled as evidence for the new one, so one
+// vetted filing of a new spelling of it is a candidate, not an active pair.
+// Mutation: store.go Edit, drop `pairs[i].Sightings = nil` -> RED.
+func TestEditedPairLendsNoEvidenceToItsNewMeant(t *testing.T) {
+	s := newTestStore(t)
+	addV(s, "квантекс", "Quantex", "открой квантекс сегодня")
+	p, _ := addV(s, "квантекс", "Quantex", "запусти квантекс завтра")
+	if p.Status != Active {
+		t.Fatal(p)
+	}
+	got, err := s.Edit(p.ID, "Quantix")
+	if err != nil || got.Status != Active || got.Seen != 2 || len(got.Sightings) != 0 {
+		t.Fatalf("edit = %+v, %v; want active, seen 2, no sightings", got, err)
+	}
+	if q, _ := addV(s, "кантекс", "Quantix", "закрой кантекс вечером"); q.Status != Candidate {
+		t.Fatalf("one filing of a new spelling after the edit = %+v; want a candidate", q)
 	}
 }
