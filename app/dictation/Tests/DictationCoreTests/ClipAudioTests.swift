@@ -6,9 +6,21 @@ final class ClipAudioTests: XCTestCase {
     /// Mutation: ClipAudio.stop, drop `.handshakeMayRun` -> RED.
     func testStoppingAClipThatSoundsLetsTheHandshakeRun() {
         var a = ClipAudio()
-        XCTAssertEqual(a.start(recordingRunning: false), [.stopOtherAudio, .start])
+        XCTAssertEqual(a.start(recordingRunning: false), [.prepare, .stopOtherAudio, .start])
         XCTAssertEqual(a.stop(), [.halt, .handshakeMayRun])
         XCTAssertEqual(a.sound, .stopped)
+    }
+
+    /// Other audio is cut only after the clip is known to be able to sound: `.prepare` comes first, `.start` last.
+    /// Mutation: ClipAudio.start, return `[.stopOtherAudio, .prepare, .start]` -> RED.
+    func testOtherAudioIsCutOnlyAfterTheClipIsPrepared() throws {
+        var a = ClipAudio()
+        let effects = a.start(recordingRunning: false)
+        let prepare = try XCTUnwrap(effects.firstIndex(of: .prepare))
+        let others = try XCTUnwrap(effects.firstIndex(of: .stopOtherAudio))
+        let start = try XCTUnwrap(effects.firstIndex(of: .start))
+        XCTAssertLessThan(prepare, others)
+        XCTAssertLessThan(others, start)
     }
 
     func testStoppingWhatDoesNotSoundHoldsNothing() {
@@ -61,6 +73,9 @@ final class ClipAudioTests: XCTestCase {
         var a = ClipAudio()
         _ = a.start(recordingRunning: false)
         XCTAssertEqual(a.finished(), [.handshakeMayRun])
+        XCTAssertEqual(a.sound, .stopped)
+        _ = a.start(recordingRunning: false)
+        XCTAssertEqual(a.finished(successfully: false), [.handshakeMayRun, .playbackFailed], "a decode error is not a finish")
         XCTAssertEqual(a.sound, .stopped)
         _ = a.start(recordingRunning: false)
         a.startFailed()

@@ -64,6 +64,13 @@ final class SpeakVoiceAndSelectionTests: XCTestCase {
         for phase in [SpeakPhase.idle, .ready, .failed("x")] { XCTAssertTrue(phase.allowsSelection, "\(phase)") }
     }
 
+    /// A clip (or a failure) on screen goes stale when the text or the voice behind it changes; a take being made does not.
+    /// Mutation: SpeakPhase.staleAfterInputChange, return false for `.ready` -> RED.
+    func testAChangedTextOrVoiceMakesTheResultOnScreenStale() {
+        for phase in [SpeakPhase.ready, .failed("x")] { XCTAssertTrue(phase.staleAfterInputChange, "\(phase)") }
+        for phase in [SpeakPhase.idle, .generating] { XCTAssertFalse(phase.staleAfterInputChange, "\(phase)") }
+    }
+
     /// One missed poll after an answer keeps the studio note and its install link; nothing known yet shows nothing.
     /// Mutation: StudioAvailability.held, ignore `waiting` -> RED.
     func testOneMissedPollKeepsTheStudioNote() {

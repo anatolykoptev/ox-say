@@ -6,6 +6,9 @@ final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
     private var player: AVAudioPlayer?
     /// Called on the main queue when playback ends on its own — not after stop().
     var onFinish: (() -> Void)?
+    /// Like `onFinish`, and told whether the clip played to its end: false when it could not be decoded. Only the Озвучка
+    /// page asks; the other users of the player end a failed clip silently, as before.
+    var onEnd: ((_ successfully: Bool) -> Void)?
 
     /// True while a paused clip is held; false while playing or when nothing
     /// is loaded.
@@ -20,13 +23,26 @@ final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
 
     struct DidNotStart: Error {}
 
-    /// Stops whatever was playing and starts the new clip. A player that does not start (the output device is gone)
-    /// throws, so nobody tracks a clip that never sounds.
-    func play(wav: Data) throws {
-        stop()
+    /// A clip decoded and ready to sound, held until `playPrepared` or the next `prepare`.
+    private var prepared: AVAudioPlayer?
+
+    /// Decodes the clip without touching what plays now, so a caller can find out that it cannot sound BEFORE it stops
+    /// anything else. Throws only when the data cannot be decoded into a player; `prepareToPlay()` is a warm-up whose result
+    /// is ignored (as before), so a long clip it declines still reaches `play()`.
+    func prepare(wav: Data) throws {
+        prepared = nil
         let next = try AVAudioPlayer(data: wav)
         next.delegate = self
         next.prepareToPlay()
+        prepared = next
+    }
+
+    /// Stops whatever was playing and starts the clip `prepare` made. A player that does not start (the output device is
+    /// gone) throws, so nobody tracks a clip that never sounds.
+    func playPrepared() throws {
+        stop()
+        guard let next = prepared else { throw DidNotStart() }
+        prepared = nil
         player = next
         guard next.play() else {
             player = nil
@@ -34,6 +50,13 @@ final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
             throw DidNotStart()
         }
         serial += 1
+    }
+
+    /// Stops whatever was playing and starts the new clip.
+    func play(wav: Data) throws {
+        stop()  // as before: a clip that cannot be decoded still ends the one that played, with no stale onFinish
+        try prepare(wav: wav)
+        try playPrepared()
     }
 
     /// Toggles between pause and resume; a no-op when nothing is loaded.
@@ -54,14 +77,17 @@ final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
         previous?.stop()
     }
 
-    /// A clip that cannot be decoded mid-way ends like one that finished: nobody is left waiting for it.
+    /// A clip that cannot be decoded mid-way ends like one that finished (nobody is left waiting for it), and says it failed.
     func audioPlayerDecodeErrorDidOccur(_ failed: AVAudioPlayer, error _: Error?) {
         audioPlayerDidFinishPlaying(failed, successfully: false)
     }
 
-    func audioPlayerDidFinishPlaying(_ finished: AVAudioPlayer, successfully _: Bool) {
+    func audioPlayerDidFinishPlaying(_ finished: AVAudioPlayer, successfully: Bool) {
         guard finished === player else { return }
         player = nil
-        DispatchQueue.main.async { [onFinish] in onFinish?() }
+        DispatchQueue.main.async { [onFinish, onEnd] in
+            onEnd?(successfully)
+            onFinish?()
+        }
     }
 }

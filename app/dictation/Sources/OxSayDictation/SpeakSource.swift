@@ -63,12 +63,12 @@ final class SpeakSource {
         model.data.speak.panel = VoicePanelSettings.load(from: host.defaults)
         model.data.speak.text = SpeakDraft.initial(stored: host.defaults.string(forKey: Self.draftKey),
                                                    firstRun: host.consumeFirstRun(), language: L10nBundle.locale.identifier)
-        player.onFinish = { [weak self] in
+        player.onEnd = { [weak self] successfully in
             Task { @MainActor in
                 guard let self else { return }
                 self.model.data.speak.playback = .stopped
                 self.model.data.speak.playingPhrase = nil
-                self.perform(self.audio.finished())
+                self.perform(self.audio.finished(successfully: successfully))
             }
         }
         // The follower reports from the main actor; the observers hop there explicitly (their type is not isolated).
@@ -224,13 +224,20 @@ final class SpeakSource {
     func textChanged(_ text: String) {
         host.defaults.set(text, forKey: Self.draftKey)
         // An edit makes the result on screen (or its failure) stale; the clip stays in the list.
-        switch model.data.speak.phase {
-        case .ready, .failed:
+        if model.data.speak.phase.staleAfterInputChange {
             model.data.speak.phase = .idle
             model.data.speak.selectedID = nil
-        case .idle, .generating:
-            break
         }
+    }
+
+    /// The voice picker changed. A clip on screen was made with another voice, so the page goes back to its editing state
+    /// exactly as for an edit of the text (the list still says which voice made each clip, and selecting one restores it).
+    /// With the selection cleared nothing on the page can stop the clip, so it stops here.
+    func voiceChanged(_ voice: String?) {
+        guard model.data.speak.phase.staleAfterInputChange else { return }
+        stopClip()
+        model.data.speak.phase = .idle
+        model.data.speak.selectedID = nil
     }
 
     func newText() {
@@ -498,17 +505,29 @@ final class SpeakSource {
 
     /// Carries out what `ClipAudio` decided, in order. `track` supplies the audio when the effects start it.
     private func perform(_ effects: [ClipEffect], track: (() -> Data?)? = nil) {
-        for effect in effects {
+        // A start that cannot happen ends the list: what `ClipAudio` queued after `.prepare` (cutting the other audio, the
+        // start itself) must not run for a clip that will not sound.
+        effects: for effect in effects {
             switch effect {
+            case .prepare:
+                guard let wav = track?() else {
+                    audio.startFailed()
+                    break effects
+                }
+                do {
+                    try player.prepare(wav: wav)
+                } catch {
+                    audio.startFailed()
+                    model.data.speak.playback = .stopped
+                    model.data.notice = L10nKey.playFailed.text
+                    host.workEnded()
+                    break effects
+                }
             case .stopOtherAudio:
                 stopOtherAudio()
             case .start:
-                guard let wav = track?() else {
-                    audio.startFailed()
-                    break
-                }
                 do {
-                    try player.play(wav: wav)
+                    try player.playPrepared()
                     model.data.speak.playback = .playing
                 } catch {
                     audio.startFailed()
@@ -529,6 +548,8 @@ final class SpeakSource {
                 host.workEnded()
             case .blockedByRecording:
                 model.data.notice = L10nKey.speakPlayBlockedRecording.text
+            case .playbackFailed:
+                model.data.notice = L10nKey.playFailed.text
             }
         }
         syncCursor()

@@ -90,7 +90,7 @@ final class VoiceDesignWiringTests: XCTestCase {
         let app = try source("OxSayDictation/AppDelegate.swift")
         XCTAssertTrue(app.contains("playbackSerial: { [unowned self] in self.player.serial }"))
         let player = try source("OxSayDictation/AudioPlayer.swift")
-        let play = try body(player, of: "func play(wav: Data) throws {")
+        let play = try body(player, of: "func playPrepared() throws {")
         XCTAssertTrue(play.contains("serial += 1"), "every clip the player starts is counted")
         let bumped = try XCTUnwrap(play.range(of: "serial += 1"))
         let started = try XCTUnwrap(play.range(of: "next.play()"))

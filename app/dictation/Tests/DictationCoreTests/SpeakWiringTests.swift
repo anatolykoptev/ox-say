@@ -178,4 +178,39 @@ final class SpeakWiringTests: XCTestCase {
         XCTAssertTrue(model.contains("SpeakInputCheck.problem(data.speak.text, engine: data.speak.engine"))
         try XCTAssertTrue(source("MainWindowUI/MainWindowView.swift").contains("case .speak: SpeakPage(model: model)"))
     }
+
+    /// The voice picker is heard: its setter calls the action (`testEveryBindingOfTheModelCallsItsActionInTheSetter`), the
+    /// window source hands it to the page's source, and that one asks the same `staleAfterInputChange` rule as the text.
+    /// Mutation: MainWindowSource, `a.speakVoiceChanged = { [weak self] voice in self?.speakSource.voiceChanged(voice) }`
+    /// -> `{ _ in }` -> RED; SpeakSource.voiceChanged, delete the `guard ... staleAfterInputChange` -> RED.
+    func testAChangedVoiceReturnsTheReadyPageToEditing() throws {
+        let window = try source("OxSayDictation/MainWindowSource.swift")
+        XCTAssertTrue(window.contains("a.speakVoiceChanged = { [weak self] voice in self?.speakSource.voiceChanged(voice) }"))
+        let speak = try source("OxSayDictation/SpeakSource.swift")
+        let voice = try body(speak, of: "func voiceChanged(_ voice: String?) {")
+        XCTAssertTrue(voice.contains("guard model.data.speak.phase.staleAfterInputChange else { return }"))
+        XCTAssertTrue(voice.contains("model.data.speak.phase = .idle"))
+        XCTAssertTrue(voice.contains("model.data.speak.selectedID = nil"))
+        let text = try body(speak, of: "func textChanged(_ text: String) {")
+        XCTAssertTrue(text.contains("model.data.speak.phase.staleAfterInputChange"), "one rule for both inputs")
+    }
+
+    /// A clip the player gives up on is told to the person, and a clip that cannot be prepared cuts nothing: the player passes
+    /// `successfully` on, the page's end handler hands it to `ClipAudio`, and `perform` stops at a failed `.prepare`.
+    /// (The decisions are `ClipAudioTests`.)
+    /// Mutation: AudioPlayer.audioPlayerDidFinishPlaying, `onEnd?(successfully)` -> `onEnd?(true)` -> RED; SpeakSource.perform,
+    /// delete `break effects` after `player.prepare` fails -> RED; delete `case .playbackFailed` notice -> RED.
+    func testAFailedClipIsToldAndNeverCutsOtherAudio() throws {
+        let player = try source("OxSayDictation/AudioPlayer.swift")
+        XCTAssertTrue(player.contains("onEnd?(successfully)"))
+        XCTAssertTrue(player.contains("audioPlayerDidFinishPlaying(failed, successfully: false)"))
+        let speak = try source("OxSayDictation/SpeakSource.swift")
+        XCTAssertTrue(speak.contains("player.onEnd = { [weak self] successfully in"))
+        let perform = try body(speak, of: "private func perform(_ effects: [ClipEffect], track: (() -> Data?)? = nil) {")
+        let prepare = try XCTUnwrap(perform.range(of: "try player.prepare(wav: wav)"))
+        let stopped = try XCTUnwrap(perform.range(of: "break effects", range: prepare.upperBound..<perform.endIndex))
+        let others = try XCTUnwrap(perform.range(of: "case .stopOtherAudio:"))
+        XCTAssertLessThan(stopped.lowerBound, others.lowerBound, "a failed prepare leaves before the other audio is cut")
+        XCTAssertTrue(perform.contains("case .playbackFailed:\n                model.data.notice = L10nKey.playFailed.text"))
+    }
 }

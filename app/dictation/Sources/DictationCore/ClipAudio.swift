@@ -4,6 +4,9 @@ import Foundation
 public enum ClipEffect: Equatable {
     /// Meeting audio, a voice sample and the app's own speech player stop: two streams never overlap.
     case stopOtherAudio
+    /// The clip is decoded and its output ready, before anything else is stopped: a clip that cannot sound must not have
+    /// cut the audio that does.
+    case prepare
     case start, pause, resume
     /// The player stops and drops the clip.
     case halt
@@ -11,6 +14,9 @@ public enum ClipEffect: Equatable {
     case handshakeMayRun
     /// A meeting recording captures the output, so the clip does not sound.
     case blockedByRecording
+    /// The clip ended because it could not be played (a decode error), not because it was over: the person hears nothing
+    /// and is told so.
+    case playbackFailed
 }
 
 /// The sounding state of the clip on Озвучка, decided without a player so each rule can be tested. The app's source
@@ -31,7 +37,7 @@ public struct ClipAudio: Equatable {
     public mutating func start(recordingRunning: Bool) -> [ClipEffect] {
         guard !recordingRunning else { return stop() + [.blockedByRecording] }
         sound = .playing
-        return [.stopOtherAudio, .start]
+        return [.prepare, .stopOtherAudio, .start]
     }
 
     /// ▶/⏸ on the clip on screen.
@@ -59,10 +65,10 @@ public struct ClipAudio: Equatable {
         }
     }
 
-    /// The clip ended on its own.
-    public mutating func finished() -> [ClipEffect] {
+    /// The clip ended on its own; `successfully` false when the player gave up on it instead of reaching its end.
+    public mutating func finished(successfully: Bool = true) -> [ClipEffect] {
         sound = .stopped
-        return [.handshakeMayRun]
+        return successfully ? [.handshakeMayRun] : [.handshakeMayRun, .playbackFailed]
     }
 
     /// Whether the waveform cursor ticks now: only while the clip really sounds, and never under Reduce Motion (the picture
