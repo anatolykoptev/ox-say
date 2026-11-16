@@ -71,7 +71,7 @@ const (
 	WarnNoSystemAudio = "no_system_audio" // the "them" channel is silent or missing
 	WarnNoMicAudio    = "no_mic_audio"
 	WarnLanguage      = "language_unsupported" // speech in a script the recognizer does not read
-	WarnEchoDropped   = "echo_dropped"         // DropEcho removed "me" turns it judged an echo of the far side
+	WarnEchoDropped   = "echo_dropped"         // DropEcho removed echo of the far side from "me" turns
 	WarnNoDiarization = "diarization_failed"   // the diarizer ran and broke; one far-side label stands (Manifest.DiarReason says how)
 	// WarnDiarUnavailable: this Mac cannot tell voices apart (an old macOS, an unsupported CPU, no engine or models);
 	// one far-side label stands and Manifest.DiarReason says why. Not a failure: nothing was attempted.
@@ -109,7 +109,7 @@ type Manifest struct {
 	// The app turns it into plain words.
 	DiarReason string `json:"diar_reason,omitempty"`
 	Voices     int    `json:"voices,omitempty"`
-	// EchoDropped counts the "me" turns DropEcho removed; it goes with
+	// EchoDropped counts the "me" turns DropEcho removed or cut down; it goes with
 	// WarnEchoDropped so the app can say more than "some echo was dropped".
 	EchoDropped  int    `json:"echo_dropped,omitempty"`
 	NotesPending string `json:"notes_pending,omitempty"` // model_missing | failed
