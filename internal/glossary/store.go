@@ -327,8 +327,8 @@ func validate(heard, meant string) error {
 		}
 	}
 	// A case-only pair ("github" → "GitHub") is idempotent; any other meant form
-	// that contains the heard words, in any case of them, would change again on every pass.
-	if key(meant) != key(heard) && containsForm(words(meant), hw) {
+	// that contains the heard words would change again on every pass.
+	if key(meant) != key(heard) && containsSeq(words(meant), hw) {
 		return fmt.Errorf("%w: meant contains the heard form", ErrInvalid)
 	}
 	return nil

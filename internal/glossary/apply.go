@@ -115,8 +115,12 @@ func compile(pairs []Pair) []compiled {
 		}
 		if h := words(p.Heard); len(h) > 0 {
 			c := compiled{heard: h, stems: make([]string, len(h)), meant: p.Meant}
-			for k, w := range h {
-				c.stems[k] = nominalStem(w)
+			// A Cyrillic meant is a Russian word in a case of its own («Кролик», «Москва»): replacing «в маскве» by
+			// stem would write «в Москва». Only a meant in Latin letters stands for every case of the heard word.
+			if !hasCyrillic(p.Meant) {
+				for k, w := range h {
+					c.stems[k] = nominalStem(w)
+				}
 			}
 			mt := tokenize(p.Meant)
 			if len(mt) > 0 && !mt[0].word {

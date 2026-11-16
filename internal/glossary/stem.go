@@ -51,22 +51,10 @@ func sameWord(h, hs, w string) bool {
 	return hs != "" && strings.HasPrefix(w, hs) && nominalStem(w) == hs
 }
 
-// containsForm is containsSeq with the heard words matched as sameWord does: needle (heard words) occurs in hay
-// as consecutive words, each in any case of it.
-func containsForm(hay, needle []string) bool {
-	stems := make([]string, len(needle))
-	for k, h := range needle {
-		stems[k] = nominalStem(h)
-	}
-	for i := 0; len(needle) > 0 && i+len(needle) <= len(hay); i++ {
-		ok := true
-		for k, h := range needle {
-			if !sameWord(h, stems[k], hay[i+k]) {
-				ok = false
-				break
-			}
-		}
-		if ok {
+// hasCyrillic reports whether s holds a Cyrillic letter.
+func hasCyrillic(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Cyrillic, r) {
 			return true
 		}
 	}

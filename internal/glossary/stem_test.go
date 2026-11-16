@@ -3,7 +3,6 @@ package glossary
 import (
 	"bufio"
 	"compress/gzip"
-	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -78,24 +77,30 @@ func TestExactFormBeatsStemMatch(t *testing.T) {
 	}
 }
 
-// A meant form that holds the heard word in another case would be matched again on the next pass and grow.
-// Mutation: store.go validate, containsForm -> containsSeq -> RED (the pair is filed and Apply twice doubles «Смит»).
-func TestMeantHoldingAnotherCaseOfHeardIsRefused(t *testing.T) {
-	s := newTestStore(t)
-	if _, err := s.Add("дэвин", "Дэвина Смит", ""); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("Add: err = %v, want ErrInvalid", err)
+// A Cyrillic meant is a word in a case of its own: a pair that fixes a Russian word is exact-only, so «Кролика»
+// is not rewritten to «Кролик» and the meant cannot grow on a second pass.
+// Mutation: apply.go compile, drop the `!hasCyrillic(p.Meant)` condition -> RED.
+func TestCyrillicMeantIsExactOnly(t *testing.T) {
+	pairs := []Pair{
+		{Heard: "масква", Meant: "Москва", Status: Active},
+		{Heard: "кролик", Meant: "Кролик", Status: Active},
+		{Heard: "дэвин", Meant: "Дэвина Смит", Status: Active},
 	}
-	p, err := s.Add("дэвин", "Devin", "")
-	if err != nil {
-		t.Fatal(err)
+	for _, c := range []struct{ in, want string }{
+		{"в маскве и кролика", "в маскве и кролика"},
+		{"масква, кролик", "Москва, Кролик"},
+	} {
+		if got, _ := Apply(c.in, pairs); got != c.want {
+			t.Errorf("Apply(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
-	if _, err := s.Edit(p.ID, "Дэвина Смит"); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("Edit: err = %v, want ErrInvalid", err)
+	once, _ := Apply("спроси дэвин", pairs)
+	if twice, _ := Apply(once, pairs); once != "спроси Дэвина Смит" || twice != once {
+		t.Errorf("Apply once %q, twice %q", once, twice)
 	}
-	once, _ := Apply("спроси у дэвина", []Pair{{Heard: "дэвин", Meant: "Devin Smith", Status: Active}})
-	twice, _ := Apply(once, []Pair{{Heard: "дэвин", Meant: "Devin Smith", Status: Active}})
-	if once != twice {
-		t.Fatalf("Apply is not idempotent: %q then %q", once, twice)
+	ws := ApplyWords([]stt.Word{{W: "маскве", S: 0, E: 1}}, pairs)
+	if len(ws) != 1 || ws[0].W != "маскве" {
+		t.Errorf("ApplyWords = %+v", ws)
 	}
 }
 
