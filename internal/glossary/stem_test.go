@@ -31,7 +31,7 @@ func TestNominalStemGuard(t *testing.T) {
 }
 
 // Another case of a heard word is replaced; a different word that shares its first letters, or a short stem, is not.
-// Mutation: apply.go match, `!sameWord(h, c.stems[k], fold(toks[j].s))` -> `fold(toks[j].s) != h` -> RED (no inflected form is replaced).
+// Mutation: apply.go matchAt, `sameWord(h, c.stem(k, exact), fold(toks[j].s))` -> `sameWord(h, "", fold(toks[j].s))` -> RED (no inflected form is replaced).
 func TestApplyMatchesInflectedForms(t *testing.T) {
 	pairs := []Pair{
 		{Heard: "дэвин", Meant: "Devin", Status: Active},
@@ -62,7 +62,7 @@ func TestApplyMatchesInflectedForms(t *testing.T) {
 
 // An exact heard form wins over a stem match, whatever the order of the pairs: «дэвина» filed as its own pair is
 // not taken by the pair filed as «дэвин».
-// Mutation: apply.go match, `[]bool{true, false}` -> `[]bool{false}` (and in matchWords) -> RED.
+// Mutation: apply.go match, `[]bool{true, false}` -> `[]bool{false}` -> RED; the same in matchWords -> RED.
 func TestExactFormBeatsStemMatch(t *testing.T) {
 	a := Pair{Heard: "дэвин", Meant: "Devin", Status: Active}
 	b := Pair{Heard: "дэвина", Meant: "Devina", Status: Active}
@@ -105,7 +105,7 @@ func TestCyrillicMeantIsExactOnly(t *testing.T) {
 }
 
 // The word-list path matches like the text path: an inflected word, and a multi-word form whose last word is inflected.
-// Mutation: apply.go matchWords, `!sameWord(h, c.stems[k], key(w))` -> `key(w) != h` -> RED.
+// Mutation: apply.go matchWordsAt, `sameWord(h, c.stem(k, exact), key(w))` -> `sameWord(h, "", key(w))` -> RED.
 func TestApplyWordsMatchesInflectedForms(t *testing.T) {
 	pairs := []Pair{
 		{Heard: "дэвин", Meant: "Devin", Status: Active},
