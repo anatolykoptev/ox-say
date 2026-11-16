@@ -95,6 +95,8 @@ func containsSeq(hay, needle []string) bool {
 
 type compiled struct {
 	heard []string
+	// stems[k] is nominalStem(heard[k]): "" when that word matches only itself.
+	stems []string
 	meant string
 	// mkey is the folded meant minus its non-word edges; lead and trail are
 	// those edges folded (the "[" and "]" of "[foo]", the "++" of "C++") — a
@@ -112,7 +114,10 @@ func compile(pairs []Pair) []compiled {
 			continue
 		}
 		if h := words(p.Heard); len(h) > 0 {
-			c := compiled{heard: h, meant: p.Meant}
+			c := compiled{heard: h, stems: make([]string, len(h)), meant: p.Meant}
+			for k, w := range h {
+				c.stems[k] = nominalStem(w)
+			}
 			mt := tokenize(p.Meant)
 			if len(mt) > 0 && !mt[0].word {
 				c.lead = fold(mt[0].s)
@@ -211,7 +216,7 @@ func match(toks []token, i int, cs []compiled) (compiled, int, bool) {
 				}
 				j++
 			}
-			if j >= len(toks) || !toks[j].word || fold(toks[j].s) != h {
+			if j >= len(toks) || !toks[j].word || !sameWord(h, c.stems[k], fold(toks[j].s)) {
 				ok = false
 				break
 			}
@@ -327,7 +332,7 @@ func matchWords(ws []stt.Word, i int, cs []compiled) (compiled, int, bool) {
 		for k, h := range c.heard {
 			w := ws[i+k].W
 			pre, post := edges(w)
-			if key(w) != h || (k < n-1 && post != "") ||
+			if !sameWord(h, c.stems[k], key(w)) || (k < n-1 && post != "") ||
 				(k > 0 && (strings.TrimSpace(pre) != "" || strings.IndexByte(pre, '\n') >= 0)) {
 				ok = false
 				break
