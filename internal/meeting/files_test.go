@@ -71,7 +71,7 @@ func fileNameConstants(t *testing.T) map[string]string {
 // `VP = "vp" + ".json"` -> RED (a name built by concatenation, not a literal);
 // internal/meeting/retention.go, delete `DiarizationJSON` from workFiles -> RED.
 func TestEveryMeetingFileIsAccountedFor(t *testing.T) {
-	lists := map[string][]string{"audioFiles": audioFiles, "liveFiles": liveFiles, "workFiles": workFiles, "keptFiles": keptFiles, "rootFiles": rootFiles}
+	lists := map[string][]string{"audioFiles": audioFiles, "aecFiles": aecFiles, "liveFiles": liveFiles, "workFiles": workFiles, "keptFiles": keptFiles, "rootFiles": rootFiles}
 	where := map[string][]string{} // file -> lists holding it
 	for name, list := range lists {
 		for _, f := range list {
@@ -119,6 +119,9 @@ func TestASweepTakesTheAudioAndTheWorkFilesAndKeepsTheRest(t *testing.T) {
 	for _, name := range audioFiles {
 		writeFile(t, filepath.Join(dir, name), "audio")
 	}
+	for _, name := range aecFiles {
+		writeFile(t, filepath.Join(dir, name), "cancelled")
+	}
 	for _, name := range liveFiles {
 		writeFile(t, filepath.Join(dir, name), "captions")
 	}
@@ -148,7 +151,7 @@ func TestASweepTakesTheAudioAndTheWorkFilesAndKeepsTheRest(t *testing.T) {
 			t.Errorf("%s survived the sweep", name)
 		}
 	}
-	for _, name := range liveFiles {
+	for _, name := range append(slices.Clone(aecFiles), liveFiles...) {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			t.Errorf("%s survived the sweep", name)
 		}

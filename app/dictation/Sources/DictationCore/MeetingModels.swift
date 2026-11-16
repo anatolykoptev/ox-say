@@ -80,6 +80,14 @@ public struct MeetingInfo: Equatable {
 
     public var heardNoSystemAudio: Bool { warnings.contains("no_system_audio") }
 
+    /// The echo canceller was not on the daemon's Mac: the "me" channel kept
+    /// the speakers' echo ("aec_missing").
+    public var aecMissing: Bool { warnings.contains("aec_missing") }
+
+    /// The echo canceller ran and its output could not be trusted, so the raw
+    /// channel was transcribed ("aec_failed").
+    public var aecFailed: Bool { warnings.contains("aec_failed") }
+
     /// Why the far side has one label although voices were looked for, nil when nothing went wrong.
     public var diarProblem: DiarProblem? { DiarProblem.of(warnings: warnings, reason: diarReason) }
 

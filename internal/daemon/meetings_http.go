@@ -386,18 +386,25 @@ func (d *Daemon) handleMeetingDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // meetingSettingsAnswer is the meeting settings as the app reads them: the stored retention and the live-captions
-// choice resolved against this Mac's default (LiveCaptionsDefault says which that is).
+// choice resolved against this Mac's default (LiveCaptionsDefault says which that is). AEC is the effective
+// meeting_aec choice, "on" or "off"; a meeting setting that was never made reads as off.
 type meetingSettingsAnswer struct {
-	RetentionDays       int  `json:"retention_days"`
-	LiveCaptions        bool `json:"live_captions"`
-	LiveCaptionsDefault bool `json:"live_captions_default"`
+	RetentionDays       int    `json:"retention_days"`
+	LiveCaptions        bool   `json:"live_captions"`
+	LiveCaptionsDefault bool   `json:"live_captions_default"`
+	AEC                 string `json:"meeting_aec"`
 }
 
 func (d *Daemon) settingsAnswer() meetingSettingsAnswer {
+	aec := meeting.AECOff
+	if d.Meet.Store.Settings().AECEnabled() {
+		aec = meeting.AECOn
+	}
 	return meetingSettingsAnswer{
 		RetentionDays:       d.Meet.Store.Settings().RetentionDays,
 		LiveCaptions:        d.liveEnabled(),
 		LiveCaptionsDefault: d.liveDefault(),
+		AEC:                 aec,
 	}
 }
 
@@ -409,8 +416,9 @@ func (d *Daemon) handleMeetingSettings(w http.ResponseWriter, _ *http.Request) {
 // must not read as 0, which is "never delete", and an absent live_captions must not read as "off".
 func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		RetentionDays *int  `json:"retention_days"`
-		LiveCaptions  *bool `json:"live_captions"`
+		RetentionDays *int    `json:"retention_days"`
+		LiveCaptions  *bool   `json:"live_captions"`
+		AEC           *string `json:"meeting_aec"`
 		// What GET answers beside the settings: a client that sends the answer back is not refused. Read, never stored.
 		LiveCaptionsDefault *bool `json:"live_captions_default"`
 	}
@@ -418,8 +426,12 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if in.RetentionDays == nil && in.LiveCaptions == nil {
-		writeErr(w, http.StatusBadRequest, "retention_days or live_captions is required")
+	if in.RetentionDays == nil && in.LiveCaptions == nil && in.AEC == nil {
+		writeErr(w, http.StatusBadRequest, "retention_days, live_captions or meeting_aec is required")
+		return
+	}
+	if in.AEC != nil && *in.AEC != meeting.AECOn && *in.AEC != meeting.AECOff {
+		writeErr(w, http.StatusBadRequest, "meeting_aec must be \"on\" or \"off\"")
 		return
 	}
 	// One read-modify-write (UpdateSettings): the base is the file as stored, not Settings(), which shows the default
@@ -439,6 +451,9 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 		}
 		if in.LiveCaptions != nil {
 			cur.LiveCaptions = in.LiveCaptions
+		}
+		if in.AEC != nil {
+			cur.AEC = *in.AEC
 		}
 		return cur, nil
 	})

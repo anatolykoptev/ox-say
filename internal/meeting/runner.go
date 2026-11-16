@@ -86,6 +86,11 @@ type Deps struct {
 	// DiarEngineMissing, DiarModelsMissing codes: the meeting then gets one far-side label, WarnDiarUnavailable
 	// and that reason, and the diarizer is not started.
 	DiarizeReady func() string
+	// AEC runs the echo canceller on the meeting directory (me.pcm + them.pcm
+	// -> me.aec.pcm + aec.json) and returns its report. Nil: the stage skips as
+	// if the binary were missing. It returns ErrAECMissing when the engine is
+	// not on this Mac. RunAECBin is the production implementation.
+	AEC func(ctx context.Context, dir string) (*AECReport, error)
 	// Correct returns the user's glossary as a text fixer for one transcript and
 	// the ids of the pairs in it, loaded once per meeting. Nil: none.
 	Correct func() (fix func(string) string, ids []string)
@@ -103,7 +108,8 @@ type Runner struct {
 	wokeAt  time.Time       // the last time Housekeep saw the Mac wake from sleep
 	wake    chan struct{}
 
-	retentionWarned bool // the unreadable-settings warning was logged
+	retentionWarned bool    // the unreadable-settings warning was logged
+	lastAEC         *AECRun // the most recent aec stage's outcome, for /status
 
 	speakerLocks keyedLocks // one speakers edit at a time per meeting
 	// queuedAt stamps when a pending meeting entered the queue: a Process
@@ -704,17 +710,37 @@ type channel struct {
 	label string
 }
 
+// stem names the channel's piece caches after its file, not its label: a "me"
+// piece recognized from me.aec.pcm must never be read back as a me.pcm piece
+// when a retry's aec outcome flips.
+func (ch channel) stem() string { return strings.TrimSuffix(ch.file, ".pcm") }
+
+// rawFile is the recorded file behind a channel: the channel's own file, except the "me" side after the canceller,
+// whose recording stays me.pcm.
+func (ch channel) rawFile() string {
+	if ch.label == SpeakerMe {
+		return MePCM
+	}
+	return ch.file
+}
+
 var channels = []channel{{MePCM, SpeakerMe}, {ThemPCM, SpeakerThem}}
 
 // transcribe recognizes both channels piece by piece, caching each piece so a
-// restart resumes where it stopped, then merges them into the transcript.
+// restart resumes where it stopped, then merges them into the transcript. The
+// aec stage runs first (finish -> aec -> transcribe -> echo -> ...): when it
+// succeeds the "me" channel is read from me.aec.pcm, otherwise from me.pcm.
 func (r *Runner) transcribe(ctx context.Context, id string, sl *stageLog) error {
-	done := sl.begin(stageTranscribe) // before any work that can fail: a failure has a stage line
 	dir, err := r.Store.Dir(id)
 	if err != nil {
-		done(stageFailed, errClass(err))
+		sl.begin(stageTranscribe)(stageFailed, errClass(err)) // a failure still has a stage line
 		return err
 	}
+	meFile, aecWarns, err := r.aecStage(ctx, id, dir, sl)
+	if err != nil {
+		return err
+	}
+	done := sl.begin(stageTranscribe) // before any work that can fail: a failure has a stage line
 	if kept, err := r.keepFinishedWithoutAudio(id, dir); kept || err != nil {
 		if err != nil {
 			done(stageFailed, errClass(err))
@@ -741,8 +767,15 @@ func (r *Runner) transcribe(ctx context.Context, id string, sl *stageLog) error 
 	}
 	words := map[string][]stt.Word{}
 	var warnings []string
+	warnings = append(warnings, aecWarns...)
 	var seconds float64
-	for _, ch := range channels {
+	chs := channels
+	if meFile != MePCM {
+		// The canceller cleaned the mic channel: only the "me" side reads its
+		// output; every other path keeps the raw file.
+		chs = []channel{{meFile, SpeakerMe}, {ThemPCM, SpeakerThem}}
+	}
+	for _, ch := range chs {
 		w, speech, secs, err := r.channelWords(ctx, dir, ch, sl)
 		if err != nil {
 			done(stageFailed, errClass(err))
@@ -750,6 +783,11 @@ func (r *Runner) transcribe(ctx context.Context, id string, sl *stageLog) error 
 		}
 		words[ch.label] = w
 		seconds = max(seconds, secs)
+		if !speech && ch.file != ch.rawFile() {
+			// A canceller that took the echo out of a mic that only heard echo leaves silence: the mic still heard
+			// something, so "no mic audio" is for the raw file to say.
+			speech = r.heardAnything(dir, ch.rawFile())
+		}
 		if !speech {
 			warnings = append(warnings, map[string]string{SpeakerMe: WarnNoMicAudio, SpeakerThem: WarnNoSystemAudio}[ch.label])
 		}
@@ -954,7 +992,7 @@ type pieceCache struct {
 }
 
 func (r *Runner) pieceWords(ctx context.Context, dir string, f io.ReaderAt, ch channel, sp Span, sl *stageLog) ([]stt.Word, bool, error) {
-	cache := filepath.Join(dir, WorkDir, fmt.Sprintf("%s-%d-%d.json", ch.label, sp.From, sp.To))
+	cache := filepath.Join(dir, WorkDir, fmt.Sprintf("%s-%d-%d.json", ch.stem(), sp.From, sp.To))
 	if raw, err := os.ReadFile(cache); err == nil {
 		var pc pieceCache
 		if json.Unmarshal(raw, &pc) == nil {

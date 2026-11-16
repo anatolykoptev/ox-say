@@ -122,6 +122,8 @@
 "meeting.label.other" = "Other";
 "notice.meeting.ready" = "Meeting notes are ready";
 "notice.meeting.no_system_audio" = "The other side was not recorded. Allow System Audio Recording for OxSay in System Settings → Privacy & Security.";
+"notice.meeting.aec_missing" = "Speaker-echo cleanup is not installed on this Mac. The transcript may repeat what the other side said.";
+"notice.meeting.aec_failed" = "Speaker-echo cleanup did not finish. The transcript may repeat what the other side said.";
 "notice.meeting.notes_pending" = "The transcript is saved. Download the notes model to get notes.";
 "notice.meeting.failed" = "The meeting could not be processed: %@";
 "notice.meeting.start_failed" = "Recording could not start: %@";

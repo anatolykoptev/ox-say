@@ -18,6 +18,7 @@ const waitLogMin = 250 * time.Millisecond
 // The processing stages a finished meeting goes through (issue #526): the
 // order the log shows them in is the order this file lists them in.
 const (
+	stageAEC        = "aec"
 	stageTranscribe = "transcribe"
 	stageEcho       = "echo"
 	stageDiarize    = "diarize"

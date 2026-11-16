@@ -802,10 +802,13 @@ type statusSummary struct {
 	Notes notesStatus `json:"notes"`
 	// VoiceClean is the voice-cleanup engine: available, or the reason in plain words and as a code, and the lazy
 	// model download.
-	VoiceClean cleanStatus    `json:"voice_clean"`
-	Voices     []voices.Voice `json:"voices"`
-	Config     map[string]any `json:"config"`
-	Version    string         `json:"version"`
+	VoiceClean cleanStatus `json:"voice_clean"`
+	// AEC is the meeting echo canceller: the setting's effective value, the
+	// binary's presence, and its last run's outcome (aecStatus).
+	AEC     aecStatus      `json:"aec"`
+	Voices  []voices.Voice `json:"voices"`
+	Config  map[string]any `json:"config"`
+	Version string         `json:"version"`
 	// MemoryMode is how the large GPU engines share this Mac's memory:
 	// "one_large_engine" (the fast voice, the studio voice and the notes model
 	// take turns; Apple Silicon below config.OneLargeEngineBelowGB) or "shared"
@@ -844,6 +847,7 @@ func (d *Daemon) Status() statusSummary {
 		VoxCPM2:    d.voxStatus(),
 		Notes:      d.notesStatus(),
 		VoiceClean: d.cleanStatus(),
+		AEC:        d.aecStatus(),
 		Voices:     list,
 		Config: map[string]any{
 			"addr":              d.Cfg.Addr,
@@ -854,6 +858,7 @@ func (d *Daemon) Status() statusSummary {
 			"notes_bin":         d.Cfg.NotesBin,
 			"diar_bin":          d.Cfg.DiarBin,
 			"clean_bin":         d.Cfg.CleanBin,
+			"aec_bin":           d.Cfg.AECBin,
 			"model":             d.Cfg.Model,
 			"codec":             d.Cfg.Codec,
 			"max_batch":         d.Cfg.MaxBatch,

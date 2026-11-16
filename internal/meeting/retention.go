@@ -28,9 +28,21 @@ type Settings struct {
 	// answers with the Mac's default (on for Apple Silicon, off for Intel). A pointer so a settings file written
 	// before the option existed is not read as "off".
 	LiveCaptions *bool `json:"live_captions,omitempty"`
+	// AEC is the user's choice of echo cancellation before transcription: AECOn or AECOff; "" is "never chosen",
+	// which is off. A file written before the option existed reads as off, the same default it had then.
+	AEC string `json:"meeting_aec,omitempty"`
 }
 
+// The values Settings.AEC accepts ("" stands for never chosen).
+const (
+	AECOn  = "on"
+	AECOff = "off"
+)
+
 func validRetention(days int) bool { return slices.Contains(RetentionChoices, days) }
+
+// AECEnabled is the effective choice behind Settings.AEC: on only when it says so.
+func (st Settings) AECEnabled() bool { return st.AEC == AECOn }
 
 // LoadSettings reads settings.json. A file that does not exist means the
 // default of DefaultRetention days; a file that exists but cannot be read,
@@ -51,6 +63,9 @@ func (s *Store) LoadSettings() (Settings, error) {
 	}
 	if !validRetention(got.RetentionDays) {
 		return Settings{}, fmt.Errorf("meeting: %s: retention of %d days is not one of %v", SettingsFile, got.RetentionDays, RetentionChoices)
+	}
+	if got.AEC != "" && got.AEC != AECOn && got.AEC != AECOff {
+		return Settings{}, fmt.Errorf("meeting: %s: meeting_aec of %q is not %q or %q", SettingsFile, got.AEC, AECOff, AECOn)
 	}
 	return got, nil
 }
@@ -83,6 +98,9 @@ func (s *Store) UpdateSettings(change func(cur Settings, loadErr error) (Setting
 func (s *Store) SetSettings(st Settings) error {
 	if !validRetention(st.RetentionDays) {
 		return fmt.Errorf("meeting: retention of %d days is not one of %v: %w", st.RetentionDays, RetentionChoices, os.ErrInvalid)
+	}
+	if st.AEC != "" && st.AEC != AECOn && st.AEC != AECOff {
+		return fmt.Errorf("meeting: meeting_aec of %q is not %q or %q: %w", st.AEC, AECOff, AECOn, os.ErrInvalid)
 	}
 	if err := os.MkdirAll(s.Root, 0o700); err != nil {
 		return err
@@ -168,6 +186,9 @@ func transcriptReadable(dir string) bool {
 var (
 	// audioFiles are moved out one by one, the far side's first (retiredNames).
 	audioFiles = []string{ThemPCM, MePCM}
+	// aecFiles are the echo canceller's output and report, made from the audio (the aec stage, when meeting_aec is on):
+	// they go with it and are moved out beside it (retiredNames).
+	aecFiles = []string{MeAECPCM, AECJSON}
 	// liveFiles are the audio as text (live captions): they go with the audio and are moved out beside it (retiredNames).
 	liveFiles = []string{LiveJSONL}
 	// workFiles live inside WorkDir, which is removed whole.
@@ -213,6 +234,6 @@ func (r *Runner) deleteAudio(m Manifest, days int) bool {
 	return true
 }
 
-// retiredNames are what retention moves out of a meeting, in this order: audioFiles, then the work directory (which
-// holds workFiles and the piece caches).
-var retiredNames = []string{ThemPCM, MePCM, LiveJSONL, WorkDir}
+// retiredNames are what retention moves out of a meeting, in this order: audioFiles, aecFiles and liveFiles, then the
+// work directory (which holds workFiles and the piece caches).
+var retiredNames = []string{ThemPCM, MePCM, MeAECPCM, AECJSON, LiveJSONL, WorkDir}

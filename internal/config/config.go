@@ -189,6 +189,7 @@ type Config struct {
 	NotesIdleStop time.Duration // OX_SAY_NOTES_IDLE_STOP_SECS
 	DiarBin       string        // OX_SAY_DIAR_BIN: path to ox-diar (speaker diarization)
 	CleanBin      string        // OX_SAY_CLEAN_BIN: path to ox-clean (voice cleanup)
+	AECBin        string        // OX_SAY_AEC_BIN: path to ox-aec (meeting echo cancellation)
 	// NotesPortBlocked is set by load when the DEFAULT notes port collides
 	// with another ox-say listener: an explicitly set colliding port is a
 	// load error, but a colliding default must not take the daemon down for
@@ -249,6 +250,7 @@ var flagNames = map[string]string{
 	"notes-idle-stop":   "OX_SAY_NOTES_IDLE_STOP_SECS",
 	"diar-bin":          "OX_SAY_DIAR_BIN",
 	"clean-bin":         "OX_SAY_CLEAN_BIN",
+	"aec-bin":           "OX_SAY_AEC_BIN",
 	// A test and diagnostic knob: see Config.AssumedMemoryBytes.
 	"assume-memory-gb": "OX_SAY_ASSUME_MEMORY_GB",
 }
@@ -395,6 +397,9 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	}
 	if c.CleanBin = get("OX_SAY_CLEAN_BIN"); c.CleanBin == "" {
 		c.CleanBin = filepath.Join(engineDir, "ox-clean")
+	}
+	if c.AECBin = get("OX_SAY_AEC_BIN"); c.AECBin == "" {
+		c.AECBin = filepath.Join(engineDir, "ox-aec")
 	}
 	return c, nil
 }
