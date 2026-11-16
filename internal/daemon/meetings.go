@@ -633,6 +633,7 @@ func (d *Daemon) notesKey() (string, error) {
 // (waitQuiet), asks the notes engine's config whether it can run, and leaves
 // meetings waiting on a missing STT model alone until the model lands.
 func (d *Daemon) initMeetings() {
+	d.live = newLiveManager(d)
 	d.Meet = meeting.NewRunner(meeting.Deps{
 		Store: &meeting.Store{Root: filepath.Join(d.Cfg.Home, "meetings"), Log: d.log},
 		Transcribe: func(ctx context.Context, wav string) (*stt.Result, error) {
@@ -690,6 +691,7 @@ func (d *Daemon) StartMeetings() {
 	ctx, cancel := context.WithCancel(context.Background())
 	d.meetCancel = cancel
 	d.meetDone = make(chan struct{}, 2)
+	d.live.reconcile() // a daemon restarted in the middle of a call picks its captions up again
 	go func() { d.Meet.Run(ctx); d.meetDone <- struct{}{} }()
 	go func() { d.Meet.Housekeep(ctx, meetingHousekeepEvery); d.meetDone <- struct{}{} }()
 }
@@ -697,6 +699,7 @@ func (d *Daemon) StartMeetings() {
 // StopMeetings stops the runner. A job in flight is cancelled and stays
 // resumable: its meeting keeps its status and the next start picks it up.
 func (d *Daemon) StopMeetings() {
+	d.live.stopAll()
 	if d.meetCancel == nil {
 		return
 	}

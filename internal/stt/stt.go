@@ -11,6 +11,7 @@
 package stt
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -421,12 +422,24 @@ func transcribeServer(ctx context.Context, wav string, opts Options) (*Result, e
 		release()
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/transcribe", f)
+	return postWAV(ctx, base, f, fi.Size(), release, opts)
+}
+
+// ServerRejection is the resident server answering a decode request with an error or an unreadable body: it
+// received the audio and said no. Acquire and transport failures are not one — the audio never got a verdict.
+type ServerRejection struct{ msg string }
+
+func (e *ServerRejection) Error() string { return e.msg }
+
+// postWAV sends one WAV body (size bytes) to the server at base and reads the answer. release runs once the
+// response body is read, before the JSON is parsed, and also on every failure path.
+func postWAV(ctx context.Context, base string, body io.Reader, size int64, release func(), opts Options) (*Result, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/transcribe", body)
 	if err != nil {
 		release()
 		return nil, err
 	}
-	req.ContentLength = fi.Size()
+	req.ContentLength = size
 	// ox-stt's httplib caps a form-urlencoded body at 8 KB; a raw WAV body
 	// under its own content type is unlimited.
 	req.Header.Set("Content-Type", "audio/wav")
@@ -438,24 +451,39 @@ func transcribeServer(ctx context.Context, wav string, opts Options) (*Result, e
 		release()
 		return nil, err
 	}
-	body, rerr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	out, rerr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	_ = resp.Body.Close()
 	release()
 	if rerr != nil {
 		return nil, rerr
 	}
 	if resp.StatusCode != http.StatusOK {
-		msg := strings.TrimSpace(string(body))
+		msg := strings.TrimSpace(string(out))
 		if len(msg) > 256 {
 			msg = msg[:256]
 		}
-		return nil, fmt.Errorf("stt: server %s: %s", resp.Status, msg)
+		return nil, &ServerRejection{fmt.Sprintf("stt: server %s: %s", resp.Status, msg)}
 	}
 	var res Result
-	if err := json.Unmarshal(body, &res); err != nil {
-		return nil, fmt.Errorf("stt: server returned invalid JSON: %v", err)
+	if err := json.Unmarshal(out, &res); err != nil {
+		return nil, &ServerRejection{fmt.Sprintf("stt: server returned invalid JSON: %v", err)}
 	}
 	return &res, nil
+}
+
+// TranscribeWAVViaServer decodes an in-memory 16 kHz mono WAV on the resident server and nowhere else: no
+// conversion, no queue slot shared with the per-call path, no CLI fallback. Live captions use it so that a server
+// that is down or cooling down means "no caption now", never a second model loaded beside the call. A server that
+// answered with an error returns *ServerRejection.
+func TranscribeWAVViaServer(ctx context.Context, wav []byte, opts Options) (*Result, error) {
+	if opts.Server == nil {
+		return nil, errors.New("stt: the resident server is off")
+	}
+	base, release, err := opts.Server(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return postWAV(ctx, base, bytes.NewReader(wav), int64(len(wav)), release, opts)
 }
 
 func queueLimit(n int) int {

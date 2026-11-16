@@ -44,6 +44,14 @@ app can copy a sentence for that to the clipboard (**Copy consent phrase**).
   uncensored model is not installed, its row says whether the file is still on its host (`upstream` — `gone` is
   a clear 404/410 or a gated repo, `unknown` a network hiccup). A model over 12 GB is exclusive on a
   Mac under 48 GB of unified memory: the large engines take turns there (`/status` `memory_mode`).
+- **Live captions.** While a call records, the finished stretches of speech of each channel are recognized on the resident
+  speech server and written to `live.jsonl` in the meeting's folder, so the window can show "Me" and "Others" lines a few
+  seconds behind (`GET /v1/meetings/<id>/live`). They are a preview: after the recording stops the full pass runs as always
+  and replaces them. They never delay dictation: a caption waits while a dictation is going on, under memory pressure and in
+  Low Power Mode, one stretch of at most 10 s is recognized at a time, and nothing is loaded beside the speech server.
+  On by default on Apple Silicon, off on Intel (a decode there is about ten times slower); the choice is `live_captions` in
+  the meeting settings. On speakers, the microphone line may repeat what the far side said; the final transcript drops it.
+  The captions are deleted with the audio.
 - **The main window** (**Open OxSay…** in the menu): the list of recordings, search over titles, notes and
   transcripts, find-in-transcript, and playing the audio from any line of the transcript.
 - **For agents.** The MCP tools `meetings_list`, `meeting_get` and `meetings_search`, and the HTTP routes listed

@@ -101,6 +101,8 @@ type Daemon struct {
 	// meetCancel and meetDone stop and await StartMeetings' goroutines.
 	meetCancel context.CancelFunc
 	meetDone   chan struct{}
+	// live runs the live-caption workers of the meetings being recorded (meetings_live.go).
+	live *liveManager
 	// notes is the single-flight guard and last error of the notes model
 	// download (InstallNotesModel).
 	notes notesInstall

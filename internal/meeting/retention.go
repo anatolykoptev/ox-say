@@ -24,6 +24,10 @@ var RetentionChoices = []int{0, 7, 30, 90}
 // how long audio is kept after a meeting ends; 0 keeps it forever.
 type Settings struct {
 	RetentionDays int `json:"retention_days"`
+	// LiveCaptions is the user's choice of live captions while recording; nil is "never chosen", which the daemon
+	// answers with the Mac's default (on for Apple Silicon, off for Intel). A pointer so a settings file written
+	// before the option existed is not read as "off".
+	LiveCaptions *bool `json:"live_captions,omitempty"`
 }
 
 func validRetention(days int) bool { return slices.Contains(RetentionChoices, days) }
@@ -150,6 +154,8 @@ func transcriptReadable(dir string) bool {
 var (
 	// audioFiles are moved out one by one, the far side's first (retiredNames).
 	audioFiles = []string{ThemPCM, MePCM}
+	// liveFiles are the audio as text (live captions): they go with the audio and are moved out beside it (retiredNames).
+	liveFiles = []string{LiveJSONL}
 	// workFiles live inside WorkDir, which is removed whole.
 	workFiles = []string{DiarizationJSON}
 	// keptFiles stay for the life of the meeting.
@@ -195,4 +201,4 @@ func (r *Runner) deleteAudio(m Manifest, days int) bool {
 
 // retiredNames are what retention moves out of a meeting, in this order: audioFiles, then the work directory (which
 // holds workFiles and the piece caches).
-var retiredNames = []string{ThemPCM, MePCM, WorkDir}
+var retiredNames = []string{ThemPCM, MePCM, LiveJSONL, WorkDir}
