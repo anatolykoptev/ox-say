@@ -60,8 +60,10 @@ app can copy a sentence for that to the clipboard (**Copy consent phrase**).
 
 **Where the files are.** Each meeting is a directory under `~/Library/Application Support/ox-say/meetings`
 (`OX_SAY_HOME/meetings`): the two channel files, the transcript, the notes and the speaker choices. A copy of the
-notes and transcript is written to a **Notes Folder** you can choose (default `~/Documents/ox-say Meetings`).
-If that folder sits inside an iCloud-synced location (for example `~/Documents` while "Desktop & Documents"
+notes and transcript is written to a **Notes Folder** you can choose (default `~/Documents/ox-say Meetings`, or
+`~/Library/Application Support/ox-say Meetings` on a Mac where `~/Documents` syncs to iCloud and no notes folder
+exists yet; an existing folder is never moved). The `meetings` directory is marked excluded from backup (Time
+Machine), set when the next meeting or retention change is saved. If the notes folder sits inside an iCloud-synced location (for example `~/Documents` while "Desktop & Documents"
 sync is on), macOS uploads it, and the app warns about it in Settings.
 The voice engine's voiceprints are held only while it runs and never reach the meeting directory.
 The uninstaller keeps meetings, even with `--purge` (it removes engines, models, voices and run state): delete

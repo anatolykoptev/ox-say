@@ -67,4 +67,28 @@ final class MeetingDefaultFolderTests: XCTestCase {
         XCTAssertEqual(v.folderPath, local)
         XCTAssertFalse(v.folderSyncsICloud)
     }
+
+    /// The property itself (#532), through the export: a first-ever export on a Mac whose Documents syncs lands in the
+    /// local folder, not under Documents. The home is a real temporary directory, so the file really is written.
+    /// Mutation: MeetingExporter.export, `MeetingSettings.folder(defaults, home: home, probe: probe)` ->
+    /// `MeetingSettings.folder(defaults, home: home, probe: { _ in false })` -> RED.
+    func testAFirstExportOnASyncedDocumentsMacLandsOutsideDocuments() throws {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.appendingPathComponent("i532-export-\(UUID().uuidString)", isDirectory: true)
+        let documents = tmp.appendingPathComponent("Documents", isDirectory: true)
+        try fm.createDirectory(at: documents, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmp) }
+        // Like the real probe: Documents answers true, a path that does not exist answers nil.
+        let synced: ICloudSync.Probe = { url in
+            url.standardizedFileURL.path == documents.standardizedFileURL.path ? true : (fm.fileExists(atPath: url.path) ? false : nil)
+        }
+        let info = MeetingInfo(id: "m1", title: "Plan", started: Date(timeIntervalSince1970: 1_700_000_000), status: .done,
+                               notesMD: "notes", transcriptMD: "text")
+        guard case .written(let dir) = MeetingExporter(defaults: defaults(), home: tmp, probe: synced).export(info) else {
+            return XCTFail("the export did not write a copy")
+        }
+        XCTAssertTrue(dir.standardizedFileURL.path.hasPrefix(tmp.appendingPathComponent("Library/Application Support/ox-say Meetings").standardizedFileURL.path),
+                      "the copy went to \(dir.path)")
+        XCTAssertFalse(fm.fileExists(atPath: documents.appendingPathComponent("ox-say Meetings").path), "nothing was written under Documents")
+    }
 }
