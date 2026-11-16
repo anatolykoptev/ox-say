@@ -83,7 +83,6 @@ final class MeetingRecorder {
     private var tapRecovery = TapRecovery()
     private var tapPeak: Float = 0
     private var micObserver: NSObjectProtocol?
-    private var wakeObserver: NSObjectProtocol?
     /// One line in the log per recording, not one per tick.
     private var syncFailureLogged = false
     /// #531: no idle system sleep and no App Nap throttling while the recording runs; ended in `stop`.
@@ -180,9 +179,6 @@ final class MeetingRecorder {
         activity.hold(reason: "OxSay is recording a meeting")
         syncFailureLogged = false
         flusher.start()
-        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.macWoke()
-        }
         // The microphone alone is still a recording: a tap that cannot start is told and retried (`tapStarted`).
         startTap()
         watchOutputDevice()
@@ -219,8 +215,6 @@ final class MeetingRecorder {
     func stop() -> Summary {
         flusher.stop()
         activity.release()
-        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
-        wakeObserver = nil
         if let micObserver { NotificationCenter.default.removeObserver(micObserver) }
         micObserver = nil
         micChain.cancel()
@@ -260,21 +254,6 @@ final class MeetingRecorder {
         if results.contains(false), !syncFailureLogged {
             syncFailureLogged = true
             log.error("recording: the disk refused a sync; audio is written but not yet safe from a power loss")
-        }
-    }
-
-    /// The Mac woke mid-recording: what the system stopped is started again. The tap gets a second to show it is still
-    /// delivering before it is rebuilt, because a rebuild is itself a gap.
-    private func macWoke() {
-        guard started != nil else { return }
-        if RecordingDurability.onWake(micRunning: mic.isRunning, tapSilence: nil).restartMicrophone { restartMicrophone() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self, self.started != nil else { return }
-            let silence = self.lock.withLock { TapLoss.silence(lastNanos: self.tapLastNanos, nowNanos: DispatchTime.now().uptimeNanoseconds) }
-            if RecordingDurability.onWake(micRunning: true, tapSilence: silence).rebuildTap {
-                self.log.error("system audio tap: silent after wake, rebuilding")
-                self.startTap()
-            }
         }
     }
 

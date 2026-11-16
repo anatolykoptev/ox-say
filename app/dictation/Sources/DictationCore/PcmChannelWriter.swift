@@ -189,6 +189,9 @@ public final class PcmChannelWriter {
                 } catch { failed += 1 }
             }
         }
+        // The 2 s timer is stopped before this runs: a clean stop must not leave the last interval to the kernel's own
+        // schedule. After the pad and the truncate, so what is synced is the final file, and before the close.
+        if !sync(handle.fileDescriptor) { syncFailed += 1 }
         try? handle.close()
         closed = true
     }

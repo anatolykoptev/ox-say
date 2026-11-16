@@ -3,31 +3,11 @@ import Foundation
 /// What keeps a recording alive when the Mac or the app does not (#531). The audio is appended with `write(2)`, so an
 /// app killed with `kill -9` loses nothing that was already written: the kernel owns those bytes. What a power loss, a
 /// kernel panic or a forced shutdown takes is whatever the kernel had not yet put on the disk, so the files are synced
-/// on a short, fixed cadence, and the Mac is told not to fall asleep on its own while the recording runs.
+/// on a short, fixed cadence, and the Mac is told not to fall asleep on its own while the recording runs. A sleep
+/// itself ends the recording (`MeetingController.stopForSleep`, on `willSleepNotification`), so there is no wake path.
 public enum RecordingDurability {
     /// The longest a power loss can cost: the channel files are flushed to the disk this often while recording.
     public static let flushInterval: TimeInterval = 2
-
-    /// What to do when the Mac wakes in the middle of a recording. The microphone engine is stopped by the system more
-    /// often than not, and the tap is bound to an output device that may have gone; a half-second hole is padded with
-    /// silence by the channel writers, a hole that is never closed is the rest of the call.
-    public struct WakeActions: Equatable {
-        public var restartMicrophone: Bool
-        public var rebuildTap: Bool
-
-        public init(restartMicrophone: Bool, rebuildTap: Bool) {
-            self.restartMicrophone = restartMicrophone
-            self.rebuildTap = rebuildTap
-        }
-    }
-
-    /// The tap counts as alive again when it delivered a buffer within this many seconds of the check.
-    public static let tapAliveWithin: TimeInterval = 1
-
-    public static func onWake(micRunning: Bool, tapSilence: TimeInterval?) -> WakeActions {
-        WakeActions(restartMicrophone: !micRunning,
-                    rebuildTap: tapSilence.map { $0 > tapAliveWithin } ?? true)
-    }
 }
 
 /// Calls `action` every `interval` seconds on `queue` until `stop`. A DispatchSource timer, so the cadence does not

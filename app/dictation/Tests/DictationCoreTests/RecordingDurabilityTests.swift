@@ -46,7 +46,7 @@ final class RecordingDurabilityTests: XCTestCase {
         w.flush()
         XCTAssertEqual(seen, [true, true])
         XCTAssertEqual(w.flushCount, 2)
-        w.finish(atNanos: 1_000)
+        w.finish(atNanos: 1_000) // its own final sync is the next test's subject
     }
 
     /// A sync the disk refuses is visible: `flush` says so and the writer counts it, so the recorder can log it.
@@ -55,7 +55,7 @@ final class RecordingDurabilityTests: XCTestCase {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let handle = try { _ = FileManager.default.createFile(atPath: url.path, contents: nil); return try FileHandle(forWritingTo: url) }()
-        var answers = [false, true]
+        var answers = [false, true, true] // the third is the final sync of `finish`
         let w = PcmChannelWriter(handle: handle, t0: 1_000, sync: { _ in answers.removeFirst() })
         XCTAssertFalse(w.flush())
         XCTAssertEqual(w.syncFailures, 1)
@@ -73,9 +73,44 @@ final class RecordingDurabilityTests: XCTestCase {
         let handle = try { _ = FileManager.default.createFile(atPath: url.path, contents: nil); return try FileHandle(forWritingTo: url) }()
         let w = PcmChannelWriter(handle: handle, t0: 1_000, sync: { _ in calls += 1; return true })
         w.finish(atNanos: 1_000)
+        let atFinish = calls
         w.flush()
-        XCTAssertEqual(calls, 0)
+        XCTAssertEqual(calls, atFinish, "a tick after the close syncs nothing")
         XCTAssertEqual(w.flushCount, 0)
+    }
+
+    /// A clean stop ends with one more sync, on the descriptor of the file as it ends (after the pad to the end time,
+    /// before the close): the last 2 s since the timer's final tick are on the disk, not left to the kernel.
+    /// Mutation: PcmChannelWriter.finish, delete the `if !sync(handle.fileDescriptor) { syncFailed += 1 }` line -> RED;
+    /// move it below `try? handle.close()` -> RED (the descriptor is already closed).
+    func testFinishSyncsTheFileOnceMoreBeforeItCloses() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let handle = try { _ = FileManager.default.createFile(atPath: url.path, contents: nil); return try FileHandle(forWritingTo: url) }()
+        var live: [Bool] = []
+        var sizeAtSync: [UInt64] = []
+        let w = PcmChannelWriter(handle: handle, t0: 0, sync: { fd in
+            live.append(fcntl(fd, F_GETFD) != -1)
+            var info = stat()
+            sizeAtSync.append(fstat(fd, &info) == 0 ? UInt64(info.st_size) : 0)
+            return true
+        })
+        w.append([0.1, 0.1], atNanos: 0)
+        w.finish(atNanos: 1_000_000_000) // padded to one second: 32000 bytes
+        XCTAssertEqual(live, [true], "exactly one sync, on a descriptor that is still open")
+        XCTAssertEqual(sizeAtSync, [32000], "after the pad: the file that is synced is the finished one")
+        XCTAssertEqual(w.flushCount, 0, "it is not a timer flush")
+    }
+
+    /// A refusal of the final sync is counted like any other.
+    /// Mutation: PcmChannelWriter.finish, `{ syncFailed += 1 }` -> `{ }` -> RED.
+    func testARefusedFinalSyncIsCounted() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let handle = try { _ = FileManager.default.createFile(atPath: url.path, contents: nil); return try FileHandle(forWritingTo: url) }()
+        let w = PcmChannelWriter(handle: handle, t0: 1_000, sync: { _ in false })
+        w.finish(atNanos: 1_000)
+        XCTAssertEqual(w.syncFailures, 1)
     }
 
     /// The real sync really runs on a real file.
@@ -139,22 +174,11 @@ final class RecordingDurabilityTests: XCTestCase {
         hold.release()
     }
 
-    /// After a sleep: the microphone is restarted only when it is not running, the tap is rebuilt when it has not
-    /// delivered for more than a second or has never delivered.
-    /// Mutation: RecordingDurability.onWake, `!micRunning` -> `micRunning` -> RED; `$0 > tapAliveWithin` -> `$0 < ...` -> RED.
-    func testWakeRestartsOnlyWhatStopped() {
-        XCTAssertEqual(RecordingDurability.onWake(micRunning: true, tapSilence: 0.01), RecordingDurability.WakeActions(restartMicrophone: false, rebuildTap: false))
-        XCTAssertEqual(RecordingDurability.onWake(micRunning: false, tapSilence: 0.01), RecordingDurability.WakeActions(restartMicrophone: true, rebuildTap: false))
-        XCTAssertEqual(RecordingDurability.onWake(micRunning: true, tapSilence: 3600), RecordingDurability.WakeActions(restartMicrophone: false, rebuildTap: true))
-        XCTAssertEqual(RecordingDurability.onWake(micRunning: true, tapSilence: nil), RecordingDurability.WakeActions(restartMicrophone: false, rebuildTap: true))
-    }
-
     /// The recorder carries the pieces out (the shim compiles DictationCore only, so this reads the source as text):
     /// the flush timer and the activity start with the recording and end with it, and the timer syncs both channels
     /// outside the writers' lock.
     /// Mutations: MeetingRecorder.start, delete `flusher.start()` -> RED; delete `activity.hold(` -> RED;
     /// MeetingRecorder.stop, delete `flusher.stop()` -> RED; delete `activity.release()` -> RED;
-    /// MeetingRecorder.start, delete the `self?.macWoke()` line of the wake observer -> RED;
     /// MeetingRecorder.flushChannels, delete the `t?.flush()` line -> RED.
     func testTheRecorderStartsAndEndsTheFlushAndTheActivity() throws {
         let file = URL(fileURLWithPath: #filePath)
@@ -172,12 +196,6 @@ final class RecordingDurabilityTests: XCTestCase {
         let start = try body(of: "func start(into dir: URL")
         XCTAssertTrue(start.contains("flusher.start()"))
         XCTAssertTrue(start.contains("activity.hold("))
-        XCTAssertTrue(start.contains("NSWorkspace.didWakeNotification"), "the wake is listened for")
-        XCTAssertTrue(start.contains("self?.macWoke()"), "and acted on")
-        let woke = try body(of: "private func macWoke() {")
-        XCTAssertTrue(woke.contains("restartMicrophone()"))
-        XCTAssertTrue(woke.contains("self.startTap()"))
-        XCTAssertTrue(woke.contains("RecordingDurability.onWake("))
         let stop = try body(of: "func stop() -> Summary {")
         XCTAssertTrue(stop.contains("flusher.stop()"))
         XCTAssertTrue(stop.contains("activity.release()"))
