@@ -290,8 +290,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // A process killed mid-duck left the output quiet: give it back now.
         soundWhileDictating.recoverInterruptedDuck()
         // An update installing restarts the daemon: a dictation started now would lose its text (#211).
-        controller.startAllowed = { [weak self] in UpdateGate.allowsNewDaemonWork(installing: self?.updateInstalling ?? false) }
-        controller.onStartRefused = { [weak self] in self?.notice(L10nKey.noticeUpdatingDictation.text) }
+        // A voice take records the microphone: a dictation started over it is refused too (#442).
+        controller.startAllowed = { [weak self] in self?.dictationStartRefusal == nil }
+        controller.onStartRefused = { [weak self] in
+            if let refusal = self?.dictationStartRefusal { self?.notice(refusal.message()) }
+        }
         controller.onError = { [weak self] message in self?.notice(message, kind: .outcome) }
         controller.onErrorDetail = { [weak self] error in
             self?.errorLog.error("dictation failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
@@ -610,6 +613,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     nonisolated private static func diskVersion() -> String? {
         let plist = InstalledApp.bundleURL(running: Bundle.main.bundleURL).appendingPathComponent("Contents/Info.plist")
         return (NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"]) as? String
+    }
+
+    /// Why the dictation key may not start a recording now: an update is installing, or a voice take holds the microphone.
+    private var dictationStartRefusal: DictationStartRefusal? {
+        DictationStartRefusal.decide(installing: updateInstalling, recordingVoice: mainWindow.source?.recordingVoice ?? false)
     }
 
     /// The work in this process a relaunch would lose and a daemon restart

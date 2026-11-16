@@ -457,6 +457,27 @@ public enum UpdateGate: Equatable {
     }
 }
 
+/// #442: why a dictation press may not START now, in the order the person is told. The reverse of
+/// `VoiceRecording`'s refusal while dictation records: a voice take owns the microphone, and a dictation begun
+/// over it would cut the take short or record into it. Work already running is not asked: the gate guards the start only.
+public enum DictationStartRefusal: Equatable {
+    case updating
+    case voiceTake
+
+    public static func decide(installing: Bool, recordingVoice: Bool) -> DictationStartRefusal? {
+        if !UpdateGate.allowsNewDaemonWork(installing: installing) { return .updating }
+        if recordingVoice { return .voiceTake }
+        return nil
+    }
+
+    public func message(text: (L10nKey) -> String = { $0.text }) -> String {
+        switch self {
+        case .updating: return text(.noticeUpdatingDictation)
+        case .voiceTake: return text(.noticeDictationBlockedVoice)
+        }
+    }
+}
+
 /// Which copy of the app is "the installed one". get.sh installs to
 /// ~/Applications/OxSayDictation.app; a copy run from a download folder or a
 /// disk image is not it, and its own Info.plist says nothing about what the
