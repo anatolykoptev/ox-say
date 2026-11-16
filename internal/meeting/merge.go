@@ -103,26 +103,39 @@ func group(words []stt.Word, speaker string) []Turn {
 	return out
 }
 
-// DropEcho removes "me" turns that repeat the "them" speech around them: on
-// speakers the microphone re-captures the far side, and the recognizer then
-// writes the other person's words twice, once under each name. It returns the
-// turns that remain and how many it dropped, so the caller can record
-// WarnEchoDropped: a dropped turn is otherwise invisible in the transcript.
+// DropEcho removes the echo of the far side from the "me" turns: on speakers
+// the microphone re-captures the far side, and the recognizer then writes the
+// other person's words twice, once under each name. It works on words (see
+// withoutEcho), so the owner's own words next to an echo are kept, and a turn
+// that was nothing but echo disappears. It returns the turns that remain and
+// how many "me" turns it changed (removed or cut down), so the caller can
+// record WarnEchoDropped: a dropped word is otherwise invisible in the
+// transcript.
 func DropEcho(turns []Turn) ([]Turn, int) {
 	out := make([]Turn, 0, len(turns))
-	dropped := 0
+	changed := 0
 	fn := frequentWords(turns)
 	for _, t := range turns {
-		if t.Speaker == SpeakerMe && isEcho(t, turns, fn) {
-			dropped++
+		if t.Speaker != SpeakerMe {
+			out = append(out, t)
 			continue
 		}
-		out = append(out, t)
+		rest, ok := withoutEcho(t, turns, fn)
+		if !ok {
+			out = append(out, t)
+			continue
+		}
+		changed++
+		out = append(out, rest...)
 	}
-	return out, dropped
+	if changed > 0 {
+		sort.SliceStable(out, func(i, j int) bool { return out[i].S < out[j].S })
+	}
+	return out, changed
 }
 
-// isEcho: a "me" turn of at least echoMinWords words is an echo when
+// isEcho: a "me" turn (or a stretch of one, see withoutEcho) of at least
+// echoMinWords words is an echo when
 //  1. echoMatch: at least echoShare of its words and echoContentShare of its
 //     content (non-stopword, and not frequent in this meeting) words are
 //     among the "them" words spoken inside [t.S-echoLatency, t.E+echoLatency]
@@ -149,7 +162,7 @@ func isEcho(t Turn, all []Turn, fn map[string]bool) bool {
 			continue
 		}
 		for _, w := range u.Words {
-			if mid := (w.S + w.E) / 2; mid >= lo && mid <= hi {
+			if mid := wordMid(w); mid >= lo && mid <= hi {
 				near.WriteString(w.W)
 				near.WriteByte(' ')
 			}
