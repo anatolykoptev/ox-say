@@ -261,6 +261,10 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
         Scene(name: "meeting-speakers", section: .meetings, meeting: "m7", tab: .speakers) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "meeting-transcript", section: .meetings, meeting: "m7", tab: .transcript) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "meeting-transcript-only", section: .meetings, meeting: "m3") { PreviewData.make(now: $0, ru: $1) },
+        // A call being recorded: the live captions stand in for the tabs.
+        Scene(name: "meeting-live", section: .meetings, meeting: "live") { PreviewData.liveRecording(now: $0, ru: $1) },
+        Scene(name: "meeting-live-behind", section: .meetings, meeting: "live") { PreviewData.liveRecording(now: $0, ru: $1, behind: true) },
+        Scene(name: "meeting-live-waiting", section: .meetings, meeting: "live") { PreviewData.liveRecording(now: $0, ru: $1, empty: true) },
         Scene(name: "meetings-recording", section: .meetings, meeting: nil) { PreviewData.recording(now: $0, ru: $1) },
         Scene(name: "meetings-empty", section: .meetings, meeting: nil) { empty(PreviewData.make(now: $0, ru: $1)) },
         Scene(name: "meetings-off", section: .meetings, meeting: nil) { off(PreviewData.make(now: $0, ru: $1)) },
