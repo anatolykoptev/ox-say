@@ -144,6 +144,8 @@
 //	OXSAY_FAKE_LLM_OOM          print a Metal/KV allocation failure and exit
 //	                            before /health: "1" fails every spawn, a
 //	                            substring fails only spawns whose -m carries it
+//	OXSAY_FAKE_LLM_OFFLOAD="n/m" print llama.cpp's "offloaded n/m layers to GPU"
+//	                            line (stderr, as the real child's log gets it)
 //	OXSAY_FAKE_LLM_OPEN=1       ignore the key: every route answers without
 //	                            auth, as llama-server does with an empty key
 //	                            file (zero keys = no auth, CORS "*")
@@ -337,6 +339,13 @@ func runFakeLLM(args []string) int {
 	if oom := os.Getenv("OXSAY_FAKE_LLM_OOM"); oom != "" && (oom == "1" || strings.Contains(model, oom)) {
 		fmt.Fprintln(os.Stderr, "llama_kv_cache_init: failed to allocate KV self buffer")
 		return 1
+	}
+	if off := os.Getenv("OXSAY_FAKE_LLM_OFFLOAD"); off != "" {
+		// The format string of llama.cpp's load_tensors, at the pinned commit.
+		n, total, _ := strings.Cut(off, "/")
+		ni, _ := strconv.Atoi(n)
+		ti, _ := strconv.Atoi(total)
+		fmt.Fprintf(os.Stderr, "load_tensors: offloaded %d/%d layers to GPU\n", ni, ti)
 	}
 	delay := envMS("OXSAY_FAKE_START_DELAY_MS")
 	if spawnIndex < loadingSpawns {
