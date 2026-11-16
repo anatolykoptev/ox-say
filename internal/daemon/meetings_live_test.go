@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -483,5 +485,70 @@ func TestLiveDecodesAreOneAtATimeAcrossRecordingsAndRecheckTheHold(t *testing.T)
 	defer mu.Unlock()
 	if calls != 1 {
 		t.Fatalf("%d decodes, want 1: the second must see the dictation that began while it waited", calls)
+	}
+}
+
+// A speech server that never answers must not hold the worker for ever: the decode ends at its deadline, as a
+// refusal, so the chunk is given up after a few tries.
+// Mutation: internal/daemon/meetings_live.go liveDecode, `dctx, cancel := context.WithTimeout(ctx, liveDecodeTimeout)`
+// -> `dctx, cancel := context.WithCancel(ctx)` -> RED (the decode never returns).
+func TestLiveDecodeEndsAtItsDeadlineWhenTheServerNeverAnswers(t *testing.T) {
+	old := liveDecodeTimeout
+	liveDecodeTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { liveDecodeTimeout = old })
+	d, _ := meetingFixture(t, unifiedMemory)
+	hang := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-hang }))
+	t.Cleanup(func() { close(hang); srv.Close() })
+	var released atomic.Int32
+	d.live.server = func(context.Context) (string, func(), error) { return srv.URL, func() { released.Add(1) }, nil }
+	type result struct{ err error }
+	done := make(chan result, 1)
+	go func() { _, err := d.liveDecode(context.Background(), []byte("wav")); done <- result{err} }()
+	select {
+	case r := <-done:
+		if !errors.Is(r.err, meeting.ErrLiveRejected) {
+			t.Fatalf("err = %v, want a refusal (ErrLiveRejected)", r.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the decode is still waiting for a server that never answers")
+	}
+	if released.Load() != 1 {
+		t.Fatalf("the server guard was released %d times, want 1", released.Load())
+	}
+}
+
+// A settings file that cannot be read keeps captions off, even on Apple Silicon: the default would undo an opt-out
+// stored in that very file.
+// Mutation: internal/daemon/meetings_live.go liveEnabled, the `return false` of the error branch -> `return d.liveDefault()` -> RED.
+func TestLiveCaptionsStayOffWhenTheSettingsFileIsUnusable(t *testing.T) {
+	d, _ := meetingFixture(t, unifiedMemory)
+	if err := os.MkdirAll(d.Meet.Store.Root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(d.Meet.Store.Root, meeting.SettingsFile)
+	if err := os.WriteFile(path, []byte(`{"retention_days":15,"live_captions":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if d.liveEnabled() {
+		t.Fatal("captions are on although the settings file (holding an opt-out) cannot be read")
+	}
+	if err := os.WriteFile(path, []byte(`{"retention_days":30}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !d.liveEnabled() {
+		t.Fatal("captions did not come back on the Apple Silicon default once the file is readable")
+	}
+}
+
+// What GET answers can be sent back: live_captions_default is accepted and ignored.
+func TestSettingsPutAcceptsTheGetAnswerBack(t *testing.T) {
+	_, mux := meetingFixture(t, nil)
+	got := call(t, mux, "GET", "/v1/meetings/settings", "").Body.String()
+	if rec := call(t, mux, "PUT", "/v1/meetings/settings", got); rec.Code != http.StatusOK {
+		t.Fatalf("PUT of the GET answer %s = %d %s", got, rec.Code, rec.Body)
+	}
+	if a := settingsOf(t, mux); a.LiveCaptionsDefault {
+		t.Fatal("the default was changed by a PUT that only echoed it")
 	}
 }

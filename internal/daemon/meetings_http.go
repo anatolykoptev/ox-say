@@ -411,6 +411,8 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 	var in struct {
 		RetentionDays *int  `json:"retention_days"`
 		LiveCaptions  *bool `json:"live_captions"`
+		// What GET answers beside the settings: a client that sends the answer back is not refused. Read, never stored.
+		LiveCaptionsDefault *bool `json:"live_captions_default"`
 	}
 	if err := decodeStrict(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anatolykoptev/ox-say/internal/meeting"
@@ -41,8 +42,21 @@ var memoryPressureLevel = readMemoryPressure
 // liveEnabled is whether live captions run for a new recording: the user's choice, or when they never chose, on
 // for Apple Silicon (unified memory) and off elsewhere — a decode on an Intel CPU is 10x slower and is the thing
 // a dictation can wait behind.
+//
+// A settings file that cannot be read keeps captions OFF: the default would silently undo an opt-out stored in the
+// very file that cannot be read. It is logged once, without content, as the retention sweep does.
 func (d *Daemon) liveEnabled() bool {
-	if st, err := d.Meet.Store.LoadSettings(); err == nil && st.LiveCaptions != nil {
+	st, err := d.Meet.Store.LoadSettings()
+	if err != nil {
+		if d.live != nil && !d.live.settingsWarned.Swap(true) {
+			d.log.Warn("meeting: live captions are off, the settings file is unusable", slog.Any("error", err))
+		}
+		return false
+	}
+	if d.live != nil {
+		d.live.settingsWarned.Store(false)
+	}
+	if st.LiveCaptions != nil {
 		return *st.LiveCaptions
 	}
 	return d.liveDefault()
@@ -80,15 +94,30 @@ func (d *Daemon) liveLowPower() bool {
 }
 
 // liveDecode recognizes one chunk on the resident server, with the glossary's boost list like dictation.
+// liveDecodeTimeout bounds one caption's decode: a wedged speech server must not hold the worker, the decode lock
+// and the supervisor's guard for ever. A var so a test can shorten it.
+var liveDecodeTimeout = 30 * time.Second
+
 func (d *Daemon) liveDecode(ctx context.Context, wav []byte) (string, error) {
 	if d.STTSup == nil {
 		return "", errors.New("the speech server is off")
 	}
-	opts := stt.Options{Boost: d.sttBoost(), Server: d.sttServer}
-	res, err := stt.TranscribeWAVViaServer(ctx, wav, opts)
+	server := d.sttServer
+	if d.live != nil && d.live.server != nil {
+		server = d.live.server
+	}
+	dctx, cancel := context.WithTimeout(ctx, liveDecodeTimeout)
+	defer cancel()
+	opts := stt.Options{Boost: d.sttBoost(), Server: server}
+	res, err := stt.TranscribeWAVViaServer(dctx, wav, opts)
 	var rej *stt.ServerRejection
 	if errors.As(err, &rej) {
 		return "", fmt.Errorf("%w: %v", meeting.ErrLiveRejected, err)
+	}
+	if err != nil && ctx.Err() == nil && dctx.Err() != nil {
+		// The deadline of ours: the server took this chunk and never answered. Counted as a refusal, so a chunk that
+		// wedges it is given up after a few tries and the captions move on.
+		return "", fmt.Errorf("%w: no answer within %s", meeting.ErrLiveRejected, liveDecodeTimeout)
 	}
 	if err != nil {
 		return "", err
@@ -105,6 +134,10 @@ type liveManager struct {
 	wg      sync.WaitGroup
 	// decode is the recognizer of the workers; nil is liveDecode (a test puts a fake here).
 	decode func(context.Context, []byte) (string, error)
+	// server is the speech server of the decode; nil is d.sttServer (a test puts a fake here).
+	server func(context.Context) (string, func(), error)
+	// settingsWarned: the unusable-settings warning of liveEnabled was logged and has not been cured since.
+	settingsWarned atomic.Bool
 	// decodeMu is the one decode in flight across every recording (decoder).
 	decodeMu sync.Mutex
 	// lowPower and powerAt cache the Low Power Mode read (liveLowPower), under powerMu.
