@@ -23,8 +23,21 @@ final class SpeakTargetTests: XCTestCase {
     func testAProjectTheDaemonDoesNotHaveIsGone() async {
         let outcome = await SpeakTarget.resolve(id: "C", cached: [job("A")], fetch: fakeDaemon(has: ["A", "B"]))
         XCTAssertEqual(outcome, .gone)
-        let down = await SpeakTarget.resolve(id: "C", cached: [], fetch: { _ in throw StudioError.daemonUnreachable })
-        XCTAssertEqual(down, .gone, "no answer opens nothing")
+    }
+
+    /// A notification clicked while the daemon is briefly down (#513): the project's absence was never established, so the
+    /// id is not dropped. Only a 404 is "gone"; every other failure keeps the id pending for the next list read.
+    func testNoAnswerFromTheDaemonIsNotGone() async {
+        let failures: [(String, StudioError)] = [
+            ("unreachable", .daemonUnreachable), ("timeout", .timedOut), ("500", .refused(status: 500, message: "boom")),
+            ("503", .refused(status: 503, message: "busy")), ("unreadable", .badResponse),
+        ]
+        for (name, failure) in failures {
+            let outcome = await SpeakTarget.resolve(id: "C", cached: [], fetch: { _ in throw failure })
+            XCTAssertEqual(outcome, .unanswered, "\(name): the daemon did not say the project is gone")
+        }
+        let notFound = await SpeakTarget.resolve(id: "C", cached: [], fetch: { _ in throw StudioError.refused(status: 404, message: "no such project") })
+        XCTAssertEqual(notFound, .gone, "a 404 is the daemon's answer that it is gone")
     }
 
     func testAProjectOnTheListNeedsNoRead() async {
@@ -54,5 +67,6 @@ final class SpeakTargetTests: XCTestCase {
         let speak = try source("OxSayDictation/SpeakSource.swift")
         XCTAssertTrue(speak.contains("SpeakTarget.resolve(id: id, cached: cached, fetch: { try await client.voiceover(id: $0) })"))
         XCTAssertTrue(speak.contains("case .gone: self.model.data.speak.pendingProjectID = nil"))
+        XCTAssertTrue(speak.contains("case .unanswered: break"), "no answer leaves the id pending (#513)")
     }
 }
