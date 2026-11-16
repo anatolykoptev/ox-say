@@ -438,7 +438,7 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
         }, sheet: true),
         Scene(name: "voice-design-name-taken", section: .voices, meeting: nil, data: { now, ru in
             designSheet(now, ru) { f in
-                _ = f.submit(taken: []); f.designed(takes(), for: f.generation); _ = f.keep(); f.saveAnswered(.nameTaken)
+                _ = f.submit(taken: []); f.designed(takes(), for: f.generation); _ = f.keep(taken: []); f.saveAnswered(.nameTaken)
             } label: { ru ? "Мой диктор" : "My narrator" }
         }, sheet: true),
         Scene(name: "voice-design-failed", section: .voices, meeting: nil, data: { now, ru in
