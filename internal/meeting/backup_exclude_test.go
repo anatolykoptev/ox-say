@@ -64,4 +64,3 @@ func TestBackupExcludeValueIsABinaryPlistOfBackupd(t *testing.T) {
 		t.Fatalf("length %d, want 61 (tmutil's)", len(v))
 	}
 }
-

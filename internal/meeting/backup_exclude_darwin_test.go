@@ -25,3 +25,20 @@ func TestExcludeFromBackupWritesTheAttributeOnARealDirectory(t *testing.T) {
 		t.Fatalf("attribute value % x, want % x", got[:n], backupExcludeValue)
 	}
 }
+
+// The wiring, with no seam: a real Store marks its real root on Create. This is what the daemon runs.
+// Mutation: store.go ensureRoot, `mark = excludeFromBackup` -> `mark = func(string) error { return nil }` -> RED.
+func TestAStoreCreateMarksItsRealRootExcluded(t *testing.T) {
+	s := newStore(t)
+	if _, _, err := s.Create(Manifest{Title: "x"}, t0); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 128)
+	n, err := unix.Getxattr(s.Root, backupExcludeAttr, got)
+	if err != nil {
+		t.Fatalf("meetings root not marked excluded from backup: %v", err)
+	}
+	if !bytes.Equal(got[:n], backupExcludeValue) {
+		t.Fatalf("attribute value % x", got[:n])
+	}
+}

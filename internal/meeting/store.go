@@ -75,7 +75,7 @@ func (s *Store) Create(m Manifest, now time.Time) (Manifest, string, error) {
 }
 
 // ensureRoot makes the meetings directory (0700) and marks it excluded from backup, so the recordings, transcripts
-// and notes under it never reach a Time Machine disk. Marking is repeated on every call, which also covers a root made
+// and notes under it (transcripts and notes are kept after the audio is swept) never reach a Time Machine disk. Marking is repeated on every call, which also covers a root made
 // by an older version. A failed mark is logged and does not stop the recording: a meeting that cannot be saved is a
 // worse outcome than one that is backed up.
 func (s *Store) ensureRoot() error {
