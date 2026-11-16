@@ -395,3 +395,89 @@ func TestLiveWorkerStartsOnlyWhenEnabledAndStopsWhenSwitchedOff(t *testing.T) {
 	}
 	t.Fatal("turning captions off did not stop the worker")
 }
+
+// Two requests that each change one field cannot overwrite one another with what they read: the retention the user
+// chose decides whether audio is deleted. Many of both run at once; the retention must be the one chosen.
+// Mutation: internal/meeting/retention.go UpdateSettings, delete `s.settingsMu.Lock()` -> RED (the retention
+// reverts to 30 under the live toggles).
+func TestConcurrentSettingsPutsDoNotLoseTheRetention(t *testing.T) {
+	_, mux := meetingFixture(t, nil)
+	if rec := call(t, mux, "PUT", "/v1/meetings/settings", `{"retention_days":90}`); rec.Code != http.StatusOK {
+		t.Fatal(rec.Body)
+	}
+	var wg sync.WaitGroup
+	for i := range 40 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body := `{"live_captions":true}`
+			if i%2 == 1 {
+				body = `{"live_captions":false}`
+			}
+			if rec := call(t, mux, "PUT", "/v1/meetings/settings", body); rec.Code != http.StatusOK {
+				t.Error(rec.Body)
+			}
+		}()
+		if i == 20 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if rec := call(t, mux, "PUT", "/v1/meetings/settings", `{"retention_days":0}`); rec.Code != http.StatusOK {
+					t.Error(rec.Body)
+				}
+			}()
+		}
+	}
+	wg.Wait()
+	if got := settingsOf(t, mux); got.RetentionDays != 0 {
+		t.Fatalf("retention = %d after a concurrent change to never-delete, want 0", got.RetentionDays)
+	}
+}
+
+// Two calls recording at once: their captions are decoded one at a time, so a dictation never waits behind two
+// of them, and a worker that waited for the other's decode asks the hold again once it has the turn.
+// Mutation: internal/daemon/meetings_live.go decoder, delete `m.decodeMu.Lock()` -> RED (two decodes in flight);
+// delete the `if m.d.liveHold() != "" {` block -> RED (a decode runs on a hold that began while it waited).
+func TestLiveDecodesAreOneAtATimeAcrossRecordingsAndRecheckTheHold(t *testing.T) {
+	liveQuiet(t)
+	d, _ := meetingFixture(t, unifiedMemory)
+	var mu sync.Mutex
+	inFlight, maxInFlight, calls := 0, 0, 0
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{})
+	d.live.decode = func(context.Context, []byte) (string, error) {
+		mu.Lock()
+		inFlight++
+		calls++
+		maxInFlight = max(maxInFlight, inFlight)
+		mu.Unlock()
+		entered <- struct{}{}
+		<-release
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		return "x", nil
+	}
+	decode := d.live.decoder()
+	run := func() { _, _ = decode(context.Background(), nil) }
+	time.Sleep(interactiveQuiet + 30*time.Millisecond)
+	go run()
+	<-entered
+	second := make(chan struct{})
+	go func() { run(); close(second) }()
+	time.Sleep(100 * time.Millisecond) // the second waits for the turn
+	mu.Lock()
+	if maxInFlight != 1 {
+		t.Fatalf("%d decodes in flight at once", maxInFlight)
+	}
+	mu.Unlock()
+	end := d.beginInteractive() // a dictation begins while the second one waits
+	close(release)
+	<-second
+	end()
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("%d decodes, want 1: the second must see the dictation that began while it waited", calls)
+	}
+}

@@ -420,25 +420,27 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusBadRequest, "retention_days or live_captions is required")
 		return
 	}
-	// The base is the file as stored, not Settings(): that shows the default when the file is unusable, and
-	// writing it back would restart a retention sweep that is paused on purpose.
-	cur, err := d.Meet.Store.LoadSettings()
-	if err != nil {
-		// An explicit retention choice still repairs an unusable file, as it always did; a live-captions-only
-		// change has no valid retention to write beside it, so it is refused.
-		if in.RetentionDays == nil {
-			d.writeMeetingErr(w, err)
-			return
+	// One read-modify-write (UpdateSettings): the base is the file as stored, not Settings(), which shows the default
+	// when the file is unusable — writing that back would restart a retention sweep that is paused on purpose — and a
+	// concurrent request for the other field cannot be overwritten by what this one read.
+	err := d.Meet.Store.UpdateSettings(func(cur meeting.Settings, loadErr error) (meeting.Settings, error) {
+		if loadErr != nil {
+			// An explicit retention choice still repairs an unusable file, as it always did; a live-captions-only
+			// change has no valid retention to write beside it, so it is refused.
+			if in.RetentionDays == nil {
+				return cur, loadErr
+			}
+			cur = meeting.Settings{}
 		}
-		cur = meeting.Settings{}
-	}
-	if in.RetentionDays != nil {
-		cur.RetentionDays = *in.RetentionDays
-	}
-	if in.LiveCaptions != nil {
-		cur.LiveCaptions = in.LiveCaptions
-	}
-	if err := d.Meet.Store.SetSettings(cur); err != nil {
+		if in.RetentionDays != nil {
+			cur.RetentionDays = *in.RetentionDays
+		}
+		if in.LiveCaptions != nil {
+			cur.LiveCaptions = in.LiveCaptions
+		}
+		return cur, nil
+	})
+	if err != nil {
 		if errors.Is(err, os.ErrInvalid) {
 			writeErr(w, http.StatusBadRequest, "retention_days must be one of 0, 7, 30, 90")
 			return

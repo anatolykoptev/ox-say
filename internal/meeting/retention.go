@@ -65,6 +65,20 @@ func (s *Store) Settings() Settings {
 	return st
 }
 
+// UpdateSettings changes the settings file as one step: change gets what is stored (or why it cannot be read) and
+// returns what to store. Two requests that each change a different field cannot overwrite one another with the
+// stale value they read: a retention the user picked is the setting that decides whether audio is deleted.
+func (s *Store) UpdateSettings(change func(cur Settings, loadErr error) (Settings, error)) error {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+	cur, err := s.LoadSettings()
+	next, cerr := change(cur, err)
+	if cerr != nil {
+		return cerr
+	}
+	return s.SetSettings(next)
+}
+
 // SetSettings saves the settings; a retention outside RetentionChoices is refused.
 func (s *Store) SetSettings(st Settings) error {
 	if !validRetention(st.RetentionDays) {

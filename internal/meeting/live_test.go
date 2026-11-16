@@ -540,3 +540,35 @@ func TestFinalPassIsTheSameWithLiveCaptionsOn(t *testing.T) {
 		}
 	}
 }
+
+// A write that fails halfway (the disk fills) leaves part of a line; the retry must not glue itself to it, or the
+// caption is lost although the worker believes it wrote it.
+// Mutation: internal/meeting/live.go Append, delete the `if l.torn {` prefix block -> RED (the retried caption is
+// not readable).
+func TestLiveLogRetryAfterAPartialWriteIsNotGluedToThePart(t *testing.T) {
+	dir := t.TempDir()
+	l, _ := OpenLiveLog(dir)
+	if _, err := l.Append(LiveMe, 0, 1, "before"); err != nil {
+		t.Fatal(err)
+	}
+	fail := true
+	l.write = func(f *os.File, b []byte) (int, error) {
+		if fail {
+			n, _ := f.Write(b[:len(b)/2])
+			return n, errors.New("no space left on device")
+		}
+		return f.Write(b)
+	}
+	if _, err := l.Append(LiveThem, 1, 2, "lost to a full disk"); err == nil {
+		t.Fatal("a failed write reported success")
+	}
+	fail = false
+	seg, err := l.Append(LiveThem, 1, 2, "retried")
+	if err != nil || seg.Seq != 2 {
+		t.Fatalf("retry: seq %d err %v, want the same seq 2 the failed one had", seg.Seq, err)
+	}
+	got, _, _ := ReadLive(dir, 0, 0)
+	if len(got) != 2 || got[1].Text != "retried" || got[1].Seq != 2 {
+		t.Fatalf("captions = %+v, want before and retried, seq 1 and 2", got)
+	}
+}

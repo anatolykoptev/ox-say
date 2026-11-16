@@ -49,13 +49,18 @@ type LiveLog struct {
 	mu   sync.Mutex
 	next int
 	ends map[string]float64
+	// torn: a failed write may have left part of a line behind. The next append starts on a fresh line, so the
+	// part stays one line that does not parse (readers skip it) and never glues itself to a caption.
+	torn bool
+	// write is the append; a test seam (a disk that fills halfway through a line).
+	write func(f *os.File, b []byte) (int, error)
 }
 
 // OpenLiveLog opens the meeting's live file for appending. A daemon that restarted mid-call finds what it wrote:
 // the next Seq continues the file and Resume tells where each channel was read to. A torn last line (no newline: a
 // crash mid-write) is cut off, so the next append cannot glue itself to it.
 func OpenLiveLog(dir string) (*LiveLog, error) {
-	l := &LiveLog{path: filepath.Join(dir, LiveJSONL), next: 1, ends: map[string]float64{}}
+	l := &LiveLog{path: filepath.Join(dir, LiveJSONL), next: 1, ends: map[string]float64{}, write: (*os.File).Write}
 	raw, err := os.ReadFile(l.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return l, nil
@@ -96,13 +101,22 @@ func (l *LiveLog) Append(channel string, start, end float64, text string) (LiveS
 	if err != nil {
 		return LiveSegment{}, fmt.Errorf("meeting: live captions: %w", err)
 	}
-	_, werr := f.Write(append(line, '\n'))
+	out := append(line, '\n')
+	if l.torn {
+		out = append([]byte{'\n'}, out...)
+	}
+	n, werr := l.write(f, out)
 	if cerr := f.Close(); werr == nil {
 		werr = cerr
 	}
+	if werr != nil && n == len(out) {
+		werr = nil // the whole line is on disk; only the close complained
+	}
 	if werr != nil {
+		l.torn = l.torn || n > 0
 		return LiveSegment{}, fmt.Errorf("meeting: live captions: %w", werr)
 	}
+	l.torn = false
 	l.next++
 	l.ends[channel] = max(l.ends[channel], seg.End)
 	return seg, nil
@@ -224,6 +238,10 @@ func nextLiveChunk(s []int16, base int) (consumed int, span Span, ok bool) {
 // error). Anything else — the recognizer is off, cooling down, unreachable — says nothing about the audio, and the
 // worker keeps the chunk and tries again later.
 var ErrLiveRejected = errors.New("meeting: the recognizer refused this audio")
+
+// ErrLiveHeld is what Decode answers when, at the moment it was about to run, a hold had begun (a dictation, memory
+// pressure): nothing was decoded, nothing is wrong, and the chunk stays for the next look.
+var ErrLiveHeld = errors.New("meeting: live captions are held")
 
 // LiveDeps is what a LiveWorker needs from outside.
 type LiveDeps struct {
@@ -408,6 +426,8 @@ func (w *LiveWorker) decode(ctx context.Context, c liveCand) time.Duration {
 	switch {
 	case ctx.Err() != nil:
 		return 0
+	case errors.Is(err, ErrLiveHeld):
+		return w.d.Tick
 	case errors.Is(err, ErrLiveRejected):
 		if w.rejectedCh != c.ch.code || w.rejectedAt != c.span.From {
 			w.rejectedCh, w.rejectedAt, w.rejected = c.ch.code, c.span.From, 0

@@ -32,7 +32,9 @@ type Store struct {
 	inRetire  func()                              // test seam: Retire, under the lock, after the check and before the renames
 	afterLock func()                              // test seam: Retire, after the lock is released and before the unlink
 	mu        sync.Mutex
-	warned    sync.Map // tombstone name -> struct{}: those whose failed unlink was logged
+	// settingsMu makes a change of settings.json one read-modify-write (UpdateSettings).
+	settingsMu sync.Mutex
+	warned     sync.Map // tombstone name -> struct{}: those whose failed unlink was logged
 }
 
 // Dir is the directory of meeting id; the id must be one NewID made.

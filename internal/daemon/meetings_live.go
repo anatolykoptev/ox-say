@@ -105,6 +105,8 @@ type liveManager struct {
 	wg      sync.WaitGroup
 	// decode is the recognizer of the workers; nil is liveDecode (a test puts a fake here).
 	decode func(context.Context, []byte) (string, error)
+	// decodeMu is the one decode in flight across every recording (decoder).
+	decodeMu sync.Mutex
 	// lowPower and powerAt cache the Low Power Mode read (liveLowPower).
 	lowPower bool
 	powerAt  time.Time
@@ -115,11 +117,22 @@ type liveEntry struct {
 	cancel context.CancelFunc
 }
 
+// decoder is the Decode of every worker: one decode at a time across all recordings (two calls recording at once
+// must not queue two captions on the server ahead of a dictation), and the hold asked again once this one has the
+// turn — a worker that waited for another's decode would otherwise decode on a hold it never saw.
 func (m *liveManager) decoder() func(context.Context, []byte) (string, error) {
-	if m.decode != nil {
-		return m.decode
+	decode := m.decode
+	if decode == nil {
+		decode = m.d.liveDecode
 	}
-	return m.d.liveDecode
+	return func(ctx context.Context, wav []byte) (string, error) {
+		m.decodeMu.Lock()
+		defer m.decodeMu.Unlock()
+		if m.d.liveHold() != "" {
+			return "", meeting.ErrLiveHeld
+		}
+		return decode(ctx, wav)
+	}
 }
 
 func newLiveManager(d *Daemon) *liveManager {
