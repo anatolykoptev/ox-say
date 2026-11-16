@@ -144,7 +144,7 @@ final class SpeakSource {
 
     /// Opens a voiceover a notification or the menu names. The cached list is not asked whether it exists (it predates a project
     /// that just finished); the daemon is, by id (`SpeakTarget`). Found: it joins the list and opens, as soon as a take being made
-    /// allows. Not found: it is dropped and the selection stays.
+    /// allows. Not found (404): it is dropped and the selection stays. No answer: it stays pending for the next list read.
     func showProject(_ id: String) {
         guard !id.isEmpty else { return }
         model.data.speak.pendingProjectID = id
@@ -162,6 +162,7 @@ final class SpeakSource {
                 self.freshTarget = job
                 self.adoptFreshTarget()
             case .gone: self.model.data.speak.pendingProjectID = nil
+            case .unanswered: break
             }
         }
     }
