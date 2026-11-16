@@ -29,7 +29,6 @@ type Store struct {
 	newID     func(time.Time) string              // test seam; nil means vproject.NewID
 	removeAll func(string) error                  // test seam; nil means os.RemoveAll
 	saveFn    func(dir string, m *Manifest) error // test seam; nil means s.save
-	exclude   func(path string) error             // test seam; nil means excludeFromBackup
 	inRetire  func()                              // test seam: Retire, under the lock, after the check and before the renames
 	afterLock func()                              // test seam: Retire, after the lock is released and before the unlink
 	mu        sync.Mutex
@@ -54,7 +53,7 @@ func (s *Store) Create(m Manifest, now time.Time) (Manifest, string, error) {
 	if m.Started.IsZero() {
 		m.Started = now
 	}
-	if err := s.ensureRoot(); err != nil {
+	if err := os.MkdirAll(s.Root, 0o700); err != nil {
 		return Manifest{}, "", fmt.Errorf("meeting: %w", err)
 	}
 	dir, err := s.makeDir(&m, now)
@@ -72,24 +71,6 @@ func (s *Store) Create(m Manifest, now time.Time) (Manifest, string, error) {
 		return Manifest{}, "", err
 	}
 	return m, dir, nil
-}
-
-// ensureRoot makes the meetings directory (0700) and marks it excluded from backup, so the recordings, transcripts
-// and notes under it (transcripts and notes are kept after the audio is swept) never reach a Time Machine disk. Marking is repeated on every call, which also covers a root made
-// by an older version. A failed mark is logged and does not stop the recording: a meeting that cannot be saved is a
-// worse outcome than one that is backed up.
-func (s *Store) ensureRoot() error {
-	if err := os.MkdirAll(s.Root, 0o700); err != nil {
-		return err
-	}
-	mark := s.exclude
-	if mark == nil {
-		mark = excludeFromBackup
-	}
-	if err := mark(s.Root); err != nil {
-		s.log().Warn("meeting: could not exclude the meetings directory from backup", "err", err)
-	}
-	return nil
 }
 
 // createTries bounds the fresh-id retries when an id's directory exists.

@@ -50,6 +50,41 @@ final class MeetingDefaultFolderTests: XCTestCase {
         XCTAssertEqual(folder.path, local)
     }
 
+    /// The default existence check tells "absent" from "cannot be read": a path whose parent denies the lookup (what a
+    /// folder under ~/Documents without consent does) is unknown (nil), a missing one in a readable parent is false.
+    /// Mutation: MeetingSettings.pathExists, `default: return nil` -> `default: return false` -> RED.
+    func testAnUnreadablePathIsUnknownAndAMissingOneIsAbsent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("i532d-\(UUID().uuidString)", isDirectory: true)
+        let locked = root.appendingPathComponent("locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked.appendingPathComponent("ox-say Meetings"), withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: locked.path)
+            try? FileManager.default.removeItem(at: locked.appendingPathComponent("ox-say Meetings"))
+            try? FileManager.default.removeItem(at: locked)
+            try? FileManager.default.removeItem(at: root)
+        }
+        XCTAssertNil(MeetingSettings.pathExists(locked.appendingPathComponent("ox-say Meetings")),
+                     "a path that cannot be looked at is unknown, not absent")
+        XCTAssertEqual(MeetingSettings.pathExists(root.appendingPathComponent("nothing here")), false, "missing from a readable parent")
+        XCTAssertEqual(MeetingSettings.pathExists(root), true)
+    }
+
+    /// An existing user whose Documents cannot be looked at (TCC) keeps the Documents default, even on a synced Mac:
+    /// flipping them to Application Support would hide their notes. Unknown is not absent.
+    /// Mutation: MeetingSettings.folder, delete the `if inDocuments == nil { return documents }` line -> RED.
+    func testADocumentsFolderThatCannotBeReadKeepsTheDocumentsDefault() {
+        let unknownDocuments: (URL) -> Bool? = { $0.path == self.documents ? nil : false }
+        XCTAssertEqual(MeetingSettings.folder(defaults(), home: home, probe: syncedDocuments, exists: unknownDocuments).path, documents)
+    }
+
+    /// ...but a user already on the Application Support folder stays there, whatever Documents answers.
+    /// Mutation: MeetingSettings.folder, move the `if inDocuments == nil` line above `if exists(local) == true` -> RED.
+    func testAnExistingLocalFolderWinsOverAnUnreadableDocuments() {
+        let exists: (URL) -> Bool? = { $0.path == self.documents ? nil : $0.path == self.local }
+        XCTAssertEqual(MeetingSettings.folder(defaults(), home: home, probe: syncedDocuments, exists: exists).path, local)
+    }
+
     /// An explicit pick wins over both, synced or not.
     /// Mutation: MeetingSettings.folder, move the stored-pick `guard` below the default logic -> RED.
     func testAPickedFolderWinsEvenWhenItSyncs() {

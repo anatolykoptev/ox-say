@@ -728,8 +728,8 @@ func (r *Runner) transcribe(ctx context.Context, id string, sl *stageLog) error 
 		done(stageFailed, errClass(err))
 		return err
 	}
-	work := filepath.Join(dir, WorkDir)
-	if err := os.MkdirAll(work, 0o700); err != nil {
+	work, err := MakeWorkDir(dir)
+	if err != nil {
 		done(stageFailed, errClass(err))
 		return err
 	}

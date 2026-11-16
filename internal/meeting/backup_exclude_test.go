@@ -1,49 +1,69 @@
 package meeting
 
 import (
+	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/anatolykoptev/ox-say/internal/stt"
 )
 
-// Creating a meeting marks the meetings directory excluded from backup: the audio is private and is deleted on a
-// schedule, so it must not stay on a backup disk. The mark is on the root, which covers every meeting under it.
-// Mutation: store.go ensureRoot, delete the `mark(s.Root)` call -> RED.
-func TestCreateExcludesTheMeetingsRootFromBackup(t *testing.T) {
-	s := newStore(t)
+// Only audio leaves the backup (the files retention deletes, retiredNames): the work directory is marked when it is
+// made, and nothing else is. The transcript, notes and manifest stay in the user's own backup.
+func recordExcluded(t *testing.T) *[]string {
+	t.Helper()
 	var marked []string
-	s.exclude = func(p string) error { marked = append(marked, p); return nil }
-	if _, _, err := s.Create(Manifest{Title: "x"}, t0); err != nil {
+	prev := excludeBackup
+	excludeBackup = func(p string) error { marked = append(marked, p); return nil }
+	t.Cleanup(func() { excludeBackup = prev })
+	return &marked
+}
+
+// MakeWorkDir marks the directory it makes, and only that.
+// Mutation: backup_exclude.go MakeWorkDir, delete the `excludeBackup(work)` call -> RED.
+func TestMakeWorkDirMarksTheWorkDirectoryAndNothingElse(t *testing.T) {
+	marked := recordExcluded(t)
+	dir := t.TempDir()
+	work, err := MakeWorkDir(dir)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(marked) != 1 || marked[0] != s.Root {
-		t.Fatalf("marked %v, want exactly the root %q", marked, s.Root)
+	if want := filepath.Join(dir, WorkDir); work != want || len(*marked) != 1 || (*marked)[0] != want {
+		t.Fatalf("work %q, marked %v, want exactly %q", work, *marked, want)
+	}
+	if st, err := os.Stat(work); err != nil || st.Mode().Perm() != 0o700 {
+		t.Fatalf("work dir = %v, %v; want mode 0700", st, err)
 	}
 }
 
-// The settings write makes the root too (a first run can set retention before any meeting), and marks it.
-// Mutation: retention.go SetSettings, `s.ensureRoot()` -> `os.MkdirAll(s.Root, 0o700)` -> RED.
-func TestSetSettingsExcludesTheMeetingsRootFromBackup(t *testing.T) {
-	s := newStore(t)
-	var marked []string
-	s.exclude = func(p string) error { marked = append(marked, p); return nil }
-	if err := s.SetSettings(Settings{RetentionDays: DefaultRetention}); err != nil {
-		t.Fatal(err)
-	}
-	if len(marked) != 1 || marked[0] != s.Root {
-		t.Fatalf("marked %v, want exactly the root %q", marked, s.Root)
+// A mark that fails must not stop the transcription.
+// Mutation: backup_exclude.go MakeWorkDir, `return "", err` in place of the logged warning -> RED.
+func TestAFailedWorkDirMarkDoesNotRefuseTheDirectory(t *testing.T) {
+	prev := excludeBackup
+	excludeBackup = func(string) error { return errors.New("xattr not supported here") }
+	t.Cleanup(func() { excludeBackup = prev })
+	if _, err := MakeWorkDir(t.TempDir()); err != nil {
+		t.Fatalf("MakeWorkDir refused the directory over a failed backup mark: %v", err)
 	}
 }
 
-// A mark that fails must not stop the recording.
-// Mutation: store.go ensureRoot, `return err` after a failed mark -> RED.
-func TestAFailedBackupMarkDoesNotRefuseTheMeeting(t *testing.T) {
-	s := newStore(t)
-	s.exclude = func(string) error { return errors.New("xattr not supported here") }
-	if _, dir, err := s.Create(Manifest{Title: "x"}, t0); err != nil {
-		t.Fatalf("Create refused the meeting over a failed backup mark: %v", err)
-	} else if _, err := os.Stat(dir); err != nil {
-		t.Fatal(err)
+// The runner's call site: transcribing a meeting makes work/ through MakeWorkDir, so the mark is on the directory the
+// clips are written to. A failing engine keeps work/ on disk. Neither the meetings root nor the meeting directory is
+// marked: those hold the transcript and notes the user keeps.
+// Mutation: runner.go transcribe, `work, err := MakeWorkDir(dir)` -> `work := filepath.Join(dir, WorkDir)` with an
+// `os.MkdirAll(work, 0o700)` -> RED.
+func TestTranscribingMarksTheWorkDirectoryExcluded(t *testing.T) {
+	marked := recordExcluded(t)
+	f := newFixture(t)
+	f.sleeps()
+	f.r.Transcribe = func(context.Context, string) (*stt.Result, error) { return nil, errors.New("engine crashed") }
+	id := f.start(t, 20, 0, 5000, false)
+	dir, _ := f.r.Store.Dir(id)
+	_ = f.r.Process(context.Background(), id)
+	if want := filepath.Join(dir, WorkDir); len(*marked) != 1 || (*marked)[0] != want {
+		t.Fatalf("marked %v, want exactly %q", *marked, want)
 	}
 }
 

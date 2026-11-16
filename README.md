@@ -225,7 +225,7 @@ never removed for you (see [Privacy](#privacy)). Undo the MCP registration with 
   (`~/Documents/ox-say Meetings` by default; `~/Library/Application Support/ox-say Meetings` when
   `~/Documents` syncs to iCloud and no notes folder exists yet). A notes folder inside an iCloud-synced location —
   `~/Documents` while "Desktop & Documents" sync is on — is uploaded by macOS, and the app warns
-  about it in Settings. The `meetings` directory is excluded from Time Machine backups. Voiceovers are written to `~/Movies/ox-say` unless you name another folder. Logs are in
+  about it in Settings. The audio of a meeting (the two channel files and the scratch directory) is excluded from Time Machine backups, because it is deleted after the retention period; transcripts and notes are not. Voiceovers are written to `~/Movies/ox-say` unless you name another folder. Logs are in
   `~/Library/Logs/ox-say`. Dictated text is held in memory only and never written to disk.
 - **The browser address.** To tell a Meet call from other tabs, the app reads the address of the active tab in Chrome,
   Brave, Arc or Edge. It stays on the Mac.

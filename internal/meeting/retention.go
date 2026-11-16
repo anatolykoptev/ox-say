@@ -66,7 +66,7 @@ func (s *Store) SetSettings(st Settings) error {
 	if !validRetention(st.RetentionDays) {
 		return fmt.Errorf("meeting: retention of %d days is not one of %v: %w", st.RetentionDays, RetentionChoices, os.ErrInvalid)
 	}
-	if err := s.ensureRoot(); err != nil {
+	if err := os.MkdirAll(s.Root, 0o700); err != nil {
 		return err
 	}
 	raw, _ := json.Marshal(st)

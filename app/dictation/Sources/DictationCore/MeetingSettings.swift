@@ -81,16 +81,33 @@ public enum MeetingSettings {
     /// is `~/Library/Application Support/ox-say Meetings` instead, a place iCloud never reads. A default folder that
     /// already exists is kept, whichever of the two it is: moving a person's existing notes is not this function's
     /// call, and the Settings warning covers that case. The answer therefore stays put once a folder is in use, even
-    /// if the sync setting is flipped later.
+    /// if the sync setting is flipped later. When the Documents folder cannot be looked at (no access yet), `exists`
+    /// answers nil and the default stays `~/Documents/...` unless the Application Support folder is already in use.
     public static func folder(_ d: UserDefaults, home: URL = FileManager.default.homeDirectoryForCurrentUser,
                               probe: ICloudSync.Probe = ICloudSync.probe,
-                              exists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }) -> URL {
+                              exists: (URL) -> Bool? = MeetingSettings.pathExists) -> URL {
         if let path = d.string(forKey: folderKey), path.hasPrefix("/") { return URL(fileURLWithPath: path, isDirectory: true) }
         let documents = home.appendingPathComponent("Documents/ox-say Meetings", isDirectory: true)
         let local = home.appendingPathComponent("Library/Application Support/ox-say Meetings", isDirectory: true)
-        if exists(documents) { return documents }
-        if exists(local) { return local }
+        let inDocuments = exists(documents)
+        if inDocuments == true { return documents }
+        if exists(local) == true { return local }
+        // The Documents folder could not be looked at (macOS withholds it without the user's consent): the user's notes
+        // may well be in it, so today's default stands instead of moving them to the other folder.
+        if inDocuments == nil { return documents }
         return ICloudSync.syncs(documents, home: home, probe: probe) ? local : documents
+    }
+
+    /// Whether `url` exists: true or false when the system says so, nil when it cannot be looked at (EPERM or EACCES: a
+    /// folder under `~/Documents` without the user's consent, TCC). `fileExists` answers false for both "absent" and
+    /// "cannot look" and cannot tell them apart, which would read an existing user's folder as "no folder yet".
+    public static func pathExists(_ url: URL) -> Bool? {
+        var info = stat()
+        if lstat(url.path, &info) == 0 { return true }
+        switch errno {
+        case ENOENT, ENOTDIR: return false
+        default: return nil
+        }
     }
 
     public static func setFolder(_ url: URL, _ d: UserDefaults) { d.set(url.path, forKey: folderKey) }
