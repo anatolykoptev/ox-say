@@ -12,6 +12,9 @@ struct LiveCaptionsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Whether the end of the list is on screen: the list follows new lines only then.
     @State private var atBottom = true
+    /// A new line pushes the end of the list off screen for a moment before the scroll brings it back; that
+    /// disappearance is the list growing, not the reader leaving, and must not stop the following.
+    @State private var settling = false
     private let bottomID = "live-bottom"
 
     private var meName: String { ownerName.isEmpty ? L10nKey.meetingSpeakerYou.text : ownerName }
@@ -52,14 +55,17 @@ struct LiveCaptionsView: View {
                     // row leaving and entering the screen, which is all this needs (macOS 14 has no scroll-offset API).
                     Color.clear.frame(height: 1).id(bottomID)
                         .onAppear { atBottom = true }
-                        .onDisappear { atBottom = false }
+                        .onDisappear { if !settling { atBottom = false } }
                 }
                 .padding(.vertical, 18).padding(.horizontal, 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .defaultScrollAnchor(.bottom)
             .onChange(of: feed.captions.count) { old, new in
-                if new > old, atBottom { scrollToBottom(proxy) }
+                guard new > old, atBottom else { return }
+                settling = true
+                scrollToBottom(proxy)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { settling = false }
             }
             .overlay(alignment: .bottom) {
                 if !atBottom {
