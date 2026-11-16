@@ -87,6 +87,11 @@ jobs:
       - name: wav reader test
         run: c++ -std=c++17 -O1 -Wall -Wextra -Werror -o "$RUNNER_TEMP/wav-reader-test" engine/common/wav_reader_test.cpp && "$RUNNER_TEMP/wav-reader-test"
 
+      # lag.h (ox-aec's windowed cross-correlation lag estimation) is pure C++17; the end-to-end
+      # fixture (engine/aec/test_cli.py) needs the built engine, so only the estimator gates here.
+      - name: lag test
+        run: c++ -std=c++17 -O1 -Wall -Wextra -Werror -o "$RUNNER_TEMP/lag-test" engine/aec/lag_test.cpp && "$RUNNER_TEMP/lag-test"
+
       # sign-release.sh's stapler staple/validate retry helper, against a fake
       # xcrun; needs only bash.
       - name: notary helper test

@@ -76,7 +76,7 @@ check_help_flags() {
 write_pins_stamp() {
     local src=$1 out=$2 prefixes="" bin p
     [ -f "$src" ] || { echo "engine/lib-check.sh: $src is missing; cannot stamp the pins" >&2; return 1; }
-    for bin in tts-server ox-stt ox-align ox-llm ox-diar audiocpp_server; do
+    for bin in tts-server ox-stt ox-align ox-llm ox-diar audiocpp_server ox-aec; do
         [ -f "$out/$bin" ] || continue
         case $bin in
             tts-server) p="QWENTTS|GGML" ;;
@@ -84,6 +84,7 @@ write_pins_stamp() {
             ox-llm) p="LLAMACPP" ;;
             ox-diar) p="DIAR|FLUIDAUDIO" ;;
             audiocpp_server) p="AUDIOCPP" ;;
+            ox-aec) p="WEBRTC_APM" ;;
         esac
         prefixes="${prefixes:+$prefixes|}$p"
     done

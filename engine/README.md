@@ -55,6 +55,25 @@ metallib build is skipped, says so on one line, and the engines still embed
 their sources. `OX_SAY_METAL_EMBED=1` skips the metallib build even when the
 toolchain is present (A/B tests).
 
+## ox-aec (meeting echo cancellation)
+
+A one-shot CLI that removes speaker echo from a meeting's microphone channel before
+transcription: `ox-aec --capture me.pcm --render them.pcm --out me.aec.pcm [--report report.json]`.
+Both inputs are raw s16le mono 16 kHz on one timeline; the output stays on the capture timeline —
+same length, same index = same instant — with any unprocessed capture tail passed through.
+
+It is the only engine not built with CMake: `build.sh` runs freedesktop's
+webrtc-audio-processing (`WEBRTC_APM_*` pins) through its own Meson build —
+`--default-library=static`, abseil forced to the bundled wrap subproject
+(`--wrap-mode=forcefallback`, otherwise pkg-config picks a shared system abseil) — and links the
+single `libwebrtc-audio-processing-2.a` it produces. Inside, `lag.h` estimates the render↔capture
+lag per 10 s window by cross-correlation over voiced render (search ±500 ms), the capture is fed
+to `ProcessStream` shifted so the render leads the echo by 15 ms (`set_stream_delay_ms` gets that
+margin), and AEC3 does the cancellation at 160-sample frames. A wholly silent render copies the
+capture through and the report says `"skipped":"no_render"`. `lag_test.cpp` runs in the engine
+gate like the other pure-C++17 header tests; `test_cli.py` is the end-to-end fixture (synthetic
+echo, ERLE assertions) and needs the built binary.
+
 ## ox-diar (speaker diarization)
 
 A one-shot CLI that tells the voices of one recording apart: `ox-diar <pcm16k-mono-s16le> <out.json> --models DIR`,
