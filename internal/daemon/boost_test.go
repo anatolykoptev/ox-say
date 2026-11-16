@@ -1,10 +1,12 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -279,4 +281,59 @@ func TestListIsDerivedAtStart(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("no boost list was derived at daemon start")
+}
+
+// A glossary whose list does not fit the wire budget loses its oldest terms; the daemon says how many (a count,
+// never the terms) so a long glossary is not silently half-boosted.
+// Mutation: boost.go deriveBoost, drop the Dropped() warning -> RED.
+func TestOverBudgetListIsReportedByCount(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemonSTT(t, dir, func(c *config.Config) { c.STTBoostAlpha = 2 }, nil, nil)
+	var buf bytes.Buffer
+	d.log = slog.New(slog.NewTextHandler(&buf, nil))
+	letters := "абвгдежзиклмнопрстуф"
+	for i := 0; i < 150; i++ {
+		heard := "звучание" + string([]rune(letters)[i/20]) + string([]rune(letters)[i%20]) + "ааааааааааааааа"
+		approvedPair(t, d, heard, fmt.Sprintf("Name%c%cxxxxxxxxxxxxxxxxxxxx", 'a'+rune(i/20), 'a'+rune(i%20)))
+	}
+	d.refreshBoost()
+	b := d.sttBoost()
+	n := b.Dropped()
+	if n == 0 || len(b.Terms) != 150 {
+		t.Fatalf("setup: %d terms, %d dropped; the list must exceed the budget", len(b.Terms), n)
+	}
+	got := buf.String()
+	if !strings.Contains(got, fmt.Sprintf("dropped=%d", n)) {
+		t.Fatalf("log = %q, want dropped=%d", got, n)
+	}
+	if strings.Contains(got, "Name") || strings.Contains(got, "звучание") {
+		t.Fatalf("terms reached the log: %q", got)
+	}
+}
+
+// The version-skew warning of the unboosted retry reaches the DAEMON's log, not the process default: Transcribe
+// hands its logger to stt. Terms are never in it.
+// Mutation: transcribe.go, drop `Log: d.log` from the stt.Options -> RED.
+func TestUnboostedRetryReachesDaemonLog(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemonSTT(t, dir, func(c *config.Config) { c.STTBoostAlpha = 2 }, nil, nil)
+	var buf bytes.Buffer
+	d.log = slog.New(slog.NewTextHandler(&buf, nil))
+	sttFake(t, d, dir, false) // no resident server: the per-call CLI path
+	approvedPair(t, d, "оксей", "OxSay")
+	d.refreshBoost()
+	t.Setenv("OXSAY_FAKE_STT_REJECT_TERMS", "1")
+	wav := testutil.WriteTinyWAV(t, dir, "in.wav")
+	if _, err := d.Transcribe(context.Background(), TranscribeInput{AudioPath: wav}); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "without the glossary list") {
+		t.Fatalf("daemon log = %q, want the version-skew warning", got)
+	}
+	if strings.Contains(got, "OxSay") || strings.Contains(got, "оксей") {
+		t.Fatalf("a term reached the log: %q", got)
+	}
 }

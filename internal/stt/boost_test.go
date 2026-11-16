@@ -1,10 +1,12 @@
 package stt
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -146,5 +148,64 @@ func TestCLIRetriesUnboostedOnUsageError(t *testing.T) {
 	runs := sttRuns(t, log)
 	if len(runs) != 2 || !hasArg(runs[0].args, "--terms-stdin") || hasArg(runs[1].args, "--terms-stdin") || hasArg(runs[1].args, "--boost-alpha") {
 		t.Fatalf("runs = %+v, want one boosted attempt then one without the flags", runs)
+	}
+}
+
+// The usage-error retry says so, once per process, and never prints a term. An engine older than the daemon is
+// otherwise invisible: every dictation silently loses its glossary list.
+// Mutation: stt.go, never warn in the usage-error retry -> RED.
+func TestCLIUnboostedRetryIsLogged(t *testing.T) {
+	var buf bytes.Buffer
+	dir := t.TempDir()
+	opts, _ := fakeOpts(t, dir)
+	opts.Log = slog.New(slog.NewTextHandler(&buf, nil))
+	t.Setenv("OXSAY_FAKE_STT_REJECT_TERMS", "1")
+	src := testutil.WriteTinyWAV(t, dir, "in.wav")
+	opts.Boost = testBoost
+	for i := 0; i < 2; i++ {
+		if _, err := Transcribe(context.Background(), src, opts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := buf.String()
+	if strings.Count(got, "without the glossary list") != 1 {
+		t.Fatalf("log = %q, want the retry reported exactly once", got)
+	}
+	for _, term := range []string{"OxSay", "Окс", "Devin"} {
+		if strings.Contains(got, term) {
+			t.Fatalf("a term reached the log: %q", got)
+		}
+	}
+}
+
+// Every delivery path carries the same prefix of the list, and the cut is countable: the CLI used to get all
+// terms while the server paths got the trimmed list, so a long glossary behaved differently per path.
+// Mutation: boost.go, Stdin ranging over b.Terms instead of b.Terms[:b.Fit(MaxWireJSON)] -> RED.
+func TestAllPathsCarryTheSameFit(t *testing.T) {
+	var terms []string
+	for i := 0; i < 400; i++ {
+		terms = append(terms, fmt.Sprintf("Term%03d\t1\tтермин%03d", i, i))
+	}
+	b := Boost{Alpha: 2, Terms: terms}
+	n := b.Fit(MaxWireJSON)
+	if n == 0 || n >= len(terms) || b.Dropped() != len(terms)-n {
+		t.Fatalf("Fit = %d of %d, Dropped = %d", n, len(terms), b.Dropped())
+	}
+	if got := strings.Count(b.Stdin(), "\n"); got != n {
+		t.Fatalf("stdin carries %d terms, the wire carries %d", got, n)
+	}
+	var w struct{ Terms []string }
+	if err := json.Unmarshal(b.JSON(MaxWireJSON), &w); err != nil || len(w.Terms) != n {
+		t.Fatalf("JSON carries %d terms (%v), want %d", len(w.Terms), err, n)
+	}
+	// the one more term that would not fit really does not fit
+	if over, _ := json.Marshal(struct {
+		Alpha float64  `json:"alpha"`
+		Terms []string `json:"terms"`
+	}{2, terms[:n+1]}); len(over) <= MaxWireJSON {
+		t.Fatalf("Fit stopped at %d but %d terms still fit (%d bytes)", n, n+1, len(over))
+	}
+	if (Boost{Alpha: 2, Terms: terms[:3]}).Dropped() != 0 {
+		t.Fatal("a short list drops nothing")
 	}
 }

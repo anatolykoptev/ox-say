@@ -11,11 +11,13 @@
 package stt
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,6 +30,10 @@ import (
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/oneshot"
 )
+
+// warnedUnboosted is the logger the usage-error retry (an ox-stt without the boost flags) was last reported to:
+// reported once per logger, so a daemon says it once and a test with its own logger hears it again.
+var warnedUnboosted atomic.Pointer[slog.Logger]
 
 // InputError marks a failure caused by caller input — a relative path, an
 // unreadable file, a clip ffmpeg cannot decode. The HTTP layer maps it to
@@ -104,6 +110,9 @@ type Options struct {
 	// Boost is the glossary term list pushed into the decoder for this one request (parakeet only; see Boost).
 	// The zero value decodes without boosting.
 	Boost Boost
+
+	// Log receives the engine/daemon version-skew warning (the unboosted retry); nil → slog.Default().
+	Log *slog.Logger
 
 	// Server, when non-nil, acquires the resident ox-stt server: it returns
 	// its base URL plus a release func the caller runs once the response
@@ -356,7 +365,12 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 	var exitErr *oneshot.ExitError
 	if boosted && errors.As(err, &exitErr) && exitErr.Code() == usageExit {
 		// An ox-stt that predates the boost flags refuses them with a usage error: decode without the list
-		// rather than fail the transcription.
+		// rather than fail the transcription. Said once per process (an engine and a daemon of different
+		// versions stay that way until the next install); the terms are never in the line.
+		lg := cmp.Or(opts.Log, slog.Default())
+		if warnedUnboosted.Swap(lg) != lg {
+			lg.Warn("stt: ox-stt refused the boost flags (engine older than the daemon?); decoding without the glossary list", slog.Int("exit", exitErr.Code()))
+		}
 		out, err = oneshot.Run(ctx, opts.Bin, baseArgs, oneshot.Options{StderrTail: stderrTail})
 	}
 	if err != nil {

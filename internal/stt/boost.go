@@ -34,22 +34,60 @@ func (b Boost) Active() bool {
 	return len(b.Terms) > 0 && b.Alpha > 0 && b.Alpha <= MaxAlpha && !math.IsNaN(b.Alpha)
 }
 
+// Fit is how many leading terms fit a JSON budget of maxBytes: the most recent terms win, the tail is dropped.
+// All three delivery paths (session body, header, CLI stdin) send the same Fit(MaxWireJSON) prefix, so the
+// resident server's one-entry graph cache and the per-call CLI see one list.
+func (b Boost) Fit(maxBytes int) int {
+	a, err := json.Marshal(b.Alpha)
+	if err != nil {
+		return 0
+	}
+	size := len(`{"alpha":,"terms":[]}`) + len(a)
+	n := 0
+	for _, t := range b.Terms {
+		e, err := json.Marshal(t)
+		if err != nil {
+			break
+		}
+		add := len(e)
+		if n > 0 {
+			add++ // the comma
+		}
+		if size+add > maxBytes {
+			break
+		}
+		size += add
+		n++
+	}
+	return n
+}
+
+// Dropped is how many terms Fit(MaxWireJSON) leaves out of a request.
+func (b Boost) Dropped() int {
+	if !b.Active() {
+		return 0
+	}
+	return len(b.Terms) - b.Fit(MaxWireJSON)
+}
+
 // JSON encodes {"alpha":…,"terms":[…]} within maxBytes by dropping terms from the tail (the least recent
 // ones) until it fits. nil when the boost is inactive or not even one term fits.
 func (b Boost) JSON(maxBytes int) []byte {
 	if !b.Active() {
 		return nil
 	}
-	for n := len(b.Terms); n > 0; n-- {
-		out, err := json.Marshal(struct {
-			Alpha float64  `json:"alpha"`
-			Terms []string `json:"terms"`
-		}{b.Alpha, b.Terms[:n]})
-		if err == nil && len(out) <= maxBytes {
-			return out
-		}
+	n := b.Fit(maxBytes)
+	if n == 0 {
+		return nil
 	}
-	return nil
+	out, err := json.Marshal(struct {
+		Alpha float64  `json:"alpha"`
+		Terms []string `json:"terms"`
+	}{b.Alpha, b.Terms[:n]})
+	if err != nil || len(out) > maxBytes {
+		return nil
+	}
+	return out
 }
 
 // Header is the X-Ox-Terms value: base64url (no padding) of the JSON, at most MaxHeaderBytes long.
@@ -63,10 +101,11 @@ func (b Boost) Header() string {
 	return base64.RawURLEncoding.EncodeToString(j)
 }
 
-// Stdin is what the CLI reads on --terms-stdin: one term line per line.
+// Stdin is what the CLI reads on --terms-stdin: one term line per line, the same Fit(MaxWireJSON) prefix the
+// server paths carry.
 func (b Boost) Stdin() string {
 	var sb strings.Builder
-	for _, t := range b.Terms {
+	for _, t := range b.Terms[:b.Fit(MaxWireJSON)] {
 		sb.WriteString(t)
 		sb.WriteByte('\n')
 	}

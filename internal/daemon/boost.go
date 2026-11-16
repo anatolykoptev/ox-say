@@ -62,6 +62,11 @@ func boostKey(pairs []glossary.Pair) string {
 func (d *Daemon) deriveBoost(pairs []glossary.Pair, key string) {
 	d.tbDerives.Add(1)
 	terms := d.boostTermsFor(pairs)
+	// Only the leading terms that fit the wire budget ever reach ox-stt; say how many did not (a count: the
+	// terms are the user's glossary text).
+	if n := (stt.Boost{Alpha: d.Cfg.STTBoostAlpha, Terms: terms}).Dropped(); n > 0 {
+		d.log.Warn("stt boost: the list is over the wire budget; the oldest terms are not boosted", slog.Int("dropped", n), slog.Int("terms", len(terms)))
+	}
 	d.tbMu.Lock()
 	if !d.tbHave || key == d.tbCurKey {
 		d.tbHave, d.tbKey, d.tbTerms = true, key, terms
