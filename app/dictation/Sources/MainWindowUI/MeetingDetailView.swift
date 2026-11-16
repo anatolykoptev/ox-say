@@ -45,36 +45,17 @@ struct MeetingDetailView: View {
     }
 
     private var info: MeetingInfo { detail.info }
+    private var recording: Bool { info.status == .recording }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            Picker("", selection: $tab) {
-                ForEach(MeetingTab.allCases) { Text($0.titleKey.text).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 360)
-            .padding(.horizontal, 24).padding(.bottom, 12)
-            Divider()
-            if let sentence = model.data.detailError[info.id] {
-                Callout(symbol: "exclamationmark.triangle.fill", text: sentence) {
-                    Button(L10nKey.commonRetry.text) { model.actions.selectMeeting(info.id) }
-                }
-                .padding(24)
-                Spacer()
-            } else if model.data.detailLoading.contains(info.id), detail.info.notesMD == nil, detail.info.transcriptMD == nil {
-                VStack(spacing: 10) {
-                    ProgressView()
-                    Text(L10nKey.meetingsLoading.text).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if recording {
+                // Nothing to read yet but the conversation itself: the live captions stand in for the tabs.
+                Divider()
+                LiveCaptionsView(feed: model.data.live[info.id] ?? LiveFeed(), ownerName: info.ownerLabel ?? "")
             } else {
-                switch tab {
-                case .notes: NotesTab(model: model, detail: detail, openSpeakers: { tab = .speakers })
-                case .transcript: TranscriptTab(model: model, detail: detail)
-                case .speakers: SpeakersTab(model: model, detail: detail)
-                }
+                tabs
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -92,6 +73,37 @@ struct MeetingDetailView: View {
             model.actions.stopPlayback()
             // The hit was for this visit; coming back to the meeting later opens it the plain way.
             if model.focus?.meetingID == info.id { model.focus = nil }
+        }
+    }
+
+    /// The picker and the tab chosen: notes, transcript or speakers.
+    @ViewBuilder private var tabs: some View {
+        Picker("", selection: $tab) {
+            ForEach(MeetingTab.allCases) { Text($0.titleKey.text).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(maxWidth: 360)
+        .padding(.horizontal, 24).padding(.bottom, 12)
+        Divider()
+        if let sentence = model.data.detailError[info.id] {
+            Callout(symbol: "exclamationmark.triangle.fill", text: sentence) {
+                Button(L10nKey.commonRetry.text) { model.actions.selectMeeting(info.id) }
+            }
+            .padding(24)
+            Spacer()
+        } else if model.data.detailLoading.contains(info.id), detail.info.notesMD == nil, detail.info.transcriptMD == nil {
+            VStack(spacing: 10) {
+                ProgressView()
+                Text(L10nKey.meetingsLoading.text).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            switch tab {
+            case .notes: NotesTab(model: model, detail: detail, openSpeakers: { tab = .speakers })
+            case .transcript: TranscriptTab(model: model, detail: detail)
+            case .speakers: SpeakersTab(model: model, detail: detail)
+            }
         }
     }
 
