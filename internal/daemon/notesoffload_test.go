@@ -35,7 +35,8 @@ func TestParseNotesOffload(t *testing.T) {
 // The count the child reports is in /status, beside the plan label that stays "full": a model the fitter put partly
 // on the CPU is visible, not hidden behind the plan.
 // Mutation: internal/daemon/meetings.go, the `c.d.recordNotesOffload(mark)` call after EnsureReady — delete it ->
-// RED (Offload stays nil).
+// RED (Offload stays nil). Mutation: internal/daemon/notesfit.go recordNotesOffload — on `!ok` clear the record
+// (`d.fit.offload = nil` before the return) -> RED on the later-chunk assertion.
 func TestTheOffloadOutcomeReachesStatus(t *testing.T) {
 	d, _ := bothModels(t)
 	t.Setenv("OXSAY_FAKE_LLM_OFFLOAD", "20/33")
@@ -49,6 +50,13 @@ func TestTheOffloadOutcomeReachesStatus(t *testing.T) {
 	}
 	if n.Fit != fitFull {
 		t.Fatalf("notes.fit = %q: the plan label stays what was asked for", n.Fit)
+	}
+	// A meeting asks the live child many times; a later chunk writes no offload line and must not erase the count.
+	if err := complete(t, d); err != nil {
+		t.Fatal(err)
+	}
+	if o := d.Status().Notes.Offload; o == nil || *o != (notesOffload{GPULayers: 20, TotalLayers: 33}) {
+		t.Fatalf("notes.offload = %+v after a later chunk on the same child, want 20 of 33 kept", o)
 	}
 }
 
