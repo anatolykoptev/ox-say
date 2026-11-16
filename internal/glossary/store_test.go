@@ -139,6 +139,48 @@ func TestActivationCountsPerMeantTerm(t *testing.T) {
 	}
 }
 
+// Evidence of the meant form is borrowed only by a single-word spelling that is not ordinary words: against an
+// established meant, one-sentence filings of an ordinary word and of a phrase stay candidates, and a new spelling
+// of the term still activates. A phrase or an ordinary word needs its own sentences.
+// Mutation: store.go promote, `!p.Ordinary &&` dropped -> RED («давайте» activates on its first sentence).
+// Mutation: store.go promote, `len(words(p.Heard)) == 1` -> `true` -> RED («у квантекс» activates).
+func TestOrdinaryWordAndPhraseNeverBorrowEvidence(t *testing.T) {
+	s := newTestStore(t)
+	s.Add("квантекс", "Quantex", "открой квантекс сегодня")
+	if p, _ := s.Add("квантекс", "Quantex", "запусти квантекс завтра"); p.Status != Active {
+		t.Fatalf("established meant: %+v", p)
+	}
+	for _, c := range []struct {
+		heard, ctx string
+		ordinary   bool
+	}{
+		{"давайте", "давайте начнем работу", true},
+		{"у квантекс", "позвони у квантекс вечером", false},
+		{"спроси", "спроси у команды", true},
+	} {
+		p, err := s.AddChecked(c.heard, "Quantex", c.ctx, c.ordinary)
+		if err != nil || p.Status != Candidate {
+			t.Errorf("AddChecked(%q) = %+v, %v; want a candidate", c.heard, p, err)
+		}
+	}
+	if p, _ := s.AddChecked("кантекс", "Quantex", "закрой кантекс вечером", false); p.Status != Active {
+		t.Errorf("a new single-word spelling = %+v; want active on the meant's evidence", p)
+	}
+	// their own sentences still activate them
+	if p, _ := s.AddChecked("давайте", "Quantex", "давайте закончим сегодня", true); p.Status != Active {
+		t.Errorf("an ordinary word on its own two sentences = %+v; want active", p)
+	}
+	if p, _ := s.AddChecked("у квантекс", "Quantex", "открой у квантекс отчет", false); p.Status != Active {
+		t.Errorf("a phrase on its own two sentences = %+v; want active", p)
+	}
+	// the flag is sticky: a later filing from a caller with no dictionary does not clear it
+	t2 := newTestStore(t)
+	t2.AddChecked("давайте", "Quantex", "давайте один", true)
+	if p, _ := t2.Add("давайте", "Quantex", "давайте два раз"); !p.Ordinary {
+		t.Errorf("Ordinary cleared by Add: %+v", p)
+	}
+}
+
 // The sentence must contain the heard form, and is stored only as a hash.
 // Mutation: store.go Add, append ctx instead of hashCtx(ctx) to Sightings -> RED (the sentence is on disk).
 func TestAddStoresNoSentence(t *testing.T) {

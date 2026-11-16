@@ -49,13 +49,17 @@ var (
 // Pair is one correction. ID comes from the heard form, so the same heard
 // form filed twice lands on the same pair.
 type Pair struct {
-	ID        string    `json:"id"`
-	Heard     string    `json:"heard"`
-	Meant     string    `json:"meant"`
-	Status    Status    `json:"status"`
-	Sightings []string  `json:"sightings,omitempty"` // hashes of distinct sentences
-	Seen      int       `json:"seen"`
-	Added     time.Time `json:"added"`
+	ID        string   `json:"id"`
+	Heard     string   `json:"heard"`
+	Meant     string   `json:"meant"`
+	Status    Status   `json:"status"`
+	Sightings []string `json:"sightings,omitempty"` // hashes of distinct sentences
+	Seen      int      `json:"seen"`
+	// Ordinary: the heard form is ordinary words of its language (the daemon asks the dictionary when the pair is
+	// filed). Such a pair activates only on its own sentences, never on the evidence of its meant form's other
+	// spellings.
+	Ordinary bool      `json:"ordinary,omitempty"`
+	Added    time.Time `json:"added"`
 }
 
 type file struct {
@@ -105,13 +109,13 @@ func needed(heard string) int {
 	return 3
 }
 
-// promote activates the candidates of one meant form that have enough evidence.
-// The evidence is counted per meant: the distinct sentences any non-rejected
-// spelling of it was heard in, so a term the recogniser writes a different way
-// each time still reaches the threshold. Each candidate applies its own
-// threshold (needed) and must itself have been filed with a sentence: a pair
-// filed with no context never activates on a sibling's evidence. A rejected
-// pair counts for nothing.
+// promote activates the candidates of one meant form that have enough evidence. A pair has its own evidence:
+// the distinct sentences it was heard in, against its own threshold (needed). A single-word spelling that is not
+// ordinary words may also borrow: the distinct sentences any non-rejected spelling of the meant form was heard
+// in are pooled, so a term the recogniser writes a different way each time still activates. An ordinary word
+// («давайте») or a phrase never borrows: a mistaken filing against an established meant would activate on its
+// first sentence. Every candidate must itself have been filed with a sentence, and a rejected pair counts for
+// nothing.
 func promote(pairs []Pair, meant string) {
 	sentences := map[string]struct{}{}
 	for _, p := range pairs {
@@ -123,7 +127,12 @@ func promote(pairs []Pair, meant string) {
 	}
 	for i := range pairs {
 		p := &pairs[i]
-		if p.Meant == meant && p.Status == Candidate && len(p.Sightings) > 0 && len(sentences) >= needed(p.Heard) {
+		if p.Meant != meant || p.Status != Candidate || len(p.Sightings) == 0 {
+			continue
+		}
+		need := needed(p.Heard)
+		borrow := !p.Ordinary && len(words(p.Heard)) == 1
+		if len(p.Sightings) >= need || (borrow && len(sentences) >= need) {
 			p.Status = Active
 		}
 	}
@@ -176,10 +185,17 @@ func (s *Store) Active() ([]Pair, error) {
 	return out, nil
 }
 
-// Add files a pair or counts another sighting of it. context is the sentence
+// Add is AddChecked for a caller that has no dictionary: the heard form is taken not to be ordinary words.
+func (s *Store) Add(heard, meant, context string) (Pair, error) {
+	return s.AddChecked(heard, meant, context, false)
+}
+
+// AddChecked files a pair or counts another sighting of it. context is the sentence
 // the heard form came from; it must contain the heard form, and only its hash
 // is kept. A pair with no context is filed but never activates on its own.
-func (s *Store) Add(heard, meant, context string) (Pair, error) {
+// ordinary says the heard form is ordinary words of its language (wordlists.Common); the caller computes it,
+// the store never loads a dictionary. It is sticky: once a pair was filed as ordinary it stays so.
+func (s *Store) AddChecked(heard, meant, context string, ordinary bool) (Pair, error) {
 	heard, meant, context = strings.TrimSpace(heard), strings.TrimSpace(meant), strings.TrimSpace(context)
 	if err := validate(heard, meant); err != nil {
 		return Pair{}, err
@@ -204,6 +220,7 @@ func (s *Store) Add(heard, meant, context string) (Pair, error) {
 	}
 	p := &pairs[i]
 	p.Seen++
+	p.Ordinary = p.Ordinary || ordinary
 	if context != "" {
 		if h := hash8(key(context)); !slices.Contains(p.Sightings, h) && len(p.Sightings) < maxSightings {
 			p.Sightings = append(p.Sightings, h)

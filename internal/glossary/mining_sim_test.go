@@ -2,6 +2,7 @@ package glossary
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -34,6 +35,7 @@ var simTerms = []simTerm{
 	{"PlenkArc", []simForm{{"пленк арк", 2}, {"пленкарк", 1}}},
 	{"Rux", []simForm{{"рукс", 3}, {"рукз", 1}}}, // short: three sentences
 	{"Tavron", []simForm{{"таврон", 3}}},
+	{"Farvina", []simForm{{"фарвина", 2}, {"форвина", 1}}}, // feminine: «фарвиной», «фарвине»
 }
 
 // simMistakes are ordinary words an agent filed by mistake, with the sentences it filed them from.
@@ -43,6 +45,10 @@ var simMistakes = []struct {
 }{
 	{"машина", "Machine", 2},
 	{"вол", "Vol", 3},
+	// mistakes filed once each against an established meant: an ordinary word, a phrase, an ordinary word
+	{"давайте", "Quantex", 1},
+	{"у квантекс", "Quantex", 1},
+	{"спроси", "Quantex", 1},
 }
 
 var simFrames = []string{
@@ -52,10 +58,13 @@ var simFrames = []string{
 
 var simHeldOut = "напомни мне про %s в пятницу"
 
-var simCases = []string{"", "а", "у", "е", "ом"}
-
-// inflect puts a case ending on the last word of a heard form.
-func inflect(heard, ending string) string { return heard + ending }
+// simForms is a heard form in the base case and in four others; a form in «а» declines like a feminine noun.
+func simForms(heard string) []string {
+	if stem, ok := strings.CutSuffix(heard, "а"); ok {
+		return []string{heard, stem + "ы", stem + "е", stem + "у", stem + "ой"}
+	}
+	return []string{heard, heard + "а", heard + "у", heard + "е", heard + "ом"}
+}
 
 // simOrdinary: ordinary sentences. The first group uses the words an agent filed by mistake (and should stay as
 // they are, but cannot once the pair is active); the second group are near-misses of those words that no
@@ -63,7 +72,7 @@ func inflect(heard, ending string) string { return heard + ending }
 var simOrdinary = struct{ plain, nearMiss []string }{
 	plain: []string{
 		"машина стоит у дома", "у входа нет машины", "я приехал на машине", "он купил машину вчера", "рядом с машиной ждала собака",
-		"вол тянул тяжёлую телегу", "старый вол устал",
+		"вол тянул тяжёлую телегу", "старый вол устал", "давайте начнем работу сегодня", "спроси у него про это",
 	},
 	nearMiss: []string{
 		"это машинный перевод текста", "машинка для стрижки сломалась", "машинист остановил поезд", "машинально он кивнул",
@@ -83,7 +92,7 @@ func simResult(t *testing.T) (hit, total, falsePlain, nPlain, falseNear, nNear i
 		for i := 0; i < n; i++ {
 			ctx := fmt.Sprintf(simFrames[frame%len(simFrames)], heard) + fmt.Sprintf(" %d", frame/len(simFrames))
 			frame++
-			if _, err := s.Add(heard, meant, ctx); err != nil {
+			if _, err := simAdd(s, heard, meant, ctx); err != nil {
 				t.Fatalf("Add(%q): %v", heard, err)
 			}
 		}
@@ -109,9 +118,9 @@ func simResult(t *testing.T) (hit, total, falsePlain, nPlain, falseNear, nNear i
 	}
 	for _, tm := range simTerms {
 		for _, f := range tm.forms {
-			for _, c := range simCases {
+			for _, form := range simForms(f.heard) {
 				total++
-				in := fmt.Sprintf(simHeldOut, inflect(f.heard, c))
+				in := fmt.Sprintf(simHeldOut, form)
 				if got, _ := Apply(in, pairs); got == fmt.Sprintf(simHeldOut, tm.meant) {
 					hit++
 				}

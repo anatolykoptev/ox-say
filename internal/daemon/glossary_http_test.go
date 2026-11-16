@@ -498,3 +498,32 @@ func TestGlossaryErrorsCarryNoHomePath(t *testing.T) {
 		}
 	}
 }
+
+// An agent's one-sentence filing of an ordinary word or a phrase against an established meant stays a candidate:
+// the handler asks the dictionary, the store refuses to lend the meant's evidence to such a form.
+// Mutation: glossary_http.go handleGlossaryAdd, `d.heardIsOrdinary(in.Heard)` -> `false` -> RED («давайте» goes active).
+func TestGlossaryAddMistakenFilingsStayCandidates(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+	add := func(heard, ctx string) glossary.Pair {
+		t.Helper()
+		rec := call(t, mux, http.MethodPost, "/v1/glossary", `{"heard":"`+heard+`","meant":"Quantex","context":"`+ctx+`"}`)
+		var p glossary.Pair
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &p) != nil {
+			t.Fatalf("add %q: %d %s", heard, rec.Code, rec.Body)
+		}
+		return p
+	}
+	add("квантекс", "открой квантекс сегодня")
+	if p := add("квантекс", "запусти квантекс завтра"); p.Status != glossary.Active {
+		t.Fatalf("established meant: %+v", p)
+	}
+	for _, c := range [][2]string{{"давайте", "давайте начнем работу"}, {"у квантекс", "позвони у квантекс вечером"}, {"спроси", "спроси у команды"}} {
+		if p := add(c[0], c[1]); p.Status != glossary.Candidate {
+			t.Errorf("one-sentence filing of %q = %s; want candidate", c[0], p.Status)
+		}
+	}
+	if p := add("кантекс", "закрой кантекс вечером"); p.Status != glossary.Active {
+		t.Errorf("a new spelling of the term = %s; want active", p.Status)
+	}
+}
