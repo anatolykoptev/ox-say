@@ -27,15 +27,13 @@ final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
     private var prepared: AVAudioPlayer?
 
     /// Decodes the clip without touching what plays now, so a caller can find out that it cannot sound BEFORE it stops
-    /// anything else. Throws when the data cannot be decoded or the output cannot take it.
+    /// anything else. Throws only when the data cannot be decoded into a player; `prepareToPlay()` is a warm-up whose result
+    /// is ignored (as before), so a long clip it declines still reaches `play()`.
     func prepare(wav: Data) throws {
         prepared = nil
         let next = try AVAudioPlayer(data: wav)
         next.delegate = self
-        guard next.prepareToPlay() else {
-            next.delegate = nil
-            throw DidNotStart()
-        }
+        next.prepareToPlay()
         prepared = next
     }
 
@@ -56,6 +54,7 @@ final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
 
     /// Stops whatever was playing and starts the new clip.
     func play(wav: Data) throws {
+        stop()  // as before: a clip that cannot be decoded still ends the one that played, with no stale onFinish
         try prepare(wav: wav)
         try playPrepared()
     }
