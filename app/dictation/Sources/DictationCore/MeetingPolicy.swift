@@ -4,7 +4,7 @@ import Foundation
 /// Everything decidable is here, where the shim tests it; the controller only carries the actions out.
 public struct RecordingMonitor {
     public enum Stop: Equatable { case diskFull, cap }
-    public enum Say: Hashable { case tapSilent, noSystemAudio }
+    public enum Say: Hashable { case tapSilent, noSystemAudio, playingOutsideScope }
     public enum Action: Equatable {
         case stop(Stop)
         case say(Say)
@@ -16,6 +16,8 @@ public struct RecordingMonitor {
         public var callbacks: Int
         public var peak: Float
         public var playingFor: TimeInterval
+        /// Another process, outside a call-scoped tap, has been playing this long (`SystemAudioGuard.Sample`).
+        public var outsidePlayingFor: TimeInterval
         public var heardLoud: Bool
         /// The microphone channel is loud right now.
         public var meLoud: Bool
@@ -23,7 +25,8 @@ public struct RecordingMonitor {
         public var dt: TimeInterval
 
         public init(elapsed: TimeInterval, writeFailed: Bool, callbacks: Int, peak: Float, playingFor: TimeInterval,
-                    heardLoud: Bool, meLoud: Bool, dt: TimeInterval) {
+                    heardLoud: Bool, meLoud: Bool, dt: TimeInterval, outsidePlayingFor: TimeInterval = 0) {
+            self.outsidePlayingFor = outsidePlayingFor
             self.elapsed = elapsed
             self.writeFailed = writeFailed
             self.callbacks = callbacks
@@ -49,14 +52,16 @@ public struct RecordingMonitor {
         if MeetingLimits.reachedCap(elapsed: t.elapsed) { return [.stop(.cap)] }
         if t.meLoud { micLoud += t.dt }
         let verdict = SystemAudioGuard.assess(.init(callbacks: t.callbacks, peak: t.peak, elapsed: t.elapsed, playingFor: t.playingFor,
-                                                    heardLoud: t.heardLoud, micLoudFor: micLoud))
+                                                    heardLoud: t.heardLoud, micLoudFor: micLoud, outsidePlayingFor: t.outsidePlayingFor))
         switch verdict {
         case .silentTap:
             return told.insert(.tapSilent).inserted ? [.say(.tapSilent)] : []
+        case .playingOutsideScope:
+            return told.insert(.playingOutsideScope).inserted ? [.say(.playingOutsideScope)] : []
         case .noCallbacks:
             return !systemAudioFailed && told.insert(.noSystemAudio).inserted ? [.say(.noSystemAudio)] : []
         case .otherSideQuiet:
-            return !told.contains(.tapSilent) && told.insert(.noSystemAudio).inserted ? [.say(.noSystemAudio)] : []
+            return !told.contains(.tapSilent) && !told.contains(.playingOutsideScope) && told.insert(.noSystemAudio).inserted ? [.say(.noSystemAudio)] : []
         case .waiting, .fine:
             return []
         }

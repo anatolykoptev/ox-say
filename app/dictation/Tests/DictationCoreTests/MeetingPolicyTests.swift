@@ -5,9 +5,34 @@ import XCTest
 /// PR #261 review: the decisions the controller and recorder only carry out.
 final class SystemAudioGuardRuleTests: XCTestCase {
     private func assess(callbacks: Int = 100, peak: Float = 0, elapsed: TimeInterval = 30, playingFor: TimeInterval = 0,
-                        micLoudFor: TimeInterval = 0, heardLoud: Bool = false) -> SystemAudioGuard.Verdict {
+                        micLoudFor: TimeInterval = 0, heardLoud: Bool = false, outsidePlayingFor: TimeInterval = 0) -> SystemAudioGuard.Verdict {
         SystemAudioGuard.assess(.init(callbacks: callbacks, peak: peak, elapsed: elapsed, playingFor: playingFor,
-                                      heardLoud: heardLoud, micLoudFor: micLoudFor))
+                                      heardLoud: heardLoud, micLoudFor: micLoudFor, outsidePlayingFor: outsidePlayingFor))
+    }
+
+    /// A tap on the call app only, silent, with somebody on this side talking and ANOTHER app playing: the far side may be
+    /// playing there (#608). It is named as that, not as the permission; and only when nothing of the call app plays.
+    /// Mutation: SystemAudioGuard.assess, delete the `playingOutsideScope` line -> RED (it falls to `waiting`/`quiet`).
+    func testAFarSidePlayingOutsideTheCallAppIsNamedNotBlamedOnThePermission() {
+        let said = assess(elapsed: 15, micLoudFor: SystemAudioGuard.micLoudBeforeVerdict, outsidePlayingFor: SystemAudioGuard.playingWithMic)
+        XCTAssertEqual(said, .playingOutsideScope)
+        // it wins over "the other side is quiet" too (elapsed past quietAfter)
+        XCTAssertEqual(assess(elapsed: 60, micLoudFor: 30, outsidePlayingFor: 30), .playingOutsideScope)
+    }
+
+    /// Each of the three conditions is needed: somebody talks, something outside plays long enough, nothing of the call plays.
+    /// Mutation: SystemAudioGuard.assess, delete `s.playingFor == 0,` -> RED (the in-scope silent tap is mislabelled);
+    /// delete `s.micLoudFor >= micLoudBeforeVerdict` of the new line -> RED.
+    func testTheOutsidePlaybackVerdictNeedsAllThreeConditions() {
+        XCTAssertEqual(assess(elapsed: 15, micLoudFor: 2, outsidePlayingFor: 30), .waiting, "nobody talks on this side")
+        XCTAssertEqual(assess(elapsed: 15, micLoudFor: 30, outsidePlayingFor: 1), .waiting, "it only just started playing")
+        XCTAssertEqual(assess(elapsed: 15, micLoudFor: 30, outsidePlayingFor: 0), .waiting, "nothing plays outside")
+        XCTAssertEqual(assess(elapsed: 15, playingFor: 25, micLoudFor: 30, outsidePlayingFor: 30), .silentTap,
+                       "the call app plays and the tap is zero: that IS the permission")
+        XCTAssertEqual(assess(peak: 0.0004, elapsed: 15, micLoudFor: 30, outsidePlayingFor: 30), .playingOutsideScope,
+                       "faint samples are not the far side either")
+        XCTAssertEqual(assess(elapsed: 15, micLoudFor: 30, heardLoud: true, outsidePlayingFor: 30), .fine, "the far side was heard")
+        XCTAssertEqual(assess(callbacks: 0, elapsed: 15, micLoudFor: 30, outsidePlayingFor: 30), .noCallbacks, "no buffers at all is a different fault")
     }
 
     /// A call app plays digital silence before the other side joins; auto-start begins 4 s after the mic opens, so in
@@ -56,9 +81,22 @@ final class SystemAudioGuardRuleTests: XCTestCase {
 
 final class RecordingMonitorTests: XCTestCase {
     private func tick(_ m: inout RecordingMonitor, elapsed: TimeInterval = 10, writeFailed: Bool = false, callbacks: Int = 100,
-                      peak: Float = 0, playingFor: TimeInterval = 0, heardLoud: Bool = false, meLoud: Bool = false) -> [RecordingMonitor.Action] {
+                      peak: Float = 0, playingFor: TimeInterval = 0, heardLoud: Bool = false, meLoud: Bool = false,
+                      outsidePlayingFor: TimeInterval = 0) -> [RecordingMonitor.Action] {
         m.observe(.init(elapsed: elapsed, writeFailed: writeFailed, callbacks: callbacks, peak: peak, playingFor: playingFor,
-                        heardLoud: heardLoud, meLoud: meLoud, dt: 0.25))
+                        heardLoud: heardLoud, meLoud: meLoud, dt: 0.25, outsidePlayingFor: outsidePlayingFor))
+    }
+
+    /// The outside-playback notice is said once, and it stands in for both the permission text and "nothing recorded".
+    /// Mutation: RecordingMonitor.observe, delete `told.insert(.playingOutsideScope).inserted` -> RED (said every tick);
+    /// delete `!told.contains(.playingOutsideScope)` in `.otherSideQuiet` -> RED (a second, misleading notice follows).
+    func testTheOutsidePlaybackNoticeIsSaidOnceAndReplacesTheOthers() {
+        var m = RecordingMonitor()
+        var said: [RecordingMonitor.Action] = []
+        for _ in 0..<60 { said += tick(&m, elapsed: 12, meLoud: true, outsidePlayingFor: 7) }
+        XCTAssertEqual(said, [.say(.playingOutsideScope)])
+        XCTAssertEqual(tick(&m, elapsed: 30, peak: 0.0002, meLoud: true, outsidePlayingFor: 0), [], "the quiet-side notice would repeat it")
+        XCTAssertEqual(tick(&m, elapsed: 31, playingFor: 25, meLoud: true), [.say(.tapSilent)], "a real permission problem is still told")
     }
 
     /// Mutation: RecordingMonitor.observe, delete the writeFailed branch -> RED.

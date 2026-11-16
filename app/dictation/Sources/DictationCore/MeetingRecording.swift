@@ -17,10 +17,14 @@ public enum SystemAudioGuard {
         public var heardLoud: Bool
         /// How long the microphone channel has been loud in total: somebody on this side is talking.
         public var micLoudFor: TimeInterval
+        /// With the tap on the call app's processes only: how long some OTHER process (not OxSay) has been playing without a
+        /// break. 0 for a whole-Mac tap, which hears every process.
+        public var outsidePlayingFor: TimeInterval
 
         public init(callbacks: Int, peak: Float, elapsed: TimeInterval, playingFor: TimeInterval, heardLoud: Bool,
-                    micLoudFor: TimeInterval = 0) {
+                    micLoudFor: TimeInterval = 0, outsidePlayingFor: TimeInterval = 0) {
             self.micLoudFor = micLoudFor
+            self.outsidePlayingFor = outsidePlayingFor
             self.callbacks = callbacks
             self.peak = peak
             self.elapsed = elapsed
@@ -38,6 +42,10 @@ public enum SystemAudioGuard {
         case silentTap
         /// The tap never delivered a buffer.
         case noCallbacks
+        /// The tap is on the call app only, nothing of the call app plays, another app does while somebody on this side
+        /// talks: the far side may be playing from outside the call app, where the scoped tap cannot hear it. Not the
+        /// permission's fault, so not `silentTap`.
+        case playingOutsideScope
         /// Samples arrive but the other side has not been audible for `quietAfter`.
         case otherSideQuiet
     }
@@ -62,6 +70,7 @@ public enum SystemAudioGuard {
         if s.heardLoud { return .fine }
         guard s.elapsed >= settle else { return .waiting }
         if s.callbacks == 0 { return .noCallbacks }
+        if s.playingFor == 0, s.outsidePlayingFor >= playingWithMic, s.micLoudFor >= micLoudBeforeVerdict { return .playingOutsideScope }
         if s.peak == 0, s.playingFor >= playingBeforeVerdict
             || (s.playingFor >= playingWithMic && s.micLoudFor >= micLoudBeforeVerdict) { return .silentTap }
         if s.elapsed >= quietAfter { return .otherSideQuiet }

@@ -89,8 +89,11 @@ final class MeetingRecorder {
     private let activity = ActivityHold.system
     /// #531: the channel files are synced to the disk every `RecordingDurability.flushInterval` seconds.
     private lazy var flusher = PeriodicFlush { [weak self] in self?.flushChannels() }
-    /// The call app the other side is taken from, and what the running tap actually hears (#530).
+    /// The call app the other side is taken from, and what the running tap actually hears (#530). `callBundleID` is the
+    /// app only when its per-app scope is verified (`CallAudioScope.verifiedScopedApps`), else nil: an unverified app is
+    /// treated as "no call known". `observedCall` is the app the watcher saw, for the log and the playback diagnostics.
     private var callBundleID: String?
+    private(set) var observedCall: String?
     private(set) var tapScope: TapScope = .global
     private var scopeTimer: DispatchSourceTimer?
     private var scopeAnnounced = false
@@ -128,7 +131,8 @@ final class MeetingRecorder {
     /// `callBundleID`: the call app's bundle id when it is known (#530), so the other side is the call's own sound.
     /// nil, or a call whose audio process cannot be found, records everything the Mac plays except OxSay (`TapScope.global`).
     func start(into dir: URL, callBundleID: String? = nil) throws {
-        self.callBundleID = callBundleID
+        self.observedCall = callBundleID
+        self.callBundleID = CallAudioScope.scopedCall(callBundleID)
         try Self.checkMicrophone()
         let t0 = HostClock.nanos(fromHostTicks: AudioGetCurrentHostTime())
         let meWriter = try PcmChannelWriter(url: dir.appendingPathComponent("me.pcm"), t0: t0)
@@ -350,8 +354,13 @@ final class MeetingRecorder {
 
     /// The call's audio processes as CoreAudio lists them now. A CoreAudio error reads as "none found": the fallback.
     private func wantedScope() -> TapScope {
-        let processes = (CoreAudioProps.audioProcesses() ?? []).map { AudioProcess(objectID: $0.objectID, pid: $0.pid, bundleID: $0.bundleID) }
-        return CallAudioScope.scope(callBundleID: callBundleID, processes: processes, ownPID: getpid())
+        CallAudioScope.scope(callBundleID: callBundleID, processes: CoreAudioProps.scopeProcesses() ?? [], ownPID: getpid())
+    }
+
+    /// The public log line for a tap that started: the scope kind and the bundle ids it matched. Bundle ids only.
+    private func logScope(_ scope: TapScope) {
+        let line = CallAudioScope.describe(scope: scope, observed: observedCall, processes: CoreAudioProps.scopeProcesses() ?? [], ownPID: getpid())
+        log.info("system audio tap: \(line, privacy: .public)")
     }
 
     /// Every few seconds while recording: a call process that appeared since the tap was built (a browser's new audio
@@ -379,10 +388,15 @@ final class MeetingRecorder {
         switch outcome {
         case .started:
             kind = .started
-            if started != nil, token == tapRecovery.token, tapScope != scope || !scopeAnnounced {
-                tapScope = scope
-                scopeAnnounced = true
-                onTapScope?(scope)
+            if started != nil, token == tapRecovery.token {
+                logScope(scope) // at the start and at every rebuild
+                if tapScope != scope || !scopeAnnounced {
+                    tapScope = scope
+                    scopeAnnounced = true
+                    // Only a call whose scope is verified is told when it falls back: an unverified app (all of them, today)
+                    // runs on the whole-Mac tap as it always did, and that is not news.
+                    if callBundleID != nil { onTapScope?(scope) }
+                }
             }
         case .stopped: kind = .stopped
         case .failed(let error): kind = .failed; failure = error
