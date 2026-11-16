@@ -91,7 +91,14 @@ func captureWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool 
     return writePNG(both, to: file)
 }
 
-/// The fallback: `cacheDisplay` of each window's frame view, the sheet's drawn at its offset. A sheet scene whose sheet
+/// Why `screencapture -l` cannot be trusted right now (display asleep, screen locked), or nil.
+func captureBlocker() -> String? {
+    if CGDisplayIsAsleep(CGMainDisplayID()) != 0 { return "the display is asleep" }
+    if let session = CGSessionCopyCurrentDictionary() as? [String: Any], session["CGSSessionScreenIsLocked"] as? Bool == true { return "the screen is locked" }
+    return nil
+}
+
+/// The view capture (SHOTS_VIEW_CAPTURE only): `cacheDisplay` of each window's frame view, the sheet's drawn at its offset. A sheet scene whose sheet
 /// cannot be drawn is an ERR, never a sheet-less file.
 func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
     func image(_ w: NSWindow) -> CGImage? {
@@ -490,6 +497,14 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
 
     // SHOTS_WIDTHS=802,1400 renders each scene at those widths (file names get a -w<width> suffix); default is one 980 pt shot.
     let widths = ProcessInfo.processInfo.environment["SHOTS_WIDTHS"].map { $0.split(separator: ",").compactMap { Double($0) }.map { CGFloat($0) } }
+    let viewCapture = ProcessInfo.processInfo.environment["SHOTS_VIEW_CAPTURE"] != nil
+    var failures = 0
+    // Refuse up front: with the display asleep or the screen locked every `screencapture` fails, and the old fallback
+    // wrote sidebar-less images that were reported ok (issue #422). SHOTS_PROBE reads AppKit state and needs no screen.
+    if !viewCapture, ProcessInfo.processInfo.environment["SHOTS_PROBE"] == nil, let why = captureBlocker() {
+        FileHandle.standardError.write(Data("shots: \(why), so `screencapture` cannot draw the sidebar. Wake the display, or set SHOTS_VIEW_CAPTURE=1 for a view capture (no sidebar, no toolbar).\n".utf8))
+        exit(3)
+    }
     for lang in ["en", "ru"] {
         guard let bundle = Bundle(path: root.appendingPathComponent("Resources/\(lang).lproj").path) else {
             FileHandle.standardError.write(Data("no \(lang).lproj under \(root.path)\n".utf8)); exit(1)
@@ -534,21 +549,19 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
                     // A silent wrong shot is the bug class here: a sheet scene without its sheet, or a plain one with a stray sheet.
                     // The scene's previous PNG goes first: a rerun must not show a stale image beside a reported failure.
                     try? FileManager.default.removeItem(at: file)
+                    failures += 1
                     print("ERR \(file.path) (sheet \(window.attachedSheet == nil ? "missing" : "unexpected"))")
                     if let s = window.attachedSheet { window.endSheet(s) }
                     continue
                 }
-                let viewCapture = ProcessInfo.processInfo.environment["SHOTS_VIEW_CAPTURE"] != nil
-                var captured = false
-                if !viewCapture {
-                    captured = captureWindows(window, sheet: window.attachedSheet, to: file)
-                }
-                // The screen is locked or the window is not on it (a night run): draw the window's views instead.
-                // No title bar and no toolbar, but the content is the same, and the sheet is drawn at its offset.
-                if !captured { captured = drawWindows(window, sheet: window.attachedSheet, to: file) }
+                // `screencapture -l` is the only path that draws the AppKit sidebar. The view capture leaves it blank with a
+                // black band, which looks like a broken window, so it is used only when SHOTS_VIEW_CAPTURE asks for it:
+                // a failed `screencapture` is an ERR and fails the run, never a quiet fallback (issue #422).
+                let captured = viewCapture ? drawWindows(window, sheet: window.attachedSheet, to: file)
+                                           : captureWindows(window, sheet: window.attachedSheet, to: file)
                 // A failed capture leaves whatever the last run wrote; the ERR must not sit next to a stale image.
-                if !captured { try? FileManager.default.removeItem(at: file) }
-                print("\(captured ? "ok " : "ERR") \(file.path)")
+                if !captured { try? FileManager.default.removeItem(at: file); failures += 1 }
+                print("\(captured ? "ok " : "ERR") [\(viewCapture ? "view-capture" : "screencapture")] \(file.path)")
                 // Close the sheet before the next scene: clear the state that presents it, so SwiftUI dismisses it itself.
                 if scene.sheet {
                     model.data.voices.designOpen = false
@@ -563,6 +576,10 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
     }
     window.close()
     if ProcessInfo.processInfo.environment["SHOTS_PROBE"] != nil { finishProbe() }
+    if failures > 0 {
+        FileHandle.standardError.write(Data("shots: \(failures) shot(s) failed (ERR lines above); the run is not evidence.\n".utf8))
+        exit(1)
+    }
 }
 
 MainActor.assumeIsolated { run() }

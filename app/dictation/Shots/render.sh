@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Renders the main window to PNGs: Shots/render.sh [output dir]   (default ~/tmp/ox-say-main-window-shots)
 # SHOTS_ONLY=settings,voices limits the scenes. A window flashes on screen for about a second per shot.
+# Exits non-zero (and names the shot) when a capture fails or the display is asleep/locked; SHOTS_VIEW_CAPTURE=1 opts into
+# the view capture (no sidebar, no toolbar) for a night run.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 pkg=$(cd "$here/.." && pwd)
