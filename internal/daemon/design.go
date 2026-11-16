@@ -120,6 +120,8 @@ type SaveDesignResult struct {
 	RegisteredToEngine bool   `json:"registered_to_engine"`
 	Notice             string `json:"notice,omitempty"`
 	NoticeCode         string `json:"notice_code,omitempty"`
+	// RefTextUnchecked: see voices.Voice.RefTextUnchecked.
+	RefTextUnchecked bool `json:"ref_text_unchecked,omitempty"`
 }
 
 // designSeed draws the random seed base; a variable so a test can inject it.
@@ -718,6 +720,6 @@ func (d *Daemon) saveDesignResult(ctx context.Context, in SaveDesignInput) (*Sav
 	}
 	return &SaveDesignResult{
 		Name: v.Name, Engine: v.Engine, DesignedFrom: v.DesignedFrom, Seed: *v.Seed,
-		RegisteredToEngine: registered, Notice: v.Notice, NoticeCode: v.NoticeCode,
+		RegisteredToEngine: registered, Notice: v.Notice, NoticeCode: v.NoticeCode, RefTextUnchecked: v.RefTextUnchecked,
 	}, nil
 }

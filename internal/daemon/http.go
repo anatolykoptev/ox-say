@@ -397,6 +397,9 @@ func (d *Daemon) handleAddVoice(w http.ResponseWriter, r *http.Request) {
 	if v.NoticeCode != "" {
 		resp["notice_code"] = v.NoticeCode
 	}
+	if v.RefTextUnchecked {
+		resp["ref_text_unchecked"] = true
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
