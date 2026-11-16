@@ -134,19 +134,22 @@ func simResult(t *testing.T) (hit, total, falsePlain, nPlain, falseNear, nNear i
 }
 
 // The numbers of the simulation. Before this change (per-spelling counting, no stemming, three sentences for every
-// single word) recall was 3/75 and 2/7 of the sentences with a mistakenly filed word were changed (only «вол»,
-// filed from three sentences, was active); after it recall is 59/75, and the mistaken «машина» pair, now active
-// from two sentences, changes its five sentences too (7/7): that is the price of the lower threshold, which the
-// owner's approval of a candidate (and the Rejected tombstone) is there to catch. The near-misses (a derivation,
-// a short stem) stay untouched before and after.
-// Mutation: store.go promote, count only p's own Sightings -> RED (recall falls to the per-spelling number).
-// Mutation: stem.go minStemRunes 5 -> 3 -> RED («воля», «воле» become «Vol»). Mutation: store.go needed, `n >= 5` ->
-// `n >= 99` -> RED (recall).
+// single word) recall was 3/80 and 2/7 of the sentences with a mistakenly filed word were changed (only «вол»,
+// filed from three sentences, was active); after it recall is 64/80. Taking one change away from the final code:
+// per-spelling counting 22/80, no stemming 16/80, a threshold of three for every single word 59/80. The mistaken
+// «машина» pair, now active from two sentences, changes its five sentences too (7/7): that is the price of the
+// lower threshold, which the owner's approval of a candidate (and the Rejected tombstone) is there to catch. The
+// near-misses (a derivation, a short stem) stay untouched before and after. The 16 misses are the
+// cases of a spelling Snowball strips as a verb («зорвен»), of «арк» (a stem under five letters) and of the
+// four-letter «рукс» and «рукз».
+// Mutation: store.go Add, `promote(pairs, meant)` -> the old per-pair line -> RED (recall 22/80).
+// Mutation: store.go needed, `n >= 5` -> `n >= 99` -> RED (recall 59/80).
+// Mutation: stem.go sameWord, `nominalStem(w) == hs` -> `russian.Stem(w, false) == hs` -> RED («машинный» is changed).
 func TestMiningSimulation(t *testing.T) {
 	hit, total, falsePlain, nPlain, falseNear, nNear := simResult(t)
 	t.Logf("recall %d/%d (%.1f%%); ordinary sentences with a mistakenly filed word changed %d/%d; near-misses changed %d/%d",
 		hit, total, 100*float64(hit)/float64(total), falsePlain, nPlain, falseNear, nNear)
-	if min := 55; hit < min {
+	if min := 64; hit < min {
 		t.Errorf("recall %d/%d, want at least %d", hit, total, min)
 	}
 	if falseNear != 0 {
