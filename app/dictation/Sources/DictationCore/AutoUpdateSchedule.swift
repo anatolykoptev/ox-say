@@ -79,7 +79,8 @@ public enum AutoUpdateSchedule {
         switch UpdatePrompt.make(local: local, fetch: fetch) {
         case .failed:
             return .unchanged
-        case .upToDate, .developmentBuild:
+        case .upToDate, .developmentBuild, .unsupported:
+            // .unsupported: the newer release cannot run here, so there is nothing to offer, and no notice.
             state.lastCheck = now
             return .clear
         case .available(let remote, _, _, _):

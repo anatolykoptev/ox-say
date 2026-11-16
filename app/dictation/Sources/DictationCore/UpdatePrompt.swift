@@ -6,6 +6,9 @@ public enum UpdatePrompt: Equatable {
     case upToDate(version: String)
     case available(remote: String, local: String, notes: String, url: URL?)
     case failed(reason: String)
+    /// A newer release exists but needs a macOS newer than this Mac's (#494): nothing to install, and the
+    /// reason is said instead of an update the installer would refuse.
+    case unsupported(remote: String, local: String, floor: String, host: String)
     /// This copy is a development build (version 0.0.0): no release is offered to it.
     case developmentBuild(version: String)
 
@@ -15,6 +18,7 @@ public enum UpdatePrompt: Equatable {
     /// Maps the installed version and the fetch outcome to the prompt.
     public static func make(local: String,
                             fetch: Result<(tag: String, url: URL?, body: String), UpdateError>,
+                            host: String = ReleaseFloor.currentHost,
                             text: (L10nKey) -> String = { $0.text }) -> UpdatePrompt {
         // Before the fetch result: a dev build has nothing to be offered, so a failed check has nothing to say either.
         if UpdateChecker.isDevelopmentBuild(local) { return .developmentBuild(version: local) }
@@ -23,6 +27,9 @@ public enum UpdatePrompt: Equatable {
             return .failed(reason: error.message(text: text))
         case .success(let release):
             guard UpdateChecker.isNewer(release.tag, than: local) else { return .upToDate(version: local) }
+            if let floor = ReleaseFloor.minimum(inBody: release.body), ReleaseFloor.isBelow(host: host, floor: floor) {
+                return .unsupported(remote: release.tag, local: local, floor: floor, host: host)
+            }
             return .available(remote: release.tag, local: local,
                               notes: releaseNotesText(release.body, limit: notesLimit), url: release.url)
         }

@@ -87,4 +87,50 @@ final class UpdatePromptTests: XCTestCase {
         XCTAssertLessThanOrEqual(notes.count, UpdatePrompt.notesLimit)
         XCTAssertTrue(notes.hasSuffix("…"))
     }
+
+    // #494: a release that publishes a macOS floor above this Mac's is not offered.
+    /// Mutation: UpdatePrompt.make, delete the `ReleaseFloor.isBelow` check -> RED (`.available` comes back).
+    func testAReleaseAboveThisMacsMacOSIsUnsupportedNotOffered() {
+        let body = "## Fixes\n- paste works\n\n<!-- ox-say-min-macos: 14.4 -->"
+        XCTAssertEqual(UpdatePrompt.make(local: "0.1.20", fetch: release("v0.1.21", body: body), host: "14.2"),
+                       .unsupported(remote: "v0.1.21", local: "0.1.20", floor: "14.4", host: "14.2"))
+        XCTAssertEqual(UpdatePrompt.make(local: "0.1.20", fetch: release("v0.1.21", body: body), host: "14.4.1"),
+                       .available(remote: "v0.1.21", local: "0.1.20", notes: "Fixes\n• paste works", url: page),
+                       "at or above the floor: offered, and the hidden marker is not in the notes")
+        XCTAssertEqual(UpdatePrompt.make(local: "0.1.21", fetch: release("v0.1.21", body: body), host: "13.0"),
+                       .upToDate(version: "0.1.21"), "no newer release: the floor is not mentioned")
+    }
+
+    /// Fail open: nothing readable as a floor means the update is offered as before.
+    func testAMissingOrUnreadableFloorOffersTheUpdate() {
+        for body in ["", "no marker", "<!-- ox-say-min-macos: -->", "<!-- ox-say-min-macos: abc -->",
+                     "<!-- ox-say-min-macos: 14..2 -->", "<!-- ox-say-min-macos 14.4 -->"] {
+            guard case .available = UpdatePrompt.make(local: "0.1.20", fetch: release("v0.1.21", body: body), host: "13.0") else {
+                return XCTFail("body \(body.debugDescription) must not block the update")
+            }
+        }
+        XCTAssertFalse(ReleaseFloor.isBelow(host: "garbage", floor: "14.2"))
+        XCTAssertFalse(ReleaseFloor.isBelow(host: "14.2", floor: "x"))
+    }
+
+    /// The compare is numeric per component. Mutation: ReleaseFloor.isBelow compares the strings -> RED ("14.10").
+    func testTheFloorCompareIsNumericPerComponent() {
+        XCTAssertFalse(ReleaseFloor.isBelow(host: "14.10", floor: "14.2"))
+        XCTAssertTrue(ReleaseFloor.isBelow(host: "14.2", floor: "14.10"))
+        XCTAssertFalse(ReleaseFloor.isBelow(host: "15", floor: "14.9.9"))
+        XCTAssertFalse(ReleaseFloor.isBelow(host: "14.2", floor: "14.2.0"), "a missing component is 0")
+        XCTAssertTrue(ReleaseFloor.isBelow(host: "14.2", floor: "14.2.1"))
+        XCTAssertTrue(ReleaseFloor.isBelow(host: "13.6.7", floor: "14.2"))
+        XCTAssertEqual(ReleaseFloor.minimum(inBody: "x\n<!--  ox-say-min-macos:  14.2.1  -->\ny"), "14.2.1")
+    }
+
+    func testTheUnsupportedAlertReadsRightInBothLanguages() {
+        let prompt = UpdatePrompt.unsupported(remote: "v0.2.0", local: "0.1.33", floor: "14.4", host: "14.2")
+        XCTAssertEqual(UpdateDialogs.prompt(prompt, text: ShippedStrings.localizer("en")),
+                       UpdateDialog(title: "OxSay v0.2.0 needs a newer macOS",
+                                    text: "It needs macOS 14.4 or later; this Mac has macOS 14.2. OxSay stays on v0.1.33 here.", buttons: ["OK"]))
+        XCTAssertEqual(UpdateDialogs.prompt(prompt, text: ShippedStrings.localizer("ru")),
+                       UpdateDialog(title: "Для OxSay v0.2.0 нужна более новая macOS",
+                                    text: "Нужна macOS 14.4 или новее, а на этом Mac — macOS 14.2. Здесь OxSay остаётся на v0.1.33.", buttons: ["OK"]))
+    }
 }

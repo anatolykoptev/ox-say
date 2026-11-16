@@ -164,6 +164,7 @@ jobs:
       - name: installer tests
         run: |
           bash scripts/test-lib-install.sh
+          bash scripts/test-release-notes-floor.sh
           bash scripts/test-fetch-models.sh
           bash scripts/test-download-stall.sh
           bash scripts/test-uninstall-purge.sh

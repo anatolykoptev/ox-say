@@ -424,6 +424,9 @@
 "update.failed.download_start" = "Скачивание не началось: %@.";
 "update.failed.not_script" = "Скачанный установщик пуст или не является скриптом.";
 "update.failed.installer_exit" = "Установщик завершился с кодом %@.";
+"update.unsupported.title" = "Для OxSay %@ нужна более новая macOS";
+"update.unsupported.text" = "Нужна macOS %@ или новее, а на этом Mac — macOS %@. Здесь OxSay остаётся на v%@.";
+"update.failed.installer_reason" = "Установщик завершился с кодом %@ и сообщил: %@";
 "update.failed.installer_timeout" = "Установка не продвигалась %@ мин и была остановлена. Скачанное сохранено — запустите обновление снова, чтобы продолжить.";
 "update.failed.installer_start" = "Установщик не удалось запустить: %@.";
 "update.failed.version_unchanged" = "Версия не изменилась: после установки ожидалась %1$@, а установлена %2$@.";

@@ -124,6 +124,16 @@ final class AutoUpdateScheduleTests: XCTestCase {
         let gone = TopRows.plan(current: rows, wantRepair: true, wantAllowPasting: false, wantUpdate: false)
         XCTAssertTrue(gone.remove.contains(.update))
     }
+
+    /// #494: the background check offers nothing, and says nothing, for a release this Mac cannot run.
+    /// Mutation: AutoUpdateSchedule.apply, `.unsupported` moved to the `.available` arm's result -> RED.
+    func testAReleaseAboveThisMacsMacOSIsNeitherOfferedNorAnnounced() {
+        let (defaults, drop) = freshDefaults()
+        defer { drop() }
+        let blocked: Fetch = .success(("v9.0.0", nil, "notes\n<!-- ox-say-min-macos: 999.0 -->"))
+        XCTAssertEqual(slot(blocked, local: "0.1.1", now: t0, defaults: defaults), .clear)
+        XCTAssertNil(AutoUpdateState.load(from: defaults).lastNotifiedVersion)
+    }
 }
 
 /// The AppKit side of the background check, gated by reading the sources —
@@ -245,4 +255,5 @@ final class AutoUpdateWiringTests: XCTestCase {
                       "the timers are not added to the common run-loop modes")
         XCTAssertTrue(arm.contains("autoUpdateTimers = timers"), "the added timers are not the ones kept")
     }
+
 }

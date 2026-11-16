@@ -160,6 +160,26 @@ public enum UpdateInstaller {
         return v
     }
 
+    /// The longest reason an alert carries, in characters.
+    public static let reasonLimit = 200
+
+    /// The sentence a failed installer said last (#494): get.sh refuses with one line on stderr ("ox-say needs
+    /// macOS 14.2 or later; this is 13.6."), and the log it shares with stdout is all the app sees of it.
+    /// `output` is what the installer printed. Progress ticker lines and blanks are skipped, `\r` ends a line like
+    /// `\n` (the download bar redraws with it), control characters are dropped, and the result is cut at
+    /// `reasonLimit`. nil when nothing readable is left.
+    public static func refusalReason(in output: String) -> String? {
+        let lines = output.split(whereSeparator: { $0 == "\n" || $0 == "\r" })
+        for line in lines.reversed() {
+            var text = ""
+            text.unicodeScalars.append(contentsOf: line.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+            let clean = text.trimmingCharacters(in: .whitespaces)
+            if clean.isEmpty || clean.hasPrefix("progress ") { continue }
+            return clean.count > reasonLimit ? String(clean.prefix(reasonLimit - 1)) + "…" : clean
+        }
+        return nil
+    }
+
     /// Why an install did not produce the new version; `message` is the alert text.
     public enum Failure: Equatable {
         case downloadFailed(status: Int32)
@@ -168,7 +188,8 @@ public enum UpdateInstaller {
         case downloadTimedOut(seconds: TimeInterval?)
         case downloaderCouldNotStart(String)
         case notAScript
-        case installerFailed(status: Int32)
+        /// `reason` is the installer's own last sentence (`UpdateInstaller.refusalReason`), nil when the log held none.
+        case installerFailed(status: Int32, reason: String? = nil)
         /// #356: the installer made no progress for `seconds` (`installerIdleLimit`) and its process tree was ended.
         case installerTimedOut(seconds: TimeInterval)
         case couldNotStart(String)
@@ -190,8 +211,9 @@ public enum UpdateInstaller {
                 return fill(.updateFailedDownloadStart, why)
             case .notAScript:
                 return text(.updateFailedNotScript)
-            case .installerFailed(let status):
-                return fill(.updateFailedInstallerExit, String(status))
+            case .installerFailed(let status, let reason):
+                guard let reason else { return fill(.updateFailedInstallerExit, String(status)) }
+                return fill(.updateFailedInstallerReason, String(status), reason)
             case .installerTimedOut(let seconds):
                 return fill(.updateFailedInstallerTimeout, String(Int((seconds / 60).rounded(.up))))
             case .couldNotStart(let why):
@@ -279,6 +301,7 @@ public enum UpdateInstaller {
                            downloadBackstop: TimeInterval = downloadBackstop,
                            downloadArgv: (String, String) -> [String] = { downloadCommand(to: $0, from: $1) },
                            installerWatch: IdleWatch? = nil,
+                           installerOutput: (_ since: UInt64) -> String? = { _ in nil },
                            installer: (Kind, String, String) -> Command = { command(kind: $0, script: $1, tag: $2) },
                            installedVersion: () -> String?,
                            daemonVersion: () async -> String?) async -> Failure? {
@@ -301,10 +324,12 @@ public enum UpdateInstaller {
 
         let watch = installerWatch ?? IdleWatch(idleLimit: installerIdleLimit, pollInterval: progressPollInterval,
                                                 progress: { installProgress(log: log) })
+        let installerStart = installProgress(log: log)
         switch await runProcess(installer(kind, script.path, tag), log: log, idle: watch) {
         case .failure(is ProcessTimedOut): return .installerTimedOut(seconds: watch.idleLimit)
         case .failure(let error): return .couldNotStart(error.localizedDescription)
-        case .success(let status) where status != 0: return .installerFailed(status: status)
+        case .success(let status) where status != 0:
+            return .installerFailed(status: status, reason: installerOutput(installerStart).flatMap(refusalReason(in:)))
         case .success: break
         }
         return await verifyInstalled(version: installedVersion(), daemonVersion: daemonVersion, target: tag)
