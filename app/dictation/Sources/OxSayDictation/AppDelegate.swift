@@ -899,6 +899,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             voiceover: { [unowned self] in self.studio.voiceover },
             saveFile: { [unowned self] file, done in
                 TranscriptSave.present(file, in: self.mainWindow.window, completion: done)
+            },
+            chooseCleanOutput: { [unowned self] request, done in
+                CleanOutputPanel.present(request, in: self.mainWindow.window, completion: done)
             })
     }
 

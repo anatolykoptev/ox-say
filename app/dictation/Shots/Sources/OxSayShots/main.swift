@@ -159,6 +159,17 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
         d.transcribe = v
         return d
     }
+    /// The Расшифровка page with the cleanup bar in the given state.
+    func cleanScene(_ now: Date, _ ru: Bool, _ state: CleanActionState, playback: CleanPlayback = CleanPlayback(),
+                    _ change: (inout TranscribeValues, inout MainWindowData) -> Void = { _, _ in }) -> MainWindowData {
+        var d = transcribe(now, ru) { v, d in v.selectedID = v.entries.first?.id; change(&v, &d) }
+        d.clean = CleanValues(state: state, playback: playback)
+        return d
+    }
+    func cleanDone(_ ru: Bool) -> CleanDone {
+        CleanDone(inputPath: "/Users/demo/Movies/\(ru ? "Интервью" : "Interview").mov",
+                  outputPath: "/Users/demo/Movies/\(ru ? "Интервью" : "Interview")-clean.mov", video: true, seconds: 180)
+    }
     /// The Голоса page with the design sheet open on a flow after the given steps (typed text in the language of the shot).
     func designSheet(_ now: Date, _ ru: Bool, _ steps: (inout VoiceDesignFlow) -> Void, label: (() -> String)? = nil) -> MainWindowData {
         var f = VoiceDesignFlow(description: ru ? "Спокойный диктор, мужской голос, неспешный и тёплый" : "A calm male narrator, unhurried and warm",
@@ -416,6 +427,41 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
                 v.entries = []
                 d.notice = TranscribeFileCheck.problem(bytes: Int64(TranscribeFileCheck.maxBytes) + 1, ext: "mp4")
             }
+        },
+        // Voice cleanup on the Расшифровка page: ready, ready on an empty page, first use, working, cancelling, done (paused on the
+        // cleaned side; playing the original), a refusal, and the two reasons that hide the button.
+        Scene(name: "clean-idle", section: .transcribe, meeting: nil) { now, ru in
+            cleanScene(now, ru, .idle(firstUse: false))
+        },
+        Scene(name: "clean-idle-empty", section: .transcribe, meeting: nil) { now, ru in
+            cleanScene(now, ru, .idle(firstUse: false)) { v, _ in v.entries = [] }
+        },
+        Scene(name: "clean-first-use", section: .transcribe, meeting: nil) { now, ru in
+            cleanScene(now, ru, .idle(firstUse: true))
+        },
+        Scene(name: "clean-working", section: .transcribe, meeting: nil) { now, ru in
+            cleanScene(now, ru, .working(name: ru ? "Интервью-clean.mov" : "Interview-clean.mov", cancelling: false))
+        },
+        Scene(name: "clean-cancelling", section: .transcribe, meeting: nil) { now, ru in
+            cleanScene(now, ru, .working(name: ru ? "Интервью-clean.mov" : "Interview-clean.mov", cancelling: true))
+        },
+        Scene(name: "clean-done", section: .transcribe, meeting: nil) { now, ru in
+            cleanScene(now, ru, .done(cleanDone(ru)), playback: CleanPlayback(side: .cleaned, isPlaying: false, position: 42, duration: 180))
+        },
+        Scene(name: "clean-done-original", section: .transcribe, meeting: nil) { now, ru in
+            cleanScene(now, ru, .done(cleanDone(ru)), playback: CleanPlayback(side: .original, isPlaying: true, position: 95, duration: 180))
+        },
+        Scene(name: "clean-error", section: .transcribe, meeting: nil) { now, ru in
+            cleanScene(now, ru, .failed(CleanProblem.diskFull.sentence()))
+        },
+        Scene(name: "clean-error-busy", section: .transcribe, meeting: nil) { now, ru in
+            cleanScene(now, ru, .failed(CleanProblem.gpuBusy.sentence()))
+        },
+        Scene(name: "clean-unavailable-os", section: .transcribe, meeting: nil) { now, ru in
+            cleanScene(now, ru, .unavailable(reason: L10nKey.cleanReasonOSTooOld.text))
+        },
+        Scene(name: "clean-unavailable-engine", section: .transcribe, meeting: nil) { now, ru in
+            cleanScene(now, ru, .unavailable(reason: L10nKey.cleanReasonEngineMissing.text))
         },
         Scene(name: "voices-design-unavailable", section: .voices, meeting: nil) {
             voices(PreviewData.make(now: $0, ru: $1)) { $0.designAvailability = .unavailable(StudioMenu.unavailableText(reason: nil)) }

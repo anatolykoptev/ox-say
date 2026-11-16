@@ -26,10 +26,12 @@ public struct DaemonStatus: Equatable {
     /// from a daemon that does not report them (the app then assumes the defaults, `TranscribeLimits.fallback`).
     public var sttTimeoutSeconds: Double?
     public var sttMaxUploadMB: Int?
+    /// The voice cleanup (`voice_clean`); nil from a daemon that does not report it.
+    public var voiceClean: CleanStatus?
 
     public init(version: String?, studioAvailable: Bool, studioReason: String? = nil, studioReasonCode: String? = nil,
                 idle: Bool = true, notes: NotesStatus = NotesStatus(), sttTimeoutSeconds: Double? = nil,
-                sttMaxUploadMB: Int? = nil) {
+                sttMaxUploadMB: Int? = nil, voiceClean: CleanStatus? = nil) {
         self.version = version
         self.studioAvailable = studioAvailable
         self.studioReason = studioReason
@@ -38,6 +40,7 @@ public struct DaemonStatus: Equatable {
         self.notes = notes
         self.sttTimeoutSeconds = sttTimeoutSeconds
         self.sttMaxUploadMB = sttMaxUploadMB
+        self.voiceClean = voiceClean
     }
 
     public static let reasonModelMissing = "model_missing"
@@ -64,7 +67,8 @@ public struct DaemonStatus: Equatable {
                             idle: obj["idle"] as? Bool ?? true,
                             notes: NotesStatus.decode(obj["notes"] as? [String: Any]),
                             sttTimeoutSeconds: (config?["stt_timeout_s"] as? Double).flatMap { $0 > 0 ? $0 : nil },
-                            sttMaxUploadMB: (config?["stt_max_upload_mb"] as? Int).flatMap { $0 > 0 ? $0 : nil })
+                            sttMaxUploadMB: (config?["stt_max_upload_mb"] as? Int).flatMap { $0 > 0 ? $0 : nil },
+                            voiceClean: CleanStatus.decode(obj["voice_clean"] as? [String: Any]))
     }
 
     private static func nonEmpty(_ text: String?) -> String? {

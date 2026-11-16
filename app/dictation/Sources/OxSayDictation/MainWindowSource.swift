@@ -51,6 +51,8 @@ struct MainWindowHost {
     var voiceover: () -> VoiceoverService
     /// The save panel for a transcript (a sheet on the main window); the answer says whether the file was written.
     var saveFile: (TranscriptFile, @escaping (Bool) -> Void) -> Void
+    /// The save panel of the voice cleanup (a sheet on the main window): where the cleaned copy goes; nil when cancelled.
+    var chooseCleanOutput: (CleanOutputRequest, @escaping (URL?) -> Void) -> Void
 }
 
 /// Fills the main window with what the app really has and carries out what the window asks. The window holds no timer:
@@ -69,6 +71,7 @@ final class MainWindowSource {
     private var voiceSource: VoiceSource!
     private var speakSource: SpeakSource!
     private var transcribeSource: TranscribeSource!
+    private var cleanSource: CleanSource!
     /// Each click on a line is one request; a probe that comes back after another click, a stop or a close is dropped.
     private var playRequests = PlayRequestGuard()
     private var detailReads = DetailReads()
@@ -114,10 +117,18 @@ final class MainWindowSource {
                                   })
         speakSource = SpeakSource(model: model, host: host)
         transcribeSource = TranscribeSource(model: model, host: host)
+        cleanSource = CleanSource(model: model, host: host)
         if let id = restored.speakID { speakSource.openProject(id) }
         speakSource.stopOtherAudio = { [weak self] in
             self?.voiceSource.stopPreview()
             self?.stopPlayback()
+            self?.cleanSource.stopPlayback()
+            host.stopSpeechPlayer()
+        }
+        cleanSource.stopOtherAudio = { [weak self] in
+            self?.voiceSource.stopPreview()
+            self?.stopPlayback()
+            self?.speakSource.stopClip()
             host.stopSpeechPlayer()
         }
         let defaults = host.defaults
@@ -194,8 +205,8 @@ final class MainWindowSource {
     /// A speak request is on its way or a clip sounds: the version handshake waits for it.
     var speakBusy: Bool { speakSource.busy }
 
-    /// A file is being uploaded or transcribed: the version handshake waits for it.
-    var transcribing: Bool { transcribeSource.transcribing }
+    /// A file is being uploaded, transcribed or cleaned: the version handshake waits for it.
+    var transcribing: Bool { transcribeSource.transcribing || cleanSource.working }
 
     /// Points the window at a section (and a meeting). A route without a meeting leaves the open one alone.
     func apply(_ route: MainRoute) {
@@ -211,6 +222,7 @@ final class MainWindowSource {
         activeObserver = nil
         cancelSearchWork()
         stopPlayback()
+        cleanSource.stopPlayback()
         speakSource.windowClosed()
         voiceSource.stopPreview()
         voiceSource.quietDesign()
@@ -244,6 +256,7 @@ final class MainWindowSource {
     func recordingChanged() {
         // A call's audio never plays while a recording runs, visible window or not — nor does a voice's sample.
         if host.meetings()?.recordingElapsed != nil { stopPlayback(); voiceSource.stopPreview(); voiceSource.quietDesign(); voiceSource.quietFile(); voiceSource.meetingStarted() }
+        if host.meetings()?.recordingElapsed != nil { cleanSource.stopPlayback() }
         if host.meetings()?.recordingElapsed != nil { speakSource.recordingStarted() }
         guard visible else { return }
         syncRecording()
@@ -307,7 +320,7 @@ final class MainWindowSource {
         a.setHotkeyMode = { [weak self] mode in self?.host.setHotkeyMode(mode) }
         a.pickVoice = { [weak self] slot, voice in self?.host.pickVoice(slot, voice) }
         a.reloadVoices = { [weak self] in self?.voiceSource.reload() }
-        a.previewVoice = { [weak self] id in self?.speakSource.stopClip(); self?.voiceSource.preview(id) }
+        a.previewVoice = { [weak self] id in self?.speakSource.stopClip(); self?.cleanSource.stopPlayback(); self?.voiceSource.preview(id) }
         a.stopPreview = { [weak self] in self?.voiceSource.stopPreview() }
         a.renameVoice = { [weak self] id, label in self?.voiceSource.rename(id, label) }
         a.deleteVoice = { [weak self] id in self?.voiceSource.delete(id) }
@@ -356,6 +369,13 @@ final class MainWindowSource {
         a.transcribeCopy = { [weak self] id in self?.transcribeSource.copy(id) }
         a.transcribeSave = { [weak self] id, format in self?.transcribeSource.save(id, format) }
         a.transcribeDelete = { [weak self] id in self?.transcribeSource.delete(id) }
+        a.cleanPick = { [weak self] url in self?.cleanSource.pick(url) }
+        a.cleanCancel = { [weak self] in self?.cleanSource.cancel() }
+        a.cleanReveal = { [weak self] in self?.cleanSource.reveal() }
+        a.cleanDismiss = { [weak self] in self?.cleanSource.dismiss() }
+        a.cleanPlayPause = { [weak self] in self?.cleanSource.playPause() }
+        a.cleanSide = { [weak self] side in self?.cleanSource.choose(side) }
+        a.cleanSeek = { [weak self] seconds in self?.cleanSource.seek(seconds) }
         return a
     }
 
@@ -392,6 +412,7 @@ final class MainWindowSource {
                 await status.value
                 updateDesignAvailability()
                 speakSource.statusRead()
+                cleanSource.statusRead()
             } while gate.finish()
             schedulePolling()
         }
@@ -576,6 +597,7 @@ final class MainWindowSource {
                         return
                     }
                     speakSource.stopClip()
+                    cleanSource.stopPlayback()
                     audio.play(url: host.client.meetingAudioURL(id: id), meetingID: id, from: start)
                 case .removed:
                     // Retention took it: the line says so once (the header notice) and offers no play any more.
