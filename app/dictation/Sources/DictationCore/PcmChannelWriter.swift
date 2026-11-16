@@ -46,6 +46,10 @@ public final class PcmChannelWriter {
     private var failed = 0
     private var dropped = 0
     private var padded = 0
+    private var closed = false
+    private var flushes = 0
+    /// `fsync` of one descriptor: injected so a test sees that it ran on a live descriptor.
+    private let sync: (Int32) -> Void
 
     /// Writes that failed; the controller stops and tells the user on the first.
     public var failedWrites: Int { lock.withLock { failed } }
@@ -77,10 +81,34 @@ public final class PcmChannelWriter {
         do { try target.setResourceValues(values); return true } catch { return false }
     }
 
-    init(handle: FileHandle, t0: UInt64) {
+    init(handle: FileHandle, t0: UInt64, sync: @escaping (Int32) -> Void = PcmChannelWriter.fullSync) {
         self.handle = handle
         self.t0 = t0
+        self.sync = sync
     }
+
+    /// F_FULLFSYNC asks the drive to empty its own cache as well; plain fsync is the fallback for a volume that does
+    /// not support it.
+    static let fullSync: (Int32) -> Void = { fd in
+        if fcntl(fd, F_FULLFSYNC) != 0 { _ = fsync(fd) }
+    }
+
+    /// Puts what was written so far on the disk. Called from a timer thread while the audio threads keep appending:
+    /// the writer's lock is held only to take a private copy of the descriptor, and the sync itself runs outside it, so
+    /// an append never waits for the disk. A channel that is already finished has nothing left to sync.
+    public func flush() {
+        let fd: Int32 = lock.withLock {
+            guard !closed else { return -1 }
+            flushes += 1
+            return dup(handle.fileDescriptor)
+        }
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        sync(fd)
+    }
+
+    /// Flushes that reached the disk call (a finished channel's are not counted).
+    public var flushCount: Int { lock.withLock { flushes } }
 
     /// Samples written so far, padding included: the channel's length.
     public var samples: Int { lock.withLock { written } }
@@ -151,6 +179,7 @@ public final class PcmChannelWriter {
             }
         }
         try? handle.close()
+        closed = true
     }
 
     static func pcm16(_ chunk: [Float]) -> Data {
