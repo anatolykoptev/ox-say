@@ -67,6 +67,9 @@ final class MainWindowSource {
     private var pollTask: Task<Void, Never>?
     private var clockTimer: Timer?
     private var gate = RefreshGate()
+    /// The poll of live captions of the chosen meeting while it is recorded (`LivePolling`); one at a time.
+    private var liveTask: Task<Void, Never>?
+    private var liveMeeting: String?
     private let audio = MeetingAudioPlayer()
     private var voiceSource: VoiceSource!
     private var speakSource: SpeakSource!
@@ -249,6 +252,7 @@ final class MainWindowSource {
 
     private func stopClocks() {
         visible = false
+        stopLive()
         pollTask?.cancel()
         pollTask = nil
         clockTimer?.invalidate()
@@ -403,6 +407,8 @@ final class MainWindowSource {
                 let (list, load) = await service.list()
                 if let list {
                     model.data.meetings = list
+                    // a meeting that is no longer being recorded has its transcript now: the live preview is dropped
+                    model.data.live = model.data.live.filter { id, _ in list.contains { $0.id == id && $0.status == .recording } }
                     if restoredMeetingUnchecked {
                         restoredMeetingUnchecked = list.isEmpty
                         model.selectedMeeting = MainRoute(section: model.section, meetingID: model.selectedMeeting)
@@ -424,6 +430,7 @@ final class MainWindowSource {
     private func schedulePolling() {
         pollTask?.cancel()
         pollTask = nil
+        syncLive()
         // The next read is due when a meeting is still being processed, or when Озвучка is in view and the daemon does not
         // answer (it backs off, so a daemon that never comes up is asked rarely): whichever is sooner.
         let meetings = MeetingsPolling.needed(visible: visible, meetings: model.data.meetings, writer: model.data.meetingSettings.notesWriter)
@@ -435,6 +442,58 @@ final class MainWindowSource {
             guard !Task.isCancelled else { return }
             self?.refresh()
         }
+    }
+
+    // MARK: live captions
+
+    /// Starts or stops the live poll to match the window: only while it is visible, on the Meetings page, with a
+    /// meeting that is being recorded chosen. Called after every refresh pass and every route change.
+    private func syncLive() {
+        let selected = model.selectedMeeting.flatMap { id in model.data.meetings.first { $0.id == id } }
+        guard model.section == .meetings, LivePolling.needed(visible: visible, selected: selected), let id = selected?.id else {
+            stopLive()
+            return
+        }
+        if liveMeeting == id, liveTask != nil { return }
+        stopLive()
+        liveMeeting = id
+        liveTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, await self.readLive(id) else { return }
+                let delay = LivePolling.delay(failures: self.model.data.live[id]?.failures ?? 0)
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+        }
+    }
+
+    private func stopLive() {
+        liveTask?.cancel()
+        liveTask = nil
+        liveMeeting = nil
+    }
+
+    /// One poll. False when the recording is over: the loop ends and the list is read again, which moves the row on.
+    /// A failed poll keeps what is shown and is tried again; the cursor only moves with a caption that was added.
+    private func readLive(_ id: String) async -> Bool {
+        var feed = model.data.live[id] ?? LiveFeed()
+        do {
+            let answer = try await host.client.liveCaptions(id: id, after: feed.cursor)
+            guard !Task.isCancelled else { return false }
+            feed.apply(answer)
+            if model.data.live[id] != feed { model.data.live[id] = feed }
+            if !answer.state.recording {
+                stopLive()
+                refresh()
+                return false
+            }
+        } catch {
+            // The next poll asks again from the same cursor; a run of failures is counted, so the view says so and the
+            // poll slows down (`LivePolling.delay`) instead of asking a dead daemon every 2 s behind "Listening".
+            guard !Task.isCancelled else { return false }
+            feed.pollFailed()
+            model.data.live[id] = feed
+        }
+        return true
     }
 
     /// The recording bar: elapsed time from the meeting feature itself, ticking once a second while one runs.

@@ -218,6 +218,14 @@
 "meeting.notes.failed" = "Заметки не удалось составить.";
 "meeting.notes.retry" = "Повторить";
 "meeting.transcript.none" = "Расшифровка ещё не готова.";
+"meeting.live.them" = "Собеседники";
+"meeting.live.waiting" = "Слушаю. Текст появляется через несколько секунд после слов.";
+"meeting.live.preview" = "Живой текст — набросок. Когда запись закончится, его заменят полная расшифровка и заметки.";
+"meeting.live.behind" = "Живой текст отстаёт.";
+"meeting.live.unavailable" = "Живой текст приостановлен: движок распознавания сейчас недоступен.";
+"meeting.live.off" = "Живой текст на этом Маке выключен.";
+"meeting.live.unreadable" = "Живой текст сейчас не читается. Запись продолжается.";
+"meeting.live.latest" = "К последнему";
 "meeting.audio_deleted" = "Звук удалён по истечении срока хранения. Заметки и расшифровка остались.";
 "meeting.speaker.you" = "Вы";
 "meeting.speaker.time" = "Время речи: %@";

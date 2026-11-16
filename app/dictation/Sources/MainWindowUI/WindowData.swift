@@ -157,13 +157,16 @@ public struct MainWindowData: Equatable {
     public var speak: SpeakValues
     public var transcribe: TranscribeValues
     public var clean: CleanValues
+    /// The live captions of the meeting being recorded, by meeting id (`LiveFeed`: what the window holds and the cursor).
+    public var live: [String: LiveFeed]
 
     public init(meetings: [MeetingInfo], meetingsLoad: MeetingsLoad = .loaded, details: [String: MeetingDetail],
                 detailLoading: Set<String> = [], detailError: [String: String] = [:], recordingElapsed: TimeInterval? = nil,
                 notice: String? = nil, search: MeetingSearchState = MeetingSearchState(), playback: PlaybackValues? = nil,
                 meetingSettings: MeetingSettingsValues, permissions: [PermissionItem],
                 dictation: DictationValues, voices: VoicesValues, about: AboutValues, speak: SpeakValues = SpeakValues(),
-                transcribe: TranscribeValues = TranscribeValues(), clean: CleanValues = CleanValues()) {
+                transcribe: TranscribeValues = TranscribeValues(), clean: CleanValues = CleanValues(),
+                live: [String: LiveFeed] = [:]) {
         self.meetings = meetings
         self.meetingsLoad = meetingsLoad
         self.details = details
@@ -181,6 +184,7 @@ public struct MainWindowData: Equatable {
         self.speak = speak
         self.transcribe = transcribe
         self.clean = clean
+        self.live = live
     }
 }
 

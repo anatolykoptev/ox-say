@@ -79,6 +79,33 @@ public enum PreviewData {
         return d
     }
 
+    /// A call being recorded, with its live captions: the meeting `live` is chosen, a few lines in. `behind` shows the
+    /// sentence under the list for captions that are held back.
+    public static func liveRecording(now: Date = Date(), ru: Bool = L10nBundle.locale.identifier.hasPrefix("ru"),
+                                     behind: Bool = false, empty: Bool = false) -> MainWindowData {
+        var d = recording(now: now, ru: ru)
+        let info = MeetingInfo(id: "live", title: "Meet call", started: now.addingTimeInterval(-(12 * 60 + 34)), status: .recording,
+                               ownerLabel: ru ? "Анатолий" : "Anatoly")
+        d.meetings.insert(info, at: 0)
+        d.details["live"] = MeetingDetail(info: info)
+        let lines: [(String, String)] = ru
+            ? [("me", "Давайте начнём со статуса по предложению."), ("them", "Да, я как раз отправила обновлённую смету."),
+               ("them", "Осталось согласовать срок запуска."), ("me", "Срок можно сдвинуть на вторую неделю декабря."),
+               ("them", "Тогда я подтвержу это с командой сегодня.")]
+            : [("me", "Let's start with the status of the proposal."), ("them", "Sure, I just sent over the updated budget."),
+               ("them", "What's left is to agree on the launch date."), ("me", "We can move the launch to the second week of December."),
+               ("them", "Then I'll confirm that with the team today.")]
+        var feed = LiveFeed()
+        if !empty {
+            let captions = lines.enumerated().map { LiveCaption(seq: $0 + 1, channel: $1.0 == "me" ? .me : .them, start: Double(40 + $0 * 9), end: Double(46 + $0 * 9), text: $1.1) }
+            feed.apply(LiveAnswer(captions: captions, next: captions.count, state: LiveCaptionState(lagging: behind, paused: behind ? "dictation" : nil)))
+        } else {
+            feed.apply(LiveAnswer(captions: [], next: 0, state: LiveCaptionState()))
+        }
+        d.live["live"] = feed
+        return d
+    }
+
     /// Search results for a word the sample call has in its notes and its transcript. One snippet carries a link, to
     /// show that it is text.
     public static func searching(now: Date = Date(), ru: Bool = L10nBundle.locale.identifier.hasPrefix("ru"),
