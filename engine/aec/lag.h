@@ -25,7 +25,14 @@ namespace oxaec {
 struct LagWindow {
     double lag_ms; // applied estimate in ms; carried forward when not measured
     bool measured; // the render was voiced and the correlation was confident
+    bool voiced;   // the render window cleared the voiced floor at all
 };
+
+// Floor for the second-peak guard in lag_measure (the guard itself grows with
+// the search radius: a real echo's impulse-response skirt widens the peak by
+// ~125 ms at the production max_lag, so the sidelobe the peak is compared
+// against must sit well outside it).
+inline constexpr int kLagPeakGuard = 32;
 
 inline size_t lag_next_pow2(size_t n) {
     size_t p = 1;
@@ -81,14 +88,20 @@ inline void lag_xcorr(const std::complex<double>* fa, const std::complex<double>
 
 // Estimate the lag for one window: corr[d] = sum_n a[n] * b[c0 + n + d],
 // d in [-max_lag, +max_lag] samples. Returns the best d and sets *score to the
-// correlation normalized by the render window's energy, so the caller can
-// reject an argmax made of noise.
+// correlation normalized by sqrt(E_render * E_capture) over the compared span —
+// a Pearson-style coefficient in [-1, 1] that does not scale with the capture
+// level, so a loud uncorrelated capture cannot pass where a quiet echo can.
+// *peak_ratio gets s(d*) / s2 where s2 is the strongest score outside a guard
+// around d*: a real echo is one dominant alignment while uncorrelated input is
+// a flat landscape whose argmax barely exceeds its runner-up. The guard is a
+// quarter of the search radius (at least kLagPeakGuard samples) so a real
+// impulse response's skirt counts as part of the peak, not as the sidelobe.
 inline int lag_measure(const int16_t* render, size_t render_n,
                        const int16_t* capture, size_t capture_n,
                        size_t w0, size_t window, int max_lag,
                        std::complex<double>* fa, std::complex<double>* fb,
                        std::complex<double>* work, size_t fft_n,
-                       double* score) {
+                       double* score, double* peak_ratio) {
     // A = render[w0, w0+window); B = capture[w0-max_lag, w0+window+max_lag)
     // clamped to the file. corr[d] = sum_n A[n] * B[n + d + max_lag].
     size_t a_len = std::min(window, render_n > w0 ? render_n - w0 : size_t(0));
@@ -119,26 +132,55 @@ inline int lag_measure(const int16_t* render, size_t render_n,
         double v = render[w0 + i] - am;
         ea += v * v;
     }
+    // The compared capture span's energy per candidate lag, sliding by prefix
+    // sums over the same mean-centered capture the FFT sees (out-of-file
+    // positions are the zero fill the correlation treats them as). The score
+    // s(t) = corr/sqrt(EA*EB(t)) is bounded by 1 (Cauchy-Schwarz over the same
+    // terms) and independent of how loud the capture is.
+    std::vector<double> pb(b_len + 1, 0.0);
+    for (size_t i = 0; i < b_len; ++i) {
+        long idx = c0 + static_cast<long>(i);
+        double v = (idx >= 0 && idx < static_cast<long>(capture_n))
+                       ? static_cast<double>(capture[idx]) - bm
+                       : 0.0;
+        pb[i + 1] = pb[i] + v * v;
+    }
+    std::vector<double> scores(2 * static_cast<size_t>(max_lag) + 1);
     int best_t = 0;
-    double best_v = -1e300;
+    double best_s = -1.0;
     for (int t = 0; t <= 2 * max_lag; ++t) {
-        if (work[t].real() > best_v) {
-            best_v = work[t].real();
+        double eb = pb[t + a_len] - pb[t];
+        double s = (ea > 0.0 && eb > 0.0) ? work[t].real() / std::sqrt(ea * eb) : 0.0;
+        scores[t] = s;
+        if (s > best_s) {
+            best_s = s;
             best_t = t;
         }
     }
-    *score = ea > 0.0 ? best_v / ea : 0.0;
+    *score = best_s;
+    // The strongest score away from the winner. Uncorrelated input tops out at
+    // ~1.05x its runner-up; a real echo stands several times taller, because
+    // the second peak is just the next noise draw.
+    const int guard = std::max(kLagPeakGuard, max_lag / 4);
+    double second = 0.0;
+    for (int t = 0; t <= 2 * max_lag; ++t) {
+        if (std::abs(t - best_t) > guard && scores[t] > second) second = scores[t];
+    }
+    *peak_ratio = second > 0.0 ? best_s / second : (best_s > 0.0 ? 1e9 : 0.0);
     return best_t - max_lag;
 }
 
 // Per-window lag estimates over the render timeline: one value per
 // `window`-sample window. Windows where the render is not voiced (RMS below
 // voiced_floor, in int16 amplitude units) or the correlation is too weak keep
-// the previous estimate; before the first measured window that is 0.
+// the previous estimate; before the first measured window that is 0. A window
+// counts as measured when its normalized score clears min_score and its
+// peak-to-second-peak ratio clears min_ratio.
 inline std::vector<LagWindow> estimate_lags(const int16_t* render, size_t render_n,
                                             const int16_t* capture, size_t capture_n,
                                             size_t window, int max_lag,
-                                            double voiced_floor, double min_score) {
+                                            double voiced_floor, double min_score,
+                                            double min_ratio) {
     std::vector<LagWindow> out;
     if (window == 0 || render_n == 0) return out;
     size_t fft_n = lag_next_pow2(window + 2 * static_cast<size_t>(max_lag) + 1);
@@ -146,18 +188,19 @@ inline std::vector<LagWindow> estimate_lags(const int16_t* render, size_t render
     int carry = 0;
     for (size_t w0 = 0; w0 < render_n; w0 += window) {
         size_t a_len = std::min(window, render_n - w0);
+        bool voiced = lag_rms(render + w0, a_len) >= voiced_floor && capture_n > 0;
         bool measured = false;
-        if (lag_rms(render + w0, a_len) >= voiced_floor && capture_n > 0) {
-            double score = 0.0;
+        if (voiced) {
+            double score = 0.0, ratio = 0.0;
             int d = lag_measure(render, render_n, capture, capture_n, w0, window,
                                 max_lag, fa.data(), fb.data(), work.data(), fft_n,
-                                &score);
-            if (score >= min_score) {
+                                &score, &ratio);
+            if (score >= min_score && ratio >= min_ratio) {
                 carry = d;
                 measured = true;
             }
         }
-        out.push_back({carry / 16.0, measured});
+        out.push_back({carry / 16.0, measured, voiced});
     }
     return out;
 }
