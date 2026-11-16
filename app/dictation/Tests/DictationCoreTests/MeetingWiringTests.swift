@@ -245,7 +245,7 @@ final class MeetingWiringTests: XCTestCase {
     func testTheBadgeIsPlacedAgainWhenTheDisplaysChange() throws {
         let badge = try source("OxSayDictation/MeetingBadge.swift")
         XCTAssertTrue(badge.contains("forName: NSApplication.didChangeScreenParametersNotification"))
-        XCTAssertTrue(badge.contains("{ [weak self] _ in self?.screensChanged() }"))
+        XCTAssertTrue(badge.contains("{ [weak self] _ in MainActor.assumeIsolated { self?.screensChanged() } }"))
         XCTAssertTrue(badge.contains("NotificationCenter.default.removeObserver(screenObserver)"))
         let changed = try XCTUnwrap(body(badge, of: "private func screensChanged() {"))
         XCTAssertTrue(changed.contains("guard panel.isVisible, mode != nil else { return }"))

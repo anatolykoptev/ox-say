@@ -11,14 +11,14 @@ struct MeetingHost {
     /// Told whether a call is on, for the dictation sound mode (it must not lower a call).
     var callActivity: CallActivity
     /// A modal alert over every app; returns the pressed button.
-    var alert: (_ title: String, _ text: String, _ buttons: [String]) -> NSApplication.ModalResponse
+    var alert: @MainActor (_ title: String, _ text: String, _ buttons: [String]) -> NSApplication.ModalResponse
     /// A short message in the status line.
-    var notify: (String) -> Void
+    var notify: @MainActor (String) -> Void
     /// The recording started or stopped: redraw the status icon, and let a held version handshake run.
-    var recordingChanged: () -> Void
-    var daemonStatus: () -> DaemonStatus?
+    var recordingChanged: @MainActor () -> Void
+    var daemonStatus: @MainActor () -> DaemonStatus?
     /// An update is being installed: a recording started now would be ended by the relaunch.
-    var updateInstalling: () -> Bool
+    var updateInstalling: @MainActor () -> Bool
 }
 
 /// What the app holds of the meeting feature.

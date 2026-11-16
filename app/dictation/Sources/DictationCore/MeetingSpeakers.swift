@@ -295,11 +295,15 @@ public struct SpeakersSavePlan: Equatable {
 
 /// The menu panel's save with its side effects as closures, so that "exactly one notice per save" is a behaviour that
 /// the tests drive with recording fakes instead of a pin on the app's source text.
+///
+/// Both entry points are `@MainActor`: `notify` ends in AppKit (the pill), and a nonisolated async function resumes
+/// on whatever executor the daemon call finished on. Renaming a speaker in the main window crashed the app that way.
 public enum SpeakersSaveRun {
     /// Sends the plan's edits and says what happened in ONE notice. Nothing to send: the notice (if the plan left
     /// something out) is the refusal and nothing is sent; nil. Otherwise the daemon's answer.
     /// - `send`: the daemon call; its failure propagates and notifies nothing here (the caller says it once).
     /// - `followUp`: what the app does after a save (stale flag, notes, copy); returns the copy's sentence, if any.
+    @MainActor
     public static func run(plan: SpeakersSavePlan,
                            send: (SpeakerEdits) async throws -> SpeakersState,
                            followUp: (SpeakersState) async -> String?,
@@ -313,6 +317,7 @@ public enum SpeakersSaveRun {
 
     /// The send and its single notice. `notSaved`: the plan's sentence for what was left out; it is appended to the
     /// notice, never a second one.
+    @MainActor
     public static func save(edits: SpeakerEdits, notSaved: String?,
                             send: (SpeakerEdits) async throws -> SpeakersState,
                             followUp: (SpeakersState) async -> String?,

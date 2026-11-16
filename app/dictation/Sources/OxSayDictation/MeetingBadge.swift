@@ -11,6 +11,7 @@ private let badgeLog = Logger(subsystem: "io.github.anatolykoptev.ox-say.dictati
 /// to a browser, the Automation-consent question with Allow… / Not now.
 /// It is its own window, not the dictation pill, so a dictation never takes it
 /// down and a recording never waits for one.
+@MainActor
 final class MeetingBadge {
     enum Mode: Equatable {
         case recording(auto: Bool)
@@ -143,9 +144,9 @@ final class MeetingBadge {
             stack.bottomAnchor.constraint(equalTo: background.bottomAnchor),
         ])
         screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
-                                                                 object: nil, queue: .main) { [weak self] _ in self?.screensChanged() }
+                                                                 object: nil, queue: .main) { [weak self] _ in MainActor.assumeIsolated { self?.screensChanged() } }
         moveObserver = NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: panel,
-                                                              queue: .main) { [weak self] _ in self?.panelMoved() }
+                                                              queue: .main) { [weak self] _ in MainActor.assumeIsolated { self?.panelMoved() } }
     }
 
     deinit {

@@ -92,4 +92,51 @@ final class SpeakersSaveRunTests: XCTestCase {
         XCTAssertTrue(f.notices.isEmpty, "the caller's catch says the failure; no second notice from here")
         XCTAssertEqual(f.followUps, 0)
     }
+
+    /// Renaming a speaker in the main window crashed the app: `notify` ends in AppKit (the pill), and the runner
+    /// delivered it from whatever executor `send` resumed on. The daemon call and the follow-up resume off the main
+    /// thread here (the premise is asserted, so the test cannot pass vacuously); the notice must still land on it.
+    /// Mutation: SpeakersSaveRun.save (MeetingSpeakers.swift, the `@MainActor` above `public static func save`),
+    /// delete that line -> testASaveNotifiesOnTheMainThreadWhenTheDaemonCallResumesElsewhere RED.
+    func testASaveNotifiesOnTheMainThreadWhenTheDaemonCallResumesElsewhere() async throws {
+        let log = ThreadLog()
+        let plan = SpeakersSavePlan(edits: edits(["them:1": "Anna"]), refused: [])
+        _ = try await SpeakersSaveRun.save(
+            edits: plan.edits, notSaved: nil,
+            send: { _ in
+                log.sendOnMain = await Task.detached { Thread.isMainThread }.value
+                return SpeakersState(mode: "auto", speakers: [])
+            },
+            followUp: { _ in
+                log.followUpOnMain = await Task.detached { Thread.isMainThread }.value
+                return nil
+            },
+            notify: { _ in log.notifyOnMain.append(Thread.isMainThread) })
+        XCTAssertEqual(log.sendOnMain, false, "premise: the daemon call ran off the main thread")
+        XCTAssertEqual(log.followUpOnMain, false, "premise: the follow-up ran off the main thread")
+        XCTAssertEqual(log.notifyOnMain, [true], "the notice reaches AppKit: it must be delivered on the main thread")
+    }
+
+    /// The menu's panel path: nothing to send, the refusal is told synchronously at the start of `run`, which a caller
+    /// off the main actor must still deliver on the main thread.
+    /// Mutation: SpeakersSaveRun.run (MeetingSpeakers.swift, the `@MainActor` above `public static func run`),
+    /// delete that line -> testARefusalNoticeIsDeliveredOnTheMainThread RED.
+    func testARefusalNoticeIsDeliveredOnTheMainThread() async throws {
+        let log = ThreadLog()
+        let plan = SpeakersSavePlan(edits: SpeakerEdits(), refused: [refusedVoice()])
+        let state = try await SpeakersSaveRun.run(
+            plan: plan,
+            send: { _ in XCTFail("nothing to send"); return SpeakersState(mode: "auto", speakers: []) },
+            followUp: { _ in nil },
+            notify: { _ in log.notifyOnMain.append(Thread.isMainThread) })
+        XCTAssertNil(state)
+        XCTAssertEqual(log.notifyOnMain, [true])
+    }
+
+    /// What the fakes above saw of the threads (written by one save at a time, read after it ends).
+    private final class ThreadLog: @unchecked Sendable {
+        var sendOnMain: Bool?
+        var followUpOnMain: Bool?
+        var notifyOnMain: [Bool] = []
+    }
 }
