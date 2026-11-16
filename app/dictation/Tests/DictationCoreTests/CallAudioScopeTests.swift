@@ -208,7 +208,9 @@ final class CallAudioScopeTests: XCTestCase {
     /// Mutations: MeetingRecorder.start, `CallAudioScope.scopedCall(callBundleID)` -> `callBundleID` -> RED (an unverified app is
     /// scoped); MeetingRecorder.tapStarted, `if callBundleID != nil { onTapScope?(scope) }` -> `onTapScope?(scope)` -> RED (every
     /// unverified recording is told it fell back); delete `logScope(scope)` -> RED; MeetingController.refreshBadge, delete the
-    /// `outsidePlayingFor:` argument -> RED; the `.say(.playingOutsideScope)` case's notify -> RED; MeetingController.pollPlaying,
+    /// `outsidePlayingFor:` argument -> RED; the `.say(.playingOutsideScope)` case's notify -> RED;
+    /// MeetingController.pollPlaying, `keepUnnamed: scoped` -> `keepUnnamed: true` -> RED (a nameless process would start the
+    /// whole-Mac silent-tap clock); MeetingController.pollPlaying,
     /// `case .call = scope,` -> `true,` is not testable here (see the pure tests).
     func testTheVerifiedListAndTheOutsideNoticeAreWired() throws {
         let recorder = try source("MeetingRecorder.swift")
@@ -221,7 +223,11 @@ final class CallAudioScopeTests: XCTestCase {
         XCTAssertTrue(controller.contains("case .say(.playingOutsideScope): host.notify(L10nKey.noticeMeetingTapOutsideScope.text)"))
         XCTAssertTrue(controller.contains("let playback = CallAudioScope.playback(processes: processes, scope: scope, call: recorder.observedCall, ownPID: me)"))
         XCTAssertTrue(controller.contains("if case .call = scope, !playback.outside.isEmpty {"), "only a scoped tap raises the outside-playback timer")
-        XCTAssertTrue(controller.contains("log.info(\"system audio: playing outside the call app: "), "the bundle ids outside the scope are logged once")
+        XCTAssertTrue(controller.contains("log.info(\"system audio: playing outside the call app: "), "the bundle ids outside the scope are logged")
+        XCTAssertTrue(controller.contains("playback.outside.filter { outsideLogged.insert($0).inserted }"), "each id once per recording, when it first appears")
+        XCTAssertTrue(controller.contains("CoreAudioProps.scopeProcesses(keepUnnamed: scoped)"),
+                      "a nameless process counts as playing only for a scoped tap: the whole-Mac judgement is unchanged")
+        XCTAssertTrue(controller.contains("if case .call = scope { scoped = true }"))
     }
 
     /// Both languages say what the notice is about: the call app only, and another app playing.

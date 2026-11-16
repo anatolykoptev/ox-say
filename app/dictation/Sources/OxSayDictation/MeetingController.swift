@@ -74,7 +74,8 @@ final class MeetingController: NSObject, MeetingFeature {
     private var playingSince: Date?
     /// Since when another process, outside the call-scoped tap, has been playing; nil when none, or the tap is not scoped.
     private var outsidePlayingSince: Date?
-    private var outsideLogged = false
+    /// The bundle ids already named in the log as playing outside the call app, so each is logged once per recording.
+    private var outsideLogged = Set<String>()
     private var playingPolledAt = Date.distantPast
     private var lastSource = ""
     private var offerLife = OfferLifetime()
@@ -288,7 +289,7 @@ final class MeetingController: NSObject, MeetingFeature {
                 monitor = RecordingMonitor()
                 playingSince = nil
                 outsidePlayingSince = nil
-                outsideLogged = false
+                outsideLogged = []
                 playingPolledAt = .distantPast
                 badge.showRecording(auto: origin == .auto, elapsed: 0)
                 startTick()
@@ -411,11 +412,15 @@ final class MeetingController: NSObject, MeetingFeature {
         guard Date().timeIntervalSince(playingPolledAt) >= 1 else { return }
         playingPolledAt = Date()
         let me = getpid()
-        guard let processes = CoreAudioProps.scopeProcesses() else { return }
+        // A process without a bundle id counts only for a scoped tap, which has to tell it from the call's; the whole-Mac
+        // judgement is the one it always was.
+        let scope = recorder.tapScope
+        var scoped = false
+        if case .call = scope { scoped = true }
+        guard let processes = CoreAudioProps.scopeProcesses(keepUnnamed: scoped) else { return }
         // With the tap on the call's processes, only their sound counts as "something is playing": music elsewhere does
         // not make a quiet far side look like a silent tap. What plays outside the call app is tracked apart, so a far side
         // that plays from another app is named instead of being blamed on the permission (`SystemAudioGuard`).
-        let scope = recorder.tapScope
         let playback = CallAudioScope.playback(processes: processes, scope: scope, call: recorder.observedCall, ownPID: me)
         if playback.inScope {
             if playingSince == nil { playingSince = Date() }
@@ -427,9 +432,9 @@ final class MeetingController: NSObject, MeetingFeature {
         } else {
             outsidePlayingSince = nil
         }
-        if !playback.outside.isEmpty, !outsideLogged {
-            outsideLogged = true
-            log.info("system audio: playing outside the call app: \(playback.outside.joined(separator: ","), privacy: .public)")
+        let fresh = playback.outside.filter { outsideLogged.insert($0).inserted }
+        if !fresh.isEmpty {
+            log.info("system audio: playing outside the call app: \(fresh.joined(separator: ","), privacy: .public)")
         }
     }
 

@@ -70,9 +70,10 @@ extension CoreAudioProps {
 }
 
 extension CoreAudioProps {
-    /// The processes the recorder scopes by (`CallAudioScope`), nameless ones included. nil when CoreAudio itself failed.
-    static func scopeProcesses() -> [AudioProcess]? {
-        audioProcesses(keepUnnamed: true)?.map {
+    /// The processes the recorder scopes by (`CallAudioScope`), nameless ones included unless `keepUnnamed` is false. nil when
+    /// CoreAudio itself failed.
+    static func scopeProcesses(keepUnnamed: Bool = true) -> [AudioProcess]? {
+        audioProcesses(keepUnnamed: keepUnnamed)?.map {
             AudioProcess(objectID: $0.objectID, pid: $0.pid, bundleID: $0.bundleID, runningOutput: $0.runningOutput)
         }
     }
