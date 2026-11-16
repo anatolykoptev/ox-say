@@ -188,6 +188,9 @@ final class MainWindowSource {
     /// The person is recording their own voice (a take in progress, kept or being sent): the version handshake waits.
     var recordingVoice: Bool { voiceSource.recordingVoice }
 
+    /// A voice take is recording this very moment: it holds the microphone (a take kept for review does not).
+    var holdingMicrophone: Bool { voiceSource.holdingMicrophone }
+
     /// The app's own player starts (speak-selection, voiceover): a clip on Озвучка stops first.
     func stopSpeakClip() { speakSource.stopClip() }
 

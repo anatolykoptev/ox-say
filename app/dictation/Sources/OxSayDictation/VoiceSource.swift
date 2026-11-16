@@ -187,6 +187,9 @@ final class VoiceSource {
     /// A voice recording holds the relaunch: a take in progress, kept for review or being sent would be lost.
     var recordingVoice: Bool { record?.isWork ?? false }
 
+    /// The take holds the microphone right now (not a kept or sent one): the dictation start is refused for it (#442).
+    var holdingMicrophone: Bool { record?.isRecordingMic ?? false }
+
     /// One step of the record sheet. The reducer decides; this carries out the effect it returns.
     func recording(_ step: VoiceRecordAction) {
         switch step {

@@ -615,9 +615,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return (NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"]) as? String
     }
 
-    /// Why the dictation key may not start a recording now: an update is installing, or a voice take holds the microphone.
+    /// Why the dictation key may not start a recording now: an update is installing, or a voice take is recording (holds the microphone; a kept take does not).
     private var dictationStartRefusal: DictationStartRefusal? {
-        DictationStartRefusal.decide(installing: updateInstalling, recordingVoice: mainWindow.source?.recordingVoice ?? false)
+        DictationStartRefusal.decide(installing: updateInstalling, recordingVoice: mainWindow.source?.holdingMicrophone ?? false)
     }
 
     /// The work in this process a relaunch would lose and a daemon restart

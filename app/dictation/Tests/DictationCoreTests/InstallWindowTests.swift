@@ -67,12 +67,14 @@ final class InstallWindowTests: XCTestCase {
                       "a refused press is silent")
     }
 
-    /// #442: the start gate is fed the live install flag and the live voice-take flag.
-    /// Mutation: AppDelegate.dictationStartRefusal, `recordingVoice: mainWindow.source?.recordingVoice ?? false` -> `recordingVoice: false` -> RED.
+    /// #442: the start gate is fed the live install flag and "the take holds the microphone" (not `recordingVoice`, which is
+    /// also true for a take kept for review or being sent: a review sheet left open must not disable dictation).
+    /// Mutation: AppDelegate.dictationStartRefusal, `holdingMicrophone` -> `recordingVoice` -> RED.
     func testTheStartGateIsFedTheLiveInstallAndVoiceTakeState() {
         let body = Self.body("private var dictationStartRefusal: DictationStartRefusal? {", in: Self.appSource())
         XCTAssertTrue(body.contains("installing: updateInstalling"), body)
-        XCTAssertTrue(body.contains("recordingVoice: mainWindow.source?.recordingVoice ?? false"), body)
+        XCTAssertTrue(body.contains("recordingVoice: mainWindow.source?.holdingMicrophone ?? false"), body)
+        XCTAssertFalse(body.contains("recordingVoice: mainWindow.source?.recordingVoice"), "a kept take is `isWork`, it holds no microphone")
     }
 
     /// #442: a voice take blocks the dictation start, an install does too, and the install is named first.

@@ -379,6 +379,34 @@ final class VoiceRecordingTests: XCTestCase {
         XCTAssertFalse(failed.isWork, "a refused start holds nothing")
     }
 
+    /// #442: only a take that is recording holds the microphone. A kept take (`.review`) and one being sent (`.saving`)
+    /// are work but the mic is released, so the dictation start is not refused for them.
+    /// Mutation: VoiceRecording.swift `isRecordingMic` -> `isWork` -> RED (review and saving).
+    func testOnlyARecordingTakeHoldsTheMicrophone() {
+        var r = VoiceRecording(language: "en", text: en)
+        XCTAssertFalse(r.isRecordingMic, "ready")
+        _ = r.micStatus(.denied)
+        XCTAssertFalse(r.isRecordingMic, "needsMicrophone")
+        r = ready()
+        _ = r.start(text: en)
+        XCTAssertTrue(r.isRecordingMic, "a take in progress holds the microphone")
+        r.stop(seconds: 8)
+        XCTAssertTrue(r.isWork)
+        XCTAssertFalse(r.isRecordingMic, "a kept take has released it")
+        _ = r.save(taken: [], text: en)
+        XCTAssertTrue(r.isWork)
+        XCTAssertFalse(r.isRecordingMic, "a take being sent has released it")
+    }
+
+    /// The chain from the reducer to the dictation gate: VoiceSource, then the window's source, then AppDelegate.
+    /// Mutation: VoiceSource.swift `holdingMicrophone` -> `record?.isWork ?? false` -> RED.
+    func testTheMicrophoneFlagIsForwardedFromTheReducer() throws {
+        let voice = try source("OxSayDictation/VoiceSource.swift")
+        XCTAssertTrue(voice.contains("var holdingMicrophone: Bool { record?.isRecordingMic ?? false }"))
+        let window = try source("OxSayDictation/MainWindowSource.swift")
+        XCTAssertTrue(window.contains("var holdingMicrophone: Bool { voiceSource.holdingMicrophone }"))
+    }
+
     /// A voice recording is work: a relaunch or a daemon restart waits for it.
     /// Mutation: VersionHandshake.AppWork.idle, drop `|| recordingVoice` -> RED.
     func testARecordingVoiceIsWork() {
