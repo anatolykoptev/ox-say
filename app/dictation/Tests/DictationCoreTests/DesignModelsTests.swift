@@ -4,7 +4,7 @@ import XCTest
 final class DesignModelsTests: XCTestCase {
     private let en = ShippedStrings.localizer("en")
     func testDesignBodyUsesTheDaemonsKeysAndThreeTakes() throws {
-        let body = DesignRequest.body(description: "  A warm narrator ", text: " Привет. ")
+        let body = try DesignRequest.body(description: "  A warm narrator ", text: " Привет. ")
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         XCTAssertEqual(json["description"] as? String, "A warm narrator")
         XCTAssertEqual(json["text"] as? String, "Привет.")
@@ -13,9 +13,9 @@ final class DesignModelsTests: XCTestCase {
     }
 
     func testSaveBodyAddsReplaceOnlyWhenAsked() throws {
-        let plain = try XCTUnwrap(JSONSerialization.jsonObject(with: DesignRequest.saveBody(name: "anna", take: "/t/a.wav", replace: false)) as? [String: Any])
+        let plain = try XCTUnwrap(JSONSerialization.jsonObject(with: try DesignRequest.saveBody(name: "anna", take: "/t/a.wav", replace: false)) as? [String: Any])
         XCTAssertEqual(Set(plain.keys), ["name", "take"])
-        let replace = try XCTUnwrap(JSONSerialization.jsonObject(with: DesignRequest.saveBody(name: "anna", take: "/t/a.wav", replace: true)) as? [String: Any])
+        let replace = try XCTUnwrap(JSONSerialization.jsonObject(with: try DesignRequest.saveBody(name: "anna", take: "/t/a.wav", replace: true)) as? [String: Any])
         XCTAssertEqual(replace["replace"] as? Bool, true)
         XCTAssertEqual(replace["take"] as? String, "/t/a.wav")
     }

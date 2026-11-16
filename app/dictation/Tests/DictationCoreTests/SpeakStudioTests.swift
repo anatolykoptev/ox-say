@@ -3,7 +3,7 @@ import XCTest
 
 final class SpeakStudioTests: XCTestCase {
     private func body(_ start: StudioStart) throws -> [String: Any] {
-        let data = ProduceRequest.createBody(script: start.script, title: start.title, voice: nil, format: start.format, options: start.options)
+        let data = try ProduceRequest.createBody(script: start.script, title: start.title, voice: nil, format: start.format, options: start.options)
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
@@ -64,10 +64,10 @@ final class SpeakStudioTests: XCTestCase {
     }
 
     func testTheOldCreateBodyIsUnchangedWithoutOptions() throws {
-        let data = ProduceRequest.createBody(script: "s", title: "", voice: nil, format: .short)
+        let data = try ProduceRequest.createBody(script: "s", title: "", voice: nil, format: .short)
         let keys = Set(try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any]).keys)
         XCTAssertEqual(keys, ["script", "preset"])
-        let all = ProduceRequest.createBody(script: "s", title: "", voice: nil, format: .short,
+        let all = try ProduceRequest.createBody(script: "s", title: "", voice: nil, format: .short,
                                             options: VoiceoverOptions(takes: 1, cloneMode: "reference", loudness: -14, steps: 8, seed: 3, outPath: "/x"))
         let full = try XCTUnwrap(JSONSerialization.jsonObject(with: all) as? [String: Any])
         XCTAssertEqual(Set(full.keys), ["script", "preset", "takes", "clone_mode", "loudness_lufs", "inference_timesteps", "seed", "out_path"])

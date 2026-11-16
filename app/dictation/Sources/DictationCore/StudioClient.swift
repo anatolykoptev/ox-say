@@ -188,7 +188,7 @@ public struct StudioClient {
     /// a time; a second start answers 409 with its message.
     public func startVoiceover(script: String, title: String, voice: String?, format: ProduceFormat,
                                options: VoiceoverOptions = VoiceoverOptions()) async throws -> ProduceJob {
-        let body = ProduceRequest.createBody(script: script, title: title, voice: voice, format: format, options: options)
+        let body = try ProduceRequest.createBody(script: script, title: title, voice: voice, format: format, options: options)
         let data = try await succeed(post("v1/produce", body: body, timeout: Self.startTimeout))
         guard let job = ProduceJob.decode(data) else { throw StudioError.badResponse }
         return job
@@ -224,7 +224,7 @@ public struct StudioClient {
     /// same bound a create gets.
     public func regenerate(id: String, chunk: Int, takes: Int) async throws {
         _ = try await succeed(post("v1/produce/\(id)/chunks/\(chunk)",
-                                   body: ProduceRequest.chunkBody(["action": "regenerate", "takes": takes]),
+                                   body: try ProduceRequest.chunkBody(["action": "regenerate", "takes": takes]),
                                    timeout: Self.startTimeout))
     }
 
@@ -232,7 +232,7 @@ public struct StudioClient {
     /// one of the chunk's takes — the person's own pick, kept over the checks.
     public func pick(id: String, chunk: Int, take: String) async throws {
         _ = try await succeed(post("v1/produce/\(id)/chunks/\(chunk)",
-                                   body: ProduceRequest.chunkBody(["action": "pick", "take": take]),
+                                   body: try ProduceRequest.chunkBody(["action": "pick", "take": take]),
                                    timeout: Self.startTimeout))
     }
 
@@ -240,7 +240,7 @@ public struct StudioClient {
     /// the chunk's words; it is rendered again on the next run.
     public func editText(id: String, chunk: Int, text: String) async throws {
         _ = try await succeed(post("v1/produce/\(id)/chunks/\(chunk)",
-                                   body: ProduceRequest.chunkBody(["action": "edit", "text": text]),
+                                   body: try ProduceRequest.chunkBody(["action": "edit", "text": text]),
                                    timeout: Self.startTimeout))
     }
 
@@ -249,7 +249,7 @@ public struct StudioClient {
     /// needs no render.
     public func deliver(id: String, entries: [DeliveryEntry], loudness: Double?) async throws {
         _ = try await succeed(post("v1/produce/\(id)/delivery",
-                                   body: ProduceRequest.deliveryBody(entries: entries, loudness: loudness),
+                                   body: try ProduceRequest.deliveryBody(entries: entries, loudness: loudness),
                                    timeout: Self.startTimeout))
     }
 
@@ -267,7 +267,7 @@ public struct StudioClient {
 
     /// POST /v1/produce/{id}/resume with the battery allowed.
     public func continueOnBattery(id: String) async throws {
-        _ = try await succeed(post("v1/produce/\(id)/resume", body: ProduceRequest.resumeOnBatteryBody(), timeout: Self.quickTimeout))
+        _ = try await succeed(post("v1/produce/\(id)/resume", body: try ProduceRequest.resumeOnBatteryBody(), timeout: Self.quickTimeout))
     }
 
     /// POST /v1/produce/{id}/resume with an empty body: an interrupted project goes on from where it stopped. The battery is
@@ -295,7 +295,7 @@ public struct StudioClient {
     /// daemon budgets itself 30 s + 3 x 36 s + 30 s for that, and the speak call
     /// allows 660 s for a queued request, so the same 660 s is used here.
     public func designVoice(description: String, text: String) async throws -> [DesignTake] {
-        let body = DesignRequest.body(description: description, text: text)
+        let body = try DesignRequest.body(description: description, text: text)
         let data = try await succeed(post("v1/audio/voices/design", body: body, timeout: Self.designTimeout))
         guard let takes = DesignTake.decodeAll(data) else { throw StudioError.badResponse }
         return takes
@@ -304,7 +304,7 @@ public struct StudioClient {
     /// POST /v1/audio/voices/design/save: keeps a take as a voice. A name that
     /// exists comes back as `.nameTaken`; send again with `replace` to overwrite it.
     public func saveDesign(name: String, take: String, replace: Bool) async throws -> SaveOutcome {
-        let body = DesignRequest.saveBody(name: name, take: take, replace: replace)
+        let body = try DesignRequest.saveBody(name: name, take: take, replace: replace)
         let (data, status) = try await perform(post("v1/audio/voices/design/save", body: body, timeout: Self.quickTimeout))
         return try SaveOutcome.interpret(status: status, data: data)
     }

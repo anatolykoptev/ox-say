@@ -111,11 +111,13 @@ final class MeetingSpeakersTests: XCTestCase {
 
     func testTheRequestBodyIsStableAndMinimal() throws {
         var e = SpeakerEdits()
-        XCTAssertEqual(String(decoding: e.body(), as: UTF8.self), "{}")
+        let empty = try e.body()
+        XCTAssertEqual(String(decoding: empty, as: UTF8.self), "{}")
         e.rename = ["them:2": "Olga"]
         e.unmerge = ["them:3", "them:1"]
         e.split = true
-        XCTAssertEqual(String(decoding: e.body(), as: UTF8.self), #"{"rename":{"them:2":"Olga"},"split":true,"unmerge":["them:1","them:3"]}"#)
+        let full = try e.body()
+        XCTAssertEqual(String(decoding: full, as: UTF8.self), #"{"rename":{"them:2":"Olga"},"split":true,"unmerge":["them:1","them:3"]}"#)
     }
 
     func testTheMenuListsOnlyMeetingsWithVoicesThatAreReady() {
