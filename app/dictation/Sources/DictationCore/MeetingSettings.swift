@@ -75,11 +75,22 @@ public enum MeetingSettings {
     /// Meetings ship on: only a stored `false` turns them off.
     public static func enabled(_ d: UserDefaults) -> Bool { (d.object(forKey: enabledKey) as? Bool) ?? true }
 
-    /// Where the notes and transcripts are copied: the user's pick, else
-    /// ~/Documents/ox-say Meetings.
-    public static func folder(_ d: UserDefaults, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+    /// Where the notes and transcripts are copied. The user's pick wins. Without one, the default is
+    /// `~/Documents/ox-say Meetings` — unless that would upload the notes (#532): on a Mac where "Desktop &
+    /// Documents" syncs to iCloud, a first-time default of `~/Documents/...` contradicts "nothing is uploaded", so it
+    /// is `~/Library/Application Support/ox-say Meetings` instead, a place iCloud never reads. A default folder that
+    /// already exists is kept, whichever of the two it is: moving a person's existing notes is not this function's
+    /// call, and the Settings warning covers that case. The answer therefore stays put once a folder is in use, even
+    /// if the sync setting is flipped later.
+    public static func folder(_ d: UserDefaults, home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                              probe: ICloudSync.Probe = ICloudSync.probe,
+                              exists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }) -> URL {
         if let path = d.string(forKey: folderKey), path.hasPrefix("/") { return URL(fileURLWithPath: path, isDirectory: true) }
-        return home.appendingPathComponent("Documents/ox-say Meetings", isDirectory: true)
+        let documents = home.appendingPathComponent("Documents/ox-say Meetings", isDirectory: true)
+        let local = home.appendingPathComponent("Library/Application Support/ox-say Meetings", isDirectory: true)
+        if exists(documents) { return documents }
+        if exists(local) { return local }
+        return ICloudSync.syncs(documents, home: home, probe: probe) ? local : documents
     }
 
     public static func setFolder(_ url: URL, _ d: UserDefaults) { d.set(url.path, forKey: folderKey) }

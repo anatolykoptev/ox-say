@@ -145,7 +145,7 @@ public enum MeetingSettingsModel {
     public static func load(defaults d: UserDefaults, daemonRetention: MeetingRetention?, notesWriter: NotesWriterState,
                             fullName: String, home: URL = FileManager.default.homeDirectoryForCurrentUser,
                             probe: ICloudSync.Probe = ICloudSync.probe) -> MeetingSettingsValues {
-        let folder = MeetingSettings.folder(d, home: home)
+        let folder = MeetingSettings.folder(d, home: home, probe: probe)
         return MeetingSettingsValues(
             enabled: MeetingSettings.enabled(d), callMode: MeetingSettings.callMode(d), apps: CallPolicy.apps(d),
             folderPath: folder.path, folderSyncsICloud: ICloudSync.syncs(folder, home: home, probe: probe),
