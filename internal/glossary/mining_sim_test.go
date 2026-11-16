@@ -29,7 +29,8 @@ type simForm struct {
 var simTerms = []simTerm{
 	{"Quantex", []simForm{{"квантекс", 2}, {"кантекс", 1}, {"квантэкс", 1}, {"кваньтекс", 1}}},
 	{"Zorvin", []simForm{{"зорвин", 2}, {"зарвин", 1}, {"зорвен", 1}}}, // «зорвен» ends like a verb: Snowball does not strip it as a noun
-	{"Hormoz", []simForm{{"хормоз", 1}, {"хармоз", 1}, {"хормос", 1}}},
+	{"Brenvik", []simForm{{"бренвик", 1}, {"бренвек", 1}, {"брэнвик", 1}}},
+	{"Bervol", []simForm{{"бервол", 2}}}, // one spelling, two sentences: the length threshold alone
 	{"PlenkArc", []simForm{{"пленк арк", 2}, {"пленкарк", 1}}},
 	{"Rux", []simForm{{"рукс", 3}, {"рукз", 1}}}, // short: three sentences
 	{"Tavron", []simForm{{"таврон", 3}}},

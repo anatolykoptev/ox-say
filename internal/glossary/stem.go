@@ -8,10 +8,11 @@ import (
 	"github.com/kljensen/snowball/russian"
 )
 
-// minStemRunes is the shortest stem that may stand for a word. A short stem is shared by unrelated words: on the
-// lower-case, flagged entries of the Russian dictionary in internal/wordlists, 27% of the noun stems of 3 letters
-// are shared with another entry, 11% of 4 letters, 6.8% of 5 and 3.3% of 6 («вол» is also «воля» and «поле» is
-// also «пол»). A heard form whose stem is shorter than this matches only itself.
+// minStemRunes is the shortest stem that may stand for a word. A short stem is shared by unrelated words («вол» is
+// also «воля», «пол» is also «поле»): on the lower-case, flagged entries of the Russian dictionary in
+// internal/wordlists, 4.2% of the entries matched by stem share it with another entry at a 3-letter minimum, 3.5%
+// at 4 and 2.9% at 5 (TestStemMatchingIsRareOnOrdinaryWords). A heard form whose stem is shorter than this
+// matches only itself.
 const minStemRunes = 5
 
 // nounEndings are the case endings of a noun, and nothing else: matching goes through the Snowball stemmer, but
@@ -48,4 +49,26 @@ func sameWord(h, hs, w string) bool {
 		return true
 	}
 	return hs != "" && strings.HasPrefix(w, hs) && nominalStem(w) == hs
+}
+
+// containsForm is containsSeq with the heard words matched as sameWord does: needle (heard words) occurs in hay
+// as consecutive words, each in any case of it.
+func containsForm(hay, needle []string) bool {
+	stems := make([]string, len(needle))
+	for k, h := range needle {
+		stems[k] = nominalStem(h)
+	}
+	for i := 0; len(needle) > 0 && i+len(needle) <= len(hay); i++ {
+		ok := true
+		for k, h := range needle {
+			if !sameWord(h, stems[k], hay[i+k]) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
 }

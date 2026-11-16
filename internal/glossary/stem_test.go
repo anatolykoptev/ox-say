@@ -3,6 +3,7 @@ package glossary
 import (
 	"bufio"
 	"compress/gzip"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -57,6 +58,44 @@ func TestApplyMatchesInflectedForms(t *testing.T) {
 		if got, _ := Apply(c.in, pairs); got != c.want {
 			t.Errorf("Apply(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// An exact heard form wins over a stem match, whatever the order of the pairs: «дэвина» filed as its own pair is
+// not taken by the pair filed as «дэвин».
+// Mutation: apply.go match, `[]bool{true, false}` -> `[]bool{false}` (and in matchWords) -> RED.
+func TestExactFormBeatsStemMatch(t *testing.T) {
+	a := Pair{Heard: "дэвин", Meant: "Devin", Status: Active}
+	b := Pair{Heard: "дэвина", Meant: "Devina", Status: Active}
+	for _, pairs := range [][]Pair{{a, b}, {b, a}} {
+		if got, _ := Apply("спроси дэвина и дэвин", pairs); got != "спроси Devina и Devin" {
+			t.Errorf("Apply = %q, want %q", got, "спроси Devina и Devin")
+		}
+		ws := ApplyWords([]stt.Word{{W: "дэвина", S: 0, E: 1}, {W: "дэвин", S: 1, E: 2}}, pairs)
+		if len(ws) != 2 || ws[0].W != "Devina" || ws[1].W != "Devin" {
+			t.Errorf("ApplyWords = %+v", ws)
+		}
+	}
+}
+
+// A meant form that holds the heard word in another case would be matched again on the next pass and grow.
+// Mutation: store.go validate, containsForm -> containsSeq -> RED (the pair is filed and Apply twice doubles «Смит»).
+func TestMeantHoldingAnotherCaseOfHeardIsRefused(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.Add("дэвин", "Дэвина Смит", ""); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Add: err = %v, want ErrInvalid", err)
+	}
+	p, err := s.Add("дэвин", "Devin", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Edit(p.ID, "Дэвина Смит"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Edit: err = %v, want ErrInvalid", err)
+	}
+	once, _ := Apply("спроси у дэвина", []Pair{{Heard: "дэвин", Meant: "Devin Smith", Status: Active}})
+	twice, _ := Apply(once, []Pair{{Heard: "дэвин", Meant: "Devin Smith", Status: Active}})
+	if once != twice {
+		t.Fatalf("Apply is not idempotent: %q then %q", once, twice)
 	}
 }
 
