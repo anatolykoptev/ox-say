@@ -40,7 +40,7 @@ func BoostTerms(pairs []Pair, common func(heard string) bool) []string {
 	byMeant := map[string]*group{}
 	var order []*group
 	for _, p := range pairs {
-		if p.Status != Active || utf8.RuneCountInString(p.Meant) < minBoostChars {
+		if p.Status != Active || utf8.RuneCountInString(p.Meant) < minBoostChars || !wireSafe(p.Meant) {
 			continue
 		}
 		g := byMeant[p.Meant]
@@ -80,7 +80,7 @@ func BoostTerms(pairs []Pair, common func(heard string) bool) []string {
 		for _, p := range g.heard {
 			h := strings.TrimSpace(p.Heard)
 			k := key(h)
-			if seen[k] || utf8.RuneCountInString(h) < minBoostChars || strings.ContainsAny(h, "\t\n\r") {
+			if seen[k] || utf8.RuneCountInString(h) < minBoostChars || !wireSafe(h) {
 				continue
 			}
 			if common != nil && common(h) {
@@ -103,3 +103,8 @@ func BoostTerms(pairs []Pair, common func(heard string) bool) []string {
 
 // SpokenOnly is the term-line flag for a written form that is an ordinary word (engine/stt/boost.h kSpokenOnly).
 const SpokenOnly = "@spoken-only"
+
+// wireSafe reports a form that survives the term-line format: one term per line, fields split on a tab. The
+// glossary's own validation keeps these characters out, but glossary.json is a file a person can edit, and a
+// tab or a newline in a meant form would start a new field or a new term in the decoder's list.
+func wireSafe(s string) bool { return !strings.ContainsAny(s, "\t\n\r") }

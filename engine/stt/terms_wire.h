@@ -178,8 +178,12 @@ inline bool parse_wire(const std::string & json, wire & out) {
                     detail::skip_ws(json, i);
                     std::string line;
                     if (!detail::read_string(json, i, line)) return false;
-                    w.lines += line;
-                    w.lines += '\n';
+                    // one string is one term line: a decoded newline would split it into two terms (and a "# x"
+                    // style first field of the second would parse as another term), so such a string is skipped
+                    if (line.find_first_of("\n\r") == std::string::npos) {
+                        w.lines += line;
+                        w.lines += '\n';
+                    }
                     detail::skip_ws(json, i);
                     if (i < json.size() && json[i] == ',') {
                         ++i;

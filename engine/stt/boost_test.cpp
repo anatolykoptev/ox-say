@@ -221,7 +221,7 @@ static void t_case_variants() {
 static void t_parse_terms() {
     cur = "t_parse_terms";
     std::string err;
-    auto t = parse_terms("  OxSay \nHormozi\t2.5\r\nab\n\xD0\xB4\xD0\xBE\nabc\n\n# note\nOxSay\n\xD0\xB4\xD0\xBE\xD0\xBC\n", err);
+    auto t = parse_terms("  OxSay \nHormozi\t2.5\r\nab\n\xD0\xB4\xD0\xBE\nabc\n\nOxSay\n\xD0\xB4\xD0\xBE\xD0\xBC\n", err);
     CHECK(t.size() == 4, "OxSay, Hormozi, abc, дом kept");
     if (t.size() == 4) {
         CHECK(t[0].text == "OxSay" && t[0].weight == 1.0f, "trimmed, default weight 1");
@@ -258,9 +258,12 @@ static void t_parse_terms() {
     CHECK(t.size() == 200, "capped at 200");
     CHECK(err.find("200") != std::string::npos, "the cap is reported");
 
-    // a written form that starts with '#' (a hashtag, "#1") is a term; only "# ..." and a lone "#" are comments
+    // The format has no comment syntax: a written form that starts with '#' or "# " is a term like any other,
+    // so a glossary meant such as "# x" reaches the decoder instead of vanishing.
     t = parse_terms("#hashtag\n# a comment\n#\n#1 pick\n", err);
-    CHECK(t.size() == 2 && t[0].text == "#hashtag" && t[1].text == "#1 pick", "#hashtag and #1 pick are terms, '# a comment' and '#' are not");
+    // (a lone "#" is a term too, and then fails the 3-character minimum like any other short term)
+    CHECK(t.size() == 3 && t[0].text == "#hashtag" && t[1].text == "# a comment" && t[2].text == "#1 pick",
+          "every non-empty line is a term, '# x' included");
 
     t = parse_terms("", err);
     CHECK(t.empty() && err.empty(), "empty input, no error");

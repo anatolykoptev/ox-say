@@ -550,7 +550,7 @@ inline std::vector<term> parse_terms(const std::string & text, std::string & err
             b = tab + 1;
         }
         const std::string & t = f[0];
-        if (t.empty() || t == "#" || t.compare(0, 2, "# ") == 0) continue;  // '#x' is a term, '# x' a comment
+        if (t.empty()) continue;  // the format has no comments: every non-empty line is a term, whatever it starts with
         const std::string at = "line " + std::to_string(line_no) + ": ";
         term tm;
         tm.text = t;

@@ -139,3 +139,62 @@ func TestBoostTermsOrdinaryWrittenFormIsSpokenOnly(t *testing.T) {
 		t.Fatalf("terms = %q, want %q", got, want)
 	}
 }
+
+// A meant that would break the term-line format (a tab starts a field, a newline starts a term) never reaches the
+// list; a hand-edited glossary.json can hold one. A meant such as "# x" is an ordinary term here: ox-stt has no
+// comment syntax, so it cannot be dropped on the other side.
+// Mutation: boost.go, drop the wireSafe(p.Meant) check -> RED.
+func TestBoostTermsMeantCannotInjectFields(t *testing.T) {
+	got := BoostTerms([]Pair{
+		activePair("первый", "Evil\tDevin", 1),
+		activePair("второй", "Two\nTerms", 2),
+		activePair("третий", "Cr\rTerm", 3),
+		activePair("хэштег", "# x", 4),
+		activePair("оксей", "OxSay", 5),
+	}, nil)
+	want := []string{"# x\t1\tхэштег", "OxSay\t1\tоксей"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("terms = %q, want %q", got, want)
+	}
+}
+
+// Limits pinned at their exact edge, so a one-off change of either is seen: the 200th term is kept and the
+// 201st dropped; a 3-character meant and a 3-character heard form are kept, 2-character ones dropped.
+// Mutations: boost.go:11 MaxBoostTerms 200 -> 201, and boost.go:43 / boost.go:88 minBoostChars compare.
+func TestBoostTermsLimitsAtTheEdge(t *testing.T) {
+	var ps []Pair
+	for i := 0; i < 201; i++ {
+		ps = append(ps, activePair(fmt.Sprintf("форма%03d", i), fmt.Sprintf("Name%03d", i), i))
+	}
+	if got := BoostTerms(ps, nil); len(got) != 200 || !strings.HasPrefix(got[199], "Name199\t") {
+		t.Fatalf("terms = %d, want exactly 200 with Name199 last", len(got))
+	}
+	got := BoostTerms([]Pair{
+		activePair("abc", "Xyz", 1), // 3 and 3: both kept
+		activePair("ab", "Xyz", 2),  // heard of 2: dropped
+		activePair("abc", "Xy", 3),  // meant of 2: dropped
+	}, nil)
+	if fmt.Sprint(got) != fmt.Sprint([]string{"Xyz\t1\tabc"}) {
+		t.Fatalf("terms = %q, want only the 3-character pair", got)
+	}
+	// characters, not bytes: 3 Cyrillic letters are 6 bytes
+	if got := BoostTerms([]Pair{activePair("оксей", "дом", 1)}, nil); len(got) != 1 {
+		t.Fatalf("a 3-letter Cyrillic meant must be kept: %q", got)
+	}
+}
+
+// Only active pairs are a term source, and a non-active spelling of an active meant is not a spoken form.
+// Mutation: boost.go:43, p.Status != Active -> p.Status == Rejected -> RED.
+func TestBoostTermsActiveOnlyIncludingHeardForms(t *testing.T) {
+	cand := activePair("кандидат", "OxSay", 1)
+	cand.Status = Candidate
+	rej := activePair("отвергнут", "OxSay", 2)
+	rej.Status = Rejected
+	got := BoostTerms([]Pair{cand, rej, activePair("оксей", "OxSay", 3)}, nil)
+	if fmt.Sprint(got) != fmt.Sprint([]string{"OxSay\t1\tоксей"}) {
+		t.Fatalf("terms = %q, want only the active spelling", got)
+	}
+	if got := BoostTerms([]Pair{cand, rej}, nil); len(got) != 0 {
+		t.Fatalf("no active pair, no terms: %q", got)
+	}
+}

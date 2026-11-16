@@ -55,6 +55,10 @@ static void t_parse_wire() {
     CHECK(parse_wire("{\"terms\":[\"\xD0\x9E\xD0\xBA\xD1\x81\"]}", w) && w.alpha == 0.0f, "alpha absent means 0 (no boost)");
     CHECK(parse_wire("{\"alpha\":1,\"terms\":[\"a\\ud83d\\ude00b\"]}", w) && w.lines == "a\xF0\x9F\x98\x80" "b\n", "surrogate pair");
 
+    // a string that decodes to a newline is not one term line: it is skipped, its neighbours stay
+    CHECK(parse_wire("{\"alpha\":2,\"terms\":[\"Evil\\nInjected\\t1\",\"Devin\",\"Cr\\rTerm\"]}", w) && w.lines == "Devin\n",
+          "a term string with an escaped newline or carriage return must not become two lines");
+
     const char * bad[] = {
         "", "{}", "[]", "{\"terms\":[\"x\"]", "{\"terms\":[\"x\"]}x", "{\"terms\":\"x\"}", "{\"terms\":[1]}",
         "{\"alpha\":1e100,\"terms\":[]}", "{\"alpha\":-1,\"terms\":[]}", "{\"alpha\":\"2\",\"terms\":[]}",
