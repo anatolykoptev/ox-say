@@ -1,8 +1,11 @@
 import FluidAudio
 import Foundation
 
-/// 16 kHz mono s16le PCM read straight from the mapped file: no float copy of the recording and no temporary file
-/// (`readPCM16`'s reason, PCM.swift:5-9). Reading past the end copies what exists, like FluidAudio's array source.
+/// 16 kHz mono s16le PCM, a meeting's channel file, read straight from the mapped file: no float copy of the
+/// recording and no temporary file. ox-diar takes the raw channel itself, not a WAV: FluidAudio's file path streams
+/// the audio to a float32 temporary file in $TMPDIR that only a `defer` removes, and a killed process would leave
+/// someone's call outside the meeting directory. Reading past the end copies what exists, like FluidAudio's array
+/// source.
 public struct MappedPCM16Source: AudioSampleSource {
     private let data: Data
     public init(contentsOf url: URL) throws {

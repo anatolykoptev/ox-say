@@ -3,35 +3,27 @@ import Foundation
 /// ox-diar's command line, parsed where `swift test` can see it: anything that is not exactly a known shape is a
 /// usage error, never a partial parse that dies inside FluidAudio.
 public enum Arguments {
-    /// The diarization pipeline a diarize run uses. The positional form (no flag) is the Nemotron engine; the
-    /// pyannote engine stays selectable with `--engine pyannote` until it is deleted.
-    public enum Engine: String, Sendable {
-        case pyannote, nemotron
-    }
-
     public enum Command: Equatable {
         case version
-        case diarize(pcm: String, out: String, models: String, engine: Engine)
+        case diarize(pcm: String, out: String, models: String)
         case usage(String)
     }
 
-    private static let usageLine =
-        "usage: ox-diar <pcm16k-mono-s16le> <out.json> --models DIR [--engine pyannote|nemotron]"
+    private static let usageLine = "usage: ox-diar <pcm16k-mono-s16le> <out.json> --models DIR"
 
-    /// Parses argv (without the executable). There is deliberately no env layer for the engine: the flag alone
-    /// picks it.
+    /// Parses argv (without the executable). `--engine nemotron` is still accepted, and means nothing: the one
+    /// engine is the only choice, and a daemon of the release before this one passes the flag. Any other engine
+    /// name, the removed `pyannote` included, is a usage error. There is deliberately no env layer for it.
     public static func parse(_ argv: [String]) -> Command {
         if argv == ["--version"] { return .version }
         guard argv.count == 4 || argv.count == 6, argv[2] == "--models" else {
             return .usage(usageLine)
         }
-        var engine = Engine.nemotron
         if argv.count == 6 {
-            guard argv[4] == "--engine", let parsed = Engine(rawValue: argv[5]) else {
+            guard argv[4] == "--engine", argv[5] == "nemotron" else {
                 return .usage(usageLine)
             }
-            engine = parsed
         }
-        return .diarize(pcm: argv[0], out: argv[1], models: argv[3], engine: engine)
+        return .diarize(pcm: argv[0], out: argv[1], models: argv[3])
     }
 }

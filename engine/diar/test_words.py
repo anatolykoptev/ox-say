@@ -11,15 +11,16 @@
   <id>/ref.json           the AMI manual words: <w> elements of words/<id>.<channel>.words.xml
                           (punc/vocalsound/disfmarker skipped), lowercased, sorted by start; the
                           channel letter maps to the participant through corpusResources/meetings.xml
-  <id>/diar/old.json      ox-diar --engine pyannote (existing models, read-only)
-  <id>/diar/nemotron.json ox-diar --engine nemotron
+  <id>/diar/old.json      the removed pyannote engine's answer: made once with ox-diar 0.1.33 (the last release that
+                          had `--engine pyannote`) and kept; this script can no longer make it, only reuse it
+  <id>/diar/nemotron.json ox-diar
   <id>/diar/g00..g20.json the saved fast128 probabilities through oxprobe `segs` at merge gaps
                           0/50/100/150/200 frames (the Timeline.mergeGaps code, by source)
   <id>/diar/oracle.json   the exclusive manual timeline: the manual RTTM turned exclusive (per-atom
                           majority of the manual words), with `embedding: []` like Nemotron, so
                           Decide joins a folded speaker by time exactly as it does for Nemotron
                           (the file keeps the name "oracle"; it is not a ceiling)
-and asserts g15 equals ox-diar --engine nemotron to the millisecond on every meeting. The gate itself
+and asserts g15 equals ox-diar to the millisecond on every meeting. The gate itself
 is internal/meeting/whosaid_test.go under the `whosaid` build tag, pointed at this directory by
 OX_WHOSAID_DIR (for example OX_WHOSAID_DIR=/path/to/whosaid).
 
@@ -430,12 +431,11 @@ def prep_meeting(mid, wav, zf, agents, args, srv, log):
 
     # (c) the diarization variants
     dpath = lambda v: os.path.join(out, "diar", v + ".json")  # noqa: E731
-    if args.force or not os.path.exists(dpath("old")):
-        run([args.ox_diar, pcm_path, dpath("old"),
-             "--models", args.pyannote_models, "--engine", "pyannote"], log=log)
+    if not os.path.exists(dpath("old")):
+        fail(f"no {dpath('old')}: the pyannote engine is gone; copy the old.json of a run made with ox-diar 0.1.33")
     if args.force or not os.path.exists(dpath("nemotron")):
         run([args.ox_diar, pcm_path, dpath("nemotron"),
-             "--models", args.nemotron_models, "--engine", "nemotron"], log=log)
+             "--models", args.nemotron_models], log=log)
     probs = os.path.join(args.probs_dir, f"{mid}.f32")
     for name, gap in GAPS.items():
         if os.path.exists(dpath(name)) and not args.force:
@@ -461,16 +461,16 @@ def prep_meeting(mid, wav, zf, agents, args, srv, log):
     if g15["segments"] != nem["segments"] or \
             [s["id"] for s in g15["speakers"]] != [s["id"] for s in nem["speakers"]] or \
             [s["speech_s"] for s in g15["speakers"]] != [s["speech_s"] for s in nem["speakers"]]:
-        fail(f"{mid}: g15 segments differ from the real ox-diar --engine nemotron output; "
+        fail(f"{mid}: g15 segments differ from the real ox-diar output; "
              "the sweep would not measure the product (stop, report)")
-    print(f"  g15 == ox-diar --engine nemotron: {len(nem['segments'])} segments verified", flush=True)
+    print(f"  g15 == ox-diar: {len(nem['segments'])} segments verified", flush=True)
 
 
 def cmd_prep(args):
     for p in (args.ox_stt, args.ox_diar, args.oxprobe):
         if not os.path.isfile(p):
             fail(f"no binary at {p}")
-    for d in (args.pyannote_models, args.nemotron_models, args.refs_dir, args.probs_dir):
+    for d in (args.nemotron_models, args.refs_dir, args.probs_dir):
         if not os.path.isdir(d):
             fail(f"no directory at {d}")
     if shasum(args.ann) != ANN_SHA256:
@@ -518,7 +518,6 @@ def main():
     p.add_argument("--oxprobe", required=True)
     p.add_argument("--stt-model", required=True)
     p.add_argument("--stt-vad", required=True)
-    p.add_argument("--pyannote-models", required=True, help="models dir holding speaker-diarization/")
     p.add_argument("--nemotron-models", required=True, help="models dir holding nemotron-3-diarization/")
     p.add_argument("--ann", required=True, help="ami_public_manual_1.6.2.zip")
     p.add_argument("--refs-dir", required=True, help="directory of <id>.ref.rttm")

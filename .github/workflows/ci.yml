@@ -219,7 +219,7 @@ jobs:
       - name: Diarization models
         run: bash scripts/fetch-models.sh --diar-only "$RUNNER_TEMP/diar-models"
 
-      # The default engine (Nemotron), forced to the CPU: the runner's Neural Engine is not guaranteed to compile a Core
+      # Nemotron, forced to the CPU: the runner's Neural Engine is not guaranteed to compile a Core
       # ML graph, so OX_DIAR_COMPUTE_UNITS lowers what the loader asks for (a seam that can only make the choice more
       # conservative). The CLI contract, the offline rule, the refusal on macOS older than 15 (OX_DIAR_ASSUME_MACOS
       # lowers the version the binary sees) and the four voices of the AMI excerpt. The ANE and GPU facts are NOT
@@ -236,12 +236,6 @@ jobs:
           afconvert -f WAVE -d LEI16@16000 -c 1 engine/diar/testdata/ami-es2004a-780-180s.flac "$RUNNER_TEMP/diar-clip.wav"
           python3 engine/diar/test_cli.py --bin "$RUNNER_TEMP/diar-run/ox-diar" --models "$RUNNER_TEMP/diar-models/diar" \
               --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4
-
-      # The pyannote engine (OX_SAY_DIAR_ENGINE=pyannote, deleted with the engine later): one contract step, same binary.
-      - name: ox-diar smoke (pyannote contract)
-        run: |
-          python3 engine/diar/test_cli.py --bin "$RUNNER_TEMP/diar-run/ox-diar" --models "$RUNNER_TEMP/diar-models/diar" \
-              --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4 --engine pyannote
 
   # ox-clean (voice cleanup, engine/clean): a Swift package around a Core ML mask model, built for BOTH architectures
   # (plan decision 8; ox-diar is Apple Silicon only). Xcode 26 because the manifest asks for Swift tools 6.2; the path

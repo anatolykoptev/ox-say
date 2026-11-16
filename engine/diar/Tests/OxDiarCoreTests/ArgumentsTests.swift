@@ -5,22 +5,24 @@ import Testing
 /// The command line of ox-diar, parsed where `swift test` can see it: anything not exactly a known shape is a
 /// usage error, never a partial parse that dies inside FluidAudio.
 @Suite struct ArgumentsTests {
-    /// The positional form (no flag) is the Nemotron engine. Mutation: Arguments.swift `var engine = Engine.nemotron`
-    /// -> `.pyannote` turns this red.
-    @Test func thePositionalFormIsTheNemotronEngine() {
+    @Test func thePositionalFormDiarizes() {
         #expect(Arguments.parse(["in.pcm", "out.json", "--models", "d"])
-            == .diarize(pcm: "in.pcm", out: "out.json", models: "d", engine: .nemotron))
+            == .diarize(pcm: "in.pcm", out: "out.json", models: "d"))
     }
 
-    @Test func theEngineFlagSelectsTheEngine() {
+    /// An older daemon names the engine on every run, so the flag stays accepted for the only engine left.
+    @Test func theNemotronEngineFlagIsStillAccepted() {
         #expect(Arguments.parse(["in.pcm", "out.json", "--models", "d", "--engine", "nemotron"])
-            == .diarize(pcm: "in.pcm", out: "out.json", models: "d", engine: .nemotron))
-        #expect(Arguments.parse(["in.pcm", "out.json", "--models", "d", "--engine", "pyannote"])
-            == .diarize(pcm: "in.pcm", out: "out.json", models: "d", engine: .pyannote))
+            == .diarize(pcm: "in.pcm", out: "out.json", models: "d"))
     }
 
+    /// The removed pyannote engine is a usage error, not a quiet fall-back: the daemon never asks for it, and a
+    /// caller that does has a stale idea of this binary.
+    /// Mutation: Arguments.swift, `argv[5] == "nemotron"` -> `argv[5] == "nemotron" || argv[5] == "pyannote"` turns
+    /// this red.
     @Test func anUnknownOrDanglingEngineIsUsage() {
         for argv in [
+            ["a.pcm", "b.json", "--models", "d", "--engine", "pyannote"],
             ["a.pcm", "b.json", "--models", "d", "--engine", "bogus"],
             ["a.pcm", "b.json", "--models", "d", "--engine"],
             ["a.pcm", "b.json", "--models", "d", "--warm", "nemotron"],

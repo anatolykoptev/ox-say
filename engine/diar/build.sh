@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build ox-diar, the speaker diarization engine (FluidAudio's Core ML port of pyannote's community-1 pipeline), for
+# Build ox-diar, the speaker diarization engine (NVIDIA's Nemotron 3 Diarization through FluidAudio's Core ML port), for
 # this Mac's architecture. engine/build.sh calls it; it also runs on its own.
 #   engine/diar/build.sh <work-dir> <out-dir>      -> <out-dir>/ox-diar and its licences in <out-dir>/licenses/
 #
@@ -47,7 +47,7 @@ fi
 # The binary must name the FluidAudio SwiftPM resolved and the models fetch-models.sh downloads. plutil reads
 # Package.resolved (JSON); a mismatch is a Pins.swift nobody updated.
 fluid=$(plutil -extract pins.0.state.version raw -o - "$here/Package.resolved")
-rev=$(sed -n 's/^diar_rev=\([0-9a-f]\{8\}\).*/\1/p' "$here/../../scripts/fetch-models.sh")
+rev=$(sed -n 's/^nem_rev=\([0-9a-f]\{8\}\).*/\1/p' "$here/../../scripts/fetch-models.sh")
 want="ox-diar 1 (FluidAudio $fluid, models $rev)"
 got=$("$out/ox-diar" --version)
 if [ "$got" != "$want" ]; then

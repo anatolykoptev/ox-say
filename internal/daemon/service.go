@@ -852,7 +852,6 @@ func (d *Daemon) Status() statusSummary {
 			"notes_bin":         d.Cfg.NotesBin,
 			"diar_bin":          d.Cfg.DiarBin,
 			"clean_bin":         d.Cfg.CleanBin,
-			"diar_engine":       d.Cfg.Engine(),
 			"model":             d.Cfg.Model,
 			"codec":             d.Cfg.Codec,
 			"max_batch":         d.Cfg.MaxBatch,

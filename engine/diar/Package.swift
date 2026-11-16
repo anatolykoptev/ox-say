@@ -1,5 +1,5 @@
 // swift-tools-version: 6.2
-// ox-diar: one-shot speaker diarization on FluidAudio's CoreML port of the pyannote community-1 pipeline.
+// ox-diar: one-shot speaker diarization on FluidAudio's Core ML port of NVIDIA's Nemotron 3 Diarization.
 // Tools 6.2 because `traits:` (below) needs it; the build runs on Xcode 26 (release.yml selects it).
 import PackageDescription
 

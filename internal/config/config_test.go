@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -333,7 +334,6 @@ func TestEnvKeysAllLoaded(t *testing.T) {
 		{"OX_SAY_NOTES_PORT", "18098", "18098", func(c *Config) string { return strconv.Itoa(c.NotesPort) }},
 		{"OX_SAY_NOTES_IDLE_STOP_SECS", "67", "1m7s", func(c *Config) string { return c.NotesIdleStop.String() }},
 		{"OX_SAY_DIAR_BIN", "/tmp/oxk-4917/ox-diar-x", "/tmp/oxk-4917/ox-diar-x", func(c *Config) string { return c.DiarBin }},
-		{"OX_SAY_DIAR_ENGINE", "nemotron", "nemotron", func(c *Config) string { return c.DiarEngine }},
 		{"OX_SAY_CLEAN_BIN", "/tmp/oxk-4917/ox-clean-x", "/tmp/oxk-4917/ox-clean-x", func(c *Config) string { return c.CleanBin }},
 		{"OX_SAY_ASSUME_MEMORY_GB", "13", "13", func(c *Config) string { return strconv.FormatUint(c.AssumedMemoryBytes/bytesPerGB, 10) }},
 	}
@@ -986,40 +986,35 @@ func TestNotesPortRejectsBadValues(t *testing.T) {
 }
 
 // The diarization models are ready only when the revision marker fetch-models.sh writes last names the revision
-// this build expects, for the engine in use: absent (a fetch cut short), another revision (older models) and a
-// half-written marker are all "not ready". Each engine reads its own marker only: the Nemotron set has no
-// embeddings, so it does not need the WeSpeaker set, and the pyannote engine does not need the Nemotron one.
-// Mutations: internal/config/config.go DiarModelsReady, change `== DiarModelsRevision` to `!= ""` -> RED (an old
-// revision reads as ready); make the nemotron branch read the WeSpeaker marker (F2) -> RED on the nemotron rows.
+// this build expects: absent (a fetch cut short), another revision (older models) and a half-written marker are all
+// "not ready". Only the Nemotron marker is read: the speaker-diarization/ set of the removed pyannote engine, still on
+// the disk of a Mac that installed an earlier release, neither makes the models ready nor spoils them.
+// Mutations: internal/config/config.go DiarModelsReady, make it read the speaker-diarization/.fluidaudio-revision marker
+// instead of the Nemotron one -> RED on the "only the old pyannote-set marker" and "the Nemotron marker" rows; change
+// markerIs's `== want` to `!= ""` -> RED on the wrong-revision rows.
 func TestDiarModelsReady(t *testing.T) {
 	const (
-		wespeaker = "speaker-diarization/.fluidaudio-revision"
+		oldMarker = "speaker-diarization/.fluidaudio-revision"
 		nemotron  = "nemotron-3-diarization/.ox-say-revision"
+		oldRev    = "df2625ac79a7ac6b65ad868fee6d80f320da4232" // the revision the removed pyannote set was pinned to
 	)
 	for _, tc := range []struct {
 		name    string
-		engine  string
 		markers map[string]string
 		want    bool
 	}{
-		{"pyannote, nothing fetched", DiarEnginePyannote, nil, false},
-		{"pyannote, WeSpeaker marker", DiarEnginePyannote, map[string]string{wespeaker: DiarModelsRevision + "\n"}, true},
-		{"pyannote, only the Nemotron marker", DiarEnginePyannote, map[string]string{nemotron: NemotronModelsRevision + "\n"}, false},
-		{"pyannote, empty marker", DiarEnginePyannote, map[string]string{wespeaker: ""}, false},
-		{"pyannote, another revision", DiarEnginePyannote, map[string]string{wespeaker: "deadbeef\n"}, false},
-		{"pyannote, a prefix of the revision", DiarEnginePyannote, map[string]string{wespeaker: DiarModelsRevision[:8] + "\n"}, false},
-		{"unset engine is nemotron: its marker", "", map[string]string{nemotron: NemotronModelsRevision}, true},
-		{"unset engine is nemotron: the WeSpeaker marker alone is not enough", "", map[string]string{wespeaker: DiarModelsRevision}, false},
-		{"nemotron, nothing fetched", DiarEngineNemotron, nil, false},
-		{"nemotron, only the Nemotron marker", DiarEngineNemotron, map[string]string{nemotron: NemotronModelsRevision + "\n"}, true},
-		{"nemotron, only the WeSpeaker marker", DiarEngineNemotron, map[string]string{wespeaker: DiarModelsRevision + "\n"}, false},
-		{"nemotron, both markers", DiarEngineNemotron, map[string]string{wespeaker: DiarModelsRevision, nemotron: NemotronModelsRevision}, true},
-		{"nemotron, wrong Nemotron marker", DiarEngineNemotron, map[string]string{wespeaker: DiarModelsRevision, nemotron: "deadbeef\n"}, false},
-		{"nemotron, the WeSpeaker revision in the Nemotron marker", DiarEngineNemotron, map[string]string{nemotron: DiarModelsRevision}, false},
-		{"nemotron, empty marker", DiarEngineNemotron, map[string]string{nemotron: ""}, false},
+		{"nothing fetched", nil, false},
+		{"the Nemotron marker", map[string]string{nemotron: NemotronModelsRevision + "\n"}, true},
+		{"the Nemotron marker without a newline", map[string]string{nemotron: NemotronModelsRevision}, true},
+		{"only the old pyannote-set marker", map[string]string{oldMarker: oldRev + "\n"}, false},
+		{"both markers (an updated Mac)", map[string]string{oldMarker: oldRev, nemotron: NemotronModelsRevision}, true},
+		{"wrong Nemotron marker next to the old one", map[string]string{oldMarker: oldRev, nemotron: "deadbeef\n"}, false},
+		{"the old revision in the Nemotron marker", map[string]string{nemotron: oldRev}, false},
+		{"a prefix of the revision", map[string]string{nemotron: NemotronModelsRevision[:8] + "\n"}, false},
+		{"empty marker", map[string]string{nemotron: ""}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &Config{Home: t.TempDir(), DiarEngine: tc.engine}
+			c := &Config{Home: t.TempDir()}
 			for rel, content := range tc.markers {
 				path := filepath.Join(c.DiarModelsDir(), filepath.FromSlash(rel))
 				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -1030,54 +1025,37 @@ func TestDiarModelsReady(t *testing.T) {
 				}
 			}
 			if got := c.DiarModelsReady(); got != tc.want {
-				t.Errorf("engine %q, markers %v: ready %v, want %v", tc.engine, tc.markers, got, tc.want)
+				t.Errorf("markers %v: ready %v, want %v", tc.markers, got, tc.want)
 			}
 		})
 	}
 }
 
-// OX_SAY_DIAR_ENGINE: unset is the default engine (nemotron), the two names are accepted after trim and lowercasing
-// (the installer carries the plist value over on every update, so a stray space or capital must not stop the daemon),
-// and a value that is still unknown degrades to the default and is reported in DiarEngineIgnored (the serve command
-// logs it) instead of failing Load. Config{} (a test's zero value) also reads as the default.
-// Mutations: internal/config/config.go Config.Engine, return DiarEnginePyannote for "" -> RED; internal/config/config.go
-// load, drop the strings.ToLower(strings.TrimSpace(...)) around the value -> RED on " Nemotron\t"; delete the
-// DiarEngineIgnored assignment in the default branch -> RED on "bogus".
-func TestDiarEngineSetting(t *testing.T) {
-	t.Setenv("OX_SAY_HOME", t.TempDir())
-	t.Setenv("OX_SAY_DIAR_ENGINE", "")
-	c, err := Load(nil)
-	if err != nil {
-		t.Fatal(err)
+// OX_SAY_DIAR_ENGINE chose between the pyannote pipeline and Nemotron until the pyannote one was deleted. A LaunchAgent
+// written by an earlier release can still carry it (any value, "pyannote" being the one that matters), and a daemon
+// that stopped on it, or logged a complaint every start, would turn an update into a support call. So it is retired,
+// not rejected: Load succeeds on every value, the key is out of the table `ox-say env-keys` prints (the installer
+// carries over only what that table names, so the next install drops the stale line), and `--diar-engine` is no flag.
+// Mutation: internal/config/config.go flagNames, restore `"diar-engine": "OX_SAY_DIAR_ENGINE"` -> RED (EnvKeys and the
+// flag set name it again); internal/config/config.go load, `if get("OX_SAY_DIAR_ENGINE") != "" { return nil, errors.New("retired") }`
+// before `return c, nil` -> RED on every non-empty value.
+func TestARetiredDiarEngineSettingIsIgnored(t *testing.T) {
+	for _, v := range []string{"", "nemotron", "pyannote", " PYANNOTE\t", "bogus", "pyannote,nemotron"} {
+		t.Run(strings.TrimSpace(v), func(t *testing.T) {
+			t.Setenv("OX_SAY_HOME", t.TempDir())
+			t.Setenv("OX_SAY_DIAR_ENGINE", v)
+			if _, err := Load(nil); err != nil {
+				t.Fatalf("OX_SAY_DIAR_ENGINE=%q stopped the daemon: %v", v, err)
+			}
+		})
 	}
-	if c.Engine() != DefaultDiarEngine || c.DiarEngine != DefaultDiarEngine || c.DiarEngineIgnored != "" {
-		t.Errorf("unset: DiarEngine %q Engine() %q ignored %q, want %q", c.DiarEngine, c.Engine(), c.DiarEngineIgnored, DefaultDiarEngine)
+	if slices.Contains(EnvKeys(), "OX_SAY_DIAR_ENGINE") {
+		t.Error("EnvKeys still names OX_SAY_DIAR_ENGINE: the installer would carry the stale value into every new LaunchAgent")
 	}
-	if DefaultDiarEngine != DiarEngineNemotron {
-		t.Errorf("DefaultDiarEngine = %q, want nemotron", DefaultDiarEngine)
-	}
-	if (&Config{}).Engine() != DiarEngineNemotron {
-		t.Errorf("zero Config engine = %q", (&Config{}).Engine())
-	}
-	for in, want := range map[string]string{
-		DiarEnginePyannote: DiarEnginePyannote, DiarEngineNemotron: DiarEngineNemotron,
-		"Nemotron": DiarEngineNemotron, "pyannote ": DiarEnginePyannote, " Nemotron\t": DiarEngineNemotron, "PYANNOTE": DiarEnginePyannote,
-	} {
-		t.Setenv("OX_SAY_DIAR_ENGINE", in)
-		if c, err = Load(nil); err != nil || c.Engine() != want || c.DiarEngine != want || c.DiarEngineIgnored != "" {
-			t.Errorf("OX_SAY_DIAR_ENGINE=%q: %v, engine %q ignored %q, want %q", in, err, c.Engine(), c.DiarEngineIgnored, want)
-		}
-	}
-	for _, v := range []string{"bogus", "nemo tron", "pyannote,nemotron"} {
-		t.Setenv("OX_SAY_DIAR_ENGINE", v)
-		c, err := Load(nil)
-		if err != nil {
-			t.Errorf("OX_SAY_DIAR_ENGINE=%q must not stop the daemon: %v", v, err)
-			continue
-		}
-		if c.Engine() != DefaultDiarEngine || c.DiarEngine != DefaultDiarEngine || c.DiarEngineIgnored != v {
-			t.Errorf("OX_SAY_DIAR_ENGINE=%q: engine %q ignored %q, want the default and the raw value", v, c.Engine(), c.DiarEngineIgnored)
-		}
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	RegisterFlags(fs)
+	if fs.Lookup("diar-engine") != nil {
+		t.Error("--diar-engine is still a flag")
 	}
 }
 

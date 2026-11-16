@@ -5,7 +5,7 @@
 #   engine/diar/probe_gpu.sh <ox-diar> <models-dir> <raw 16 kHz mono s16le, 5 min or longer>
 # The spike's numbers on an M5 Pro: .cpuAndNeuralEngine 0 % in 14 samples, .all 80-97 %. Quit other GPU-heavy apps
 # first; a baseline that is itself high makes the probe say so and stop (exit 3) instead of passing on noise.
-# OX_DIAR_ARGS (e.g. "--engine pyannote") is passed to the binary; unset, it runs the default engine (Nemotron).
+# OX_DIAR_ARGS, if set, is a word list appended to the binary's command line.
 # Mutation: Sources/ox-diar/main.swift, `ml.computeUnits = .cpuAndNeuralEngine` -> `.all` -> exit 1.
 set -u
 bin=${1:?usage: $0 <ox-diar> <models-dir> <pcm>}; models=${2:?}; wav=${3:?}

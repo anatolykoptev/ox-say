@@ -34,11 +34,7 @@ publisher's license:
   (Qwen team, Alibaba), the GGUF conversions by Unsloth
 - Huihui-Qwen3.8-27B-abliterated UD Q5_K_XL, the optional uncensored notes model: Apache-2.0, the GGUF conversion
   by huihui-ai (an abliterated Qwen3.8 derivative)
-- Core ML speaker models for `ox-diar`: CC-BY-4.0. They are Fluid Inference's conversions of
-  pyannote's speaker-diarization-community-1 pipeline (pyannote segmentation, WeSpeaker ResNet34-LM embeddings,
-  PLDA parameters from BUT Speech@FIT); attribute pyannote, WeSpeaker, BUT Speech@FIT and Fluid Inference when you
-  redistribute them (`NOTICE` has the full credit)
-- Nemotron 3 Diarization fast128 Core ML models for `ox-diar`'s Nemotron engine: OpenMDW License 1.1
+- Nemotron 3 Diarization fast128 Core ML models for `ox-diar`: OpenMDW License 1.1
   (NVIDIA, converted to Core ML by Fluid Inference; `NOTICE` has the full credit)
 - Forced aligner for `ox-align` (optional, converted by hand, see
   `engine/README.md`): the MMS-300m forced-aligner weights are CC-BY-NC-4.0,
