@@ -58,19 +58,23 @@ def predict_fn(model_dir, units, artifact="mlmodelc"):
     through CompiledMLModel exactly as the app loads it) or "mlpackage"."""
     import coremltools as ct
     path = os.path.join(model_dir, MODEL_STEM + "." + artifact)
-    assert os.path.isdir(path), f"{path} missing: verify.py gates both the .mlmodelc and the .mlpackage"
+    # Explicit raises, not `assert`: `python -O` strips asserts, and these are the gate's contract checks.
+    if not os.path.isdir(path):
+        raise FileNotFoundError(f"{path} missing: verify.py gates both the .mlmodelc and the .mlpackage")
     if artifact == "mlmodelc":
         # CompiledMLModel has no get_spec(): the I/O contract is read from the compiled metadata.
         meta = json.load(open(os.path.join(path, "metadata.json")))[0]
         inn, outn = meta["inputSchema"][0]["name"], meta["outputSchema"][0]["name"]
-        assert json.loads(meta["inputSchema"][0]["shape"]) == [1, R.FRAMES20, R.MELS * 3], meta["inputSchema"][0]
+        if json.loads(meta["inputSchema"][0]["shape"]) != [1, R.FRAMES20, R.MELS * 3]:
+            raise ValueError(f"unexpected compiled input schema {meta['inputSchema'][0]}")
         m = ct.models.CompiledMLModel(path, compute_units=units)
     else:
         m = ct.models.MLModel(path, compute_units=units)
         spec = m.get_spec()
         inn = spec.description.input[0].name
         outn = spec.description.output[0].name
-        assert tuple(spec.description.input[0].type.multiArrayType.shape) == (1, R.FRAMES20, R.MELS * 3), spec.description.input[0]
+        if tuple(spec.description.input[0].type.multiArrayType.shape) != (1, R.FRAMES20, R.MELS * 3):
+            raise ValueError(f"unexpected package input {spec.description.input[0]}")
 
     def fn(feats):
         return np.asarray(m.predict({inn: np.asarray(feats, np.float32)[None]})[outn])[0].astype(np.float32)
