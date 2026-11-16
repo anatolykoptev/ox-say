@@ -62,7 +62,7 @@ func TestApplyMatchesInflectedForms(t *testing.T) {
 
 // An exact heard form wins over a stem match, whatever the order of the pairs: «дэвина» filed as its own pair is
 // not taken by the pair filed as «дэвин».
-// Mutation: apply.go match, `[]bool{true, false}` -> `[]bool{false}` -> RED; the same in matchWords -> RED.
+// Mutation: apply.go firstMatch, `[]bool{true, false}` -> `[]bool{false}` -> RED (matchWords shares it).
 func TestExactFormBeatsStemMatch(t *testing.T) {
 	a := Pair{Heard: "дэвин", Meant: "Devin", Status: Active}
 	b := Pair{Heard: "дэвина", Meant: "Devina", Status: Active}
@@ -74,6 +74,23 @@ func TestExactFormBeatsStemMatch(t *testing.T) {
 		if len(ws) != 2 || ws[0].W != "Devina" || ws[1].W != "Devin" {
 			t.Errorf("ApplyWords = %+v", ws)
 		}
+	}
+}
+
+// A longer heard form still beats a shorter exact one: «дэвин робертса» is the pair filed as «дэвин робертс», whatever
+// the exact pair «дэвин» says.
+// Mutation: apply.go firstMatch, drop the grouping by length (one tier over all pairs) -> RED.
+func TestLongerStemMatchBeatsShorterExact(t *testing.T) {
+	pairs := []Pair{
+		{Heard: "дэвин", Meant: "Devin", Status: Active},
+		{Heard: "дэвин робертс", Meant: "Devin Roberts", Status: Active},
+	}
+	if got, _ := Apply("спроси дэвин робертса", pairs); got != "спроси Devin Roberts" {
+		t.Errorf("Apply = %q, want %q", got, "спроси Devin Roberts")
+	}
+	ws := ApplyWords([]stt.Word{{W: "дэвин", S: 0, E: 1}, {W: "робертса", S: 1, E: 2}}, pairs)
+	if len(ws) != 1 || ws[0].W != "Devin Roberts" {
+		t.Errorf("ApplyWords = %+v", ws)
 	}
 }
 

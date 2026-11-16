@@ -209,16 +209,34 @@ func alreadyMeant(toks []token, i, end int, c compiled) bool {
 // sides are different lines of a subtitle. It returns the index after the
 // match.
 func match(toks []token, i int, cs []compiled) (compiled, int, bool) {
-	// An exact heard form beats a stem match anywhere in the list: «дэвина» filed as its own pair is not
-	// swallowed by the pair filed as «дэвин».
-	for _, exact := range []bool{true, false} {
-		for _, c := range cs {
-			if j, ok := matchAt(toks, i, c, exact); ok {
-				return c, j, true
+	var end int
+	c, ok := firstMatch(cs, func(c compiled, exact bool) bool {
+		j, ok := matchAt(toks, i, c, exact)
+		end = j
+		return ok
+	})
+	return c, end, ok
+}
+
+// firstMatch walks the pairs longest heard form first. Among pairs of the same length an exact heard form beats a
+// stem match, whatever the order of the pairs: «дэвина» filed as its own pair is not swallowed by the pair filed as
+// «дэвин». A longer pair still beats a shorter exact one («дэвин смита» matches «дэвин смит», not «дэвин»).
+func firstMatch(cs []compiled, try func(c compiled, exact bool) bool) (compiled, bool) {
+	for lo := 0; lo < len(cs); {
+		hi := lo
+		for hi < len(cs) && len(cs[hi].heard) == len(cs[lo].heard) {
+			hi++
+		}
+		for _, exact := range []bool{true, false} {
+			for _, c := range cs[lo:hi] {
+				if try(c, exact) {
+					return c, true
+				}
 			}
 		}
+		lo = hi
 	}
-	return compiled{}, 0, false
+	return compiled{}, false
 }
 
 func matchAt(toks []token, i int, c compiled, exact bool) (int, bool) {
@@ -341,14 +359,13 @@ func alreadyMeantWords(ws []stt.Word, i, n int, c compiled) bool {
 }
 
 func matchWords(ws []stt.Word, i int, cs []compiled) (compiled, int, bool) {
-	for _, exact := range []bool{true, false} {
-		for _, c := range cs {
-			if n, ok := matchWordsAt(ws, i, c, exact); ok {
-				return c, n, true
-			}
-		}
-	}
-	return compiled{}, 0, false
+	var n int
+	c, ok := firstMatch(cs, func(c compiled, exact bool) bool {
+		m, ok := matchWordsAt(ws, i, c, exact)
+		n = m
+		return ok
+	})
+	return c, n, ok
 }
 
 func matchWordsAt(ws []stt.Word, i int, c compiled, exact bool) (int, bool) {
