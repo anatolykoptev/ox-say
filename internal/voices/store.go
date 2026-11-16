@@ -101,6 +101,13 @@ type Voice struct {
 	// answers one add, and a repair that copies the stored voice must not
 	// inherit a code whose notice is gone.
 	NoticeCode string `json:"-"`
+	// RefTextUnchecked is true when the add tried to check ref_text against the
+	// clip and the speech-to-text gave nothing to check with (it failed, or
+	// returned no words for a clip with sound), so ref_text is stored as given
+	// and may not match the audio. Set by Commit only; never persisted — it
+	// answers one add, a retry may settle it. Not a Notice: it says nothing a
+	// person has to read, only something a caller can act on.
+	RefTextUnchecked bool `json:"-"`
 }
 
 // WAVPath returns the clip path for a valid name.
@@ -178,6 +185,7 @@ type Pending struct {
 	refText    string
 	notice     string
 	noticeCode string
+	unchecked  bool
 	tmp        string
 	meta       Meta
 	// fresh: Commit keeps nothing of a voice it replaces.
@@ -258,12 +266,12 @@ func (s *Store) Prepare(ctx context.Context, name, audioPath, refText string) (*
 		// daemon-side, not client input.
 		return nil, fmt.Errorf("voices: ffmpeg: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	text, notice, code, err := s.fitReference(ctx, tmpName, refText)
+	text, notice, code, unchecked, err := s.fitReference(ctx, tmpName, refText)
 	if err != nil {
 		return nil, err
 	}
 	ok = true
-	return &Pending{s: s, name: name, refText: text, notice: notice, noticeCode: code, tmp: tmpName}, nil
+	return &Pending{s: s, name: name, refText: text, notice: notice, noticeCode: code, unchecked: unchecked, tmp: tmpName}, nil
 }
 
 // Commit moves the clip into place and writes its metadata. The metadata is
@@ -271,7 +279,7 @@ func (s *Store) Prepare(ctx context.Context, name, audioPath, refText string) (*
 // voice being re-added exactly as it was, not with its clip replaced or gone.
 func (p *Pending) Commit() (*Voice, error) {
 	s := p.s
-	v := &Voice{Name: p.name, RefText: p.refText, Created: time.Now().UTC(), Meta: p.inheritedMeta(), Notice: p.notice, NoticeCode: p.noticeCode}
+	v := &Voice{Name: p.name, RefText: p.refText, Created: time.Now().UTC(), Meta: p.inheritedMeta(), Notice: p.notice, NoticeCode: p.noticeCode, RefTextUnchecked: p.unchecked}
 	meta, err := json.Marshal(v)
 	if err != nil {
 		return nil, err

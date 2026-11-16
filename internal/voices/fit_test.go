@@ -529,14 +529,18 @@ func TestPrepareWithinCapMatchingTranscriptKeepsRefText(t *testing.T) {
 // Without a transcriber, with an unsupported script, or when the STT fails, a clip within the cap keeps the text as
 // given: the add must not fail because the STT is down.
 func TestPrepareWithinCapKeepsRefTextWhenItCannotBeChecked(t *testing.T) {
+	// unchecked: the check was attempted and gave nothing (#440). The others had nothing to check against, which is
+	// permanent and says nothing.
+	// Mutation: internal/voices/fit.go checkWithinCap — the STT-error arm returns `false` for unchecked -> RED.
 	cases := map[string]struct {
-		tr   Transcriber
-		text string
+		tr        Transcriber
+		text      string
+		unchecked bool
 	}{
-		"nil":      {nil, "some text"},
-		"no model": {func(context.Context, string) ([]Word, error) { return nil, fmt.Errorf("%w: missing", ErrNoTranscriber) }, "some text"},
-		"stt busy": {func(context.Context, string) ([]Word, error) { return nil, errors.New("stt: busy") }, "some text"},
-		"script":   {func(context.Context, string) ([]Word, error) { return words10("completely different"), nil }, "你好世界今天天气很好"},
+		"nil":      {nil, "some text", false},
+		"no model": {func(context.Context, string) ([]Word, error) { return nil, fmt.Errorf("%w: missing", ErrNoTranscriber) }, "some text", false},
+		"stt busy": {func(context.Context, string) ([]Word, error) { return nil, errors.New("stt: busy") }, "some text", true},
+		"script":   {func(context.Context, string) ([]Word, error) { return words10("completely different"), nil }, "你好世界今天天气很好", false},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -549,6 +553,9 @@ func TestPrepareWithinCapKeepsRefTextWhenItCannotBeChecked(t *testing.T) {
 			}
 			if v.RefText != c.text || v.Notice != "" {
 				t.Fatalf("voice = %+v, want the text as given and no notice", v)
+			}
+			if v.RefTextUnchecked != c.unchecked {
+				t.Fatalf("RefTextUnchecked = %v, want %v", v.RefTextUnchecked, c.unchecked)
 			}
 		})
 	}
@@ -596,9 +603,10 @@ func TestPrepareWithinCapEmptyTranscriptOnHissClipRefused(t *testing.T) {
 }
 
 // An empty transcript on a clip that has sound is a flaky STT result, not
-// proof of silence: the add keeps the typed ref_text and logs a warning (#439).
+// proof of silence: the add keeps the typed ref_text, logs a warning (#439) and reports the text as unchecked (#440).
 // Mutation: internal/voices/fit.go checkWithinCap — refuse every empty
-// transcript (return the InputError without the `silentClip` condition) -> RED.
+// transcript (return the InputError without the `silentClip` condition) -> RED;
+// the empty-transcript arm returns `false` for unchecked -> RED.
 func TestPrepareWithinCapEmptyTranscriptOnAudibleClipKeepsRefText(t *testing.T) {
 	s, dir := newStore(t)
 	src := filepath.Join(dir, "take.wav")
@@ -614,6 +622,9 @@ func TestPrepareWithinCapEmptyTranscriptOnAudibleClipKeepsRefText(t *testing.T) 
 	}
 	if v.RefText != "something was said" || v.Notice != "" || v.NoticeCode != "" {
 		t.Fatalf("voice = %+v, want the text as given and no notice", v)
+	}
+	if !v.RefTextUnchecked {
+		t.Fatalf("voice = %+v, want RefTextUnchecked: the check ran and proved nothing", v)
 	}
 	if calls != 1 {
 		t.Fatalf("transcriber called %d times, want 1", calls)
@@ -662,5 +673,28 @@ func TestNoticeCodeIsNotPersisted(t *testing.T) {
 	}
 	if strings.Contains(string(meta), "notice_code") {
 		t.Fatalf("stored meta %s holds notice_code; it must not be persisted", meta)
+	}
+}
+
+// ref_text_unchecked answers one add: a persisted flag would outlive the retry that settles it.
+// Mutation: internal/voices/store.go Voice.RefTextUnchecked — tag back to
+// `json:"ref_text_unchecked,omitempty"` -> RED.
+func TestRefTextUncheckedIsNotPersisted(t *testing.T) {
+	s, dir := newStore(t)
+	src := testutil.WriteSilentWAV(t, dir, "take.wav", 10)
+	s.SetTranscriber(func(context.Context, string) ([]Word, error) { return nil, errors.New("stt: busy") })
+	v, err := s.Add(context.Background(), "ben", src, "some text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !v.RefTextUnchecked {
+		t.Fatalf("returned voice = %+v, want RefTextUnchecked", v)
+	}
+	meta, err := os.ReadFile(s.metaPath("ben"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(meta), "unchecked") {
+		t.Fatalf("stored meta %s holds the unchecked flag; it must not be persisted", meta)
 	}
 }

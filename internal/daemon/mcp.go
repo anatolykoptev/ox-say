@@ -164,6 +164,8 @@ type voiceAddOut struct {
 	RegisteredToEngine bool   `json:"registered_to_engine"`
 	Notice             string `json:"notice,omitempty"`
 	NoticeCode         string `json:"notice_code,omitempty"`
+	// RefTextUnchecked: the speech-to-text check of ref_text did not run (see voices.Voice.RefTextUnchecked); retry to settle it.
+	RefTextUnchecked bool `json:"ref_text_unchecked,omitempty"`
 }
 
 func (d *Daemon) toolVoiceAdd(ctx context.Context, _ *mcp.CallToolRequest, in voiceAddIn) (*mcp.CallToolResult, voiceAddOut, error) {
@@ -172,7 +174,7 @@ func (d *Daemon) toolVoiceAdd(ctx context.Context, _ *mcp.CallToolRequest, in vo
 	if err != nil {
 		return nil, voiceAddOut{}, err
 	}
-	return nil, voiceAddOut{Name: v.Name, RegisteredToEngine: registered, Notice: v.Notice, NoticeCode: v.NoticeCode}, nil
+	return nil, voiceAddOut{Name: v.Name, RegisteredToEngine: registered, Notice: v.Notice, NoticeCode: v.NoticeCode, RefTextUnchecked: v.RefTextUnchecked}, nil
 }
 
 type voiceUpdateIn struct {
