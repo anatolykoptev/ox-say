@@ -70,8 +70,8 @@ func (d *Daemon) liveHold() string {
 // are about 1% duty on Apple Silicon, and pausing on any battery would end them on a laptop call.
 func (d *Daemon) liveLowPower() bool {
 	m := d.live
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.powerMu.Lock() // its own lock: pmset is a subprocess, and m.mu is taken by starting a recording
+	defer m.powerMu.Unlock()
 	if time.Since(m.powerAt) >= livePowerTTL {
 		_, m.lowPower = powerState(context.Background())
 		m.powerAt = time.Now()
@@ -107,7 +107,8 @@ type liveManager struct {
 	decode func(context.Context, []byte) (string, error)
 	// decodeMu is the one decode in flight across every recording (decoder).
 	decodeMu sync.Mutex
-	// lowPower and powerAt cache the Low Power Mode read (liveLowPower).
+	// lowPower and powerAt cache the Low Power Mode read (liveLowPower), under powerMu.
+	powerMu  sync.Mutex
 	lowPower bool
 	powerAt  time.Time
 }
@@ -199,8 +200,10 @@ func (m *liveManager) reconcile() {
 	}
 	if !m.d.liveEnabled() {
 		m.mu.Lock()
-		for _, e := range m.workers {
+		for id, e := range m.workers {
 			e.cancel()
+			// gone from the map now, not when its goroutine notices: a quick switch back on must start a worker
+			delete(m.workers, id)
 		}
 		m.mu.Unlock()
 		return

@@ -367,7 +367,9 @@ func TestLiveCaptionsNeverDecodeWhileADictationIsInFlight(t *testing.T) {
 	t.Fatal("the live worker is still running after the meeting finished")
 }
 
-// On Intel, a recording starts no worker unless the user turned captions on; turning them off mid-call stops it.
+// On Intel, a recording starts no worker unless the user turned captions on; turning them off mid-call stops it, and
+// turning them on again starts one.
+// Mutation: internal/daemon/meetings_live.go reconcile, delete `delete(m.workers, id)` -> RED.
 func TestLiveWorkerStartsOnlyWhenEnabledAndStopsWhenSwitchedOff(t *testing.T) {
 	d, mux := meetingFixture(t, nil) // discrete memory: off by default
 	d.live.decode = func(context.Context, []byte) (string, error) { return "x", nil }
@@ -386,14 +388,16 @@ func TestLiveWorkerStartsOnlyWhenEnabledAndStopsWhenSwitchedOff(t *testing.T) {
 	if rec := call(t, mux, "PUT", "/v1/meetings/settings", `{"live_captions":false}`); rec.Code != http.StatusOK {
 		t.Fatalf("PUT = %d", rec.Code)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, ok := d.live.state(created.ID); !ok {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	if _, ok := d.live.state(created.ID); ok {
+		t.Fatal("turning captions off left the worker in the table: a quick switch back on would find it and start nothing")
 	}
-	t.Fatal("turning captions off did not stop the worker")
+	// off and on again at once: the recording gets a worker again, though the old goroutine may still be ending
+	if rec := call(t, mux, "PUT", "/v1/meetings/settings", `{"live_captions":true}`); rec.Code != http.StatusOK {
+		t.Fatalf("PUT = %d", rec.Code)
+	}
+	if _, ok := d.live.state(created.ID); !ok {
+		t.Fatal("switching captions back on started no worker for the recording")
+	}
 }
 
 // Two requests that each change one field cannot overwrite one another with what they read: the retention the user
