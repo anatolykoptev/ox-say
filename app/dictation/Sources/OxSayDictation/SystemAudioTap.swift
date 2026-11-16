@@ -3,8 +3,9 @@ import CoreAudio
 import DictationCore
 import os
 
-/// Everything the Mac plays, as a 16 kHz mono stream: a global process tap
-/// (macOS 14.2+) that leaves out ox-say's own audio. The tap needs the
+/// What the other side plays, as a 16 kHz mono stream: a process tap (macOS 14.2+). Its scope is the call's own
+/// processes (`TapScope.call`, #530), or, when the call's process is not known, everything the Mac plays except ox-say's
+/// own audio (`TapScope.global`). The tap needs the
 /// "System Audio Recording" permission, which macOS asks for on first use
 /// (NSAudioCaptureUsageDescription) and ties to a properly signed app.
 ///
@@ -90,12 +91,13 @@ final class SystemAudioTap {
     /// Starts (or rebuilds) the tap off the main thread; `completion` runs on the main thread.
     /// `withMainSubDevice`: bind the aggregate device to the current default
     /// output device, the layout the AudioCap reference app uses and P0a measured as working.
-    func start(excludingPIDs pids: [pid_t], withMainSubDevice: Bool, completion: @escaping (StartOutcome) -> Void) {
+    /// `scope`: which processes the tap hears; `excludingPIDs` applies to `.global` only.
+    func start(scope: TapScope, excludingPIDs pids: [pid_t], withMainSubDevice: Bool, completion: @escaping (StartOutcome) -> Void) {
         let requested = stateLock.withLock { epoch }
         control.async { [self] in
             let outcome: StartOutcome
             do {
-                outcome = try startNow(excludingPIDs: pids, withMainSubDevice: withMainSubDevice, epoch: requested) ? .started : .stopped
+                outcome = try startNow(scope: scope, excludingPIDs: pids, withMainSubDevice: withMainSubDevice, epoch: requested) ? .started : .stopped
             } catch {
                 outcome = .failed(error)
             }
@@ -104,9 +106,10 @@ final class SystemAudioTap {
     }
 
     /// Blocking: runs on `control`. False when `stop()` ran meanwhile.
-    private func startNow(excludingPIDs pids: [pid_t], withMainSubDevice: Bool, epoch requested: Int) throws -> Bool {
+    private func startNow(scope: TapScope, excludingPIDs pids: [pid_t], withMainSubDevice: Bool, epoch requested: Int) throws -> Bool {
         var excluded: [AudioObjectID] = []
-        for pid in pids {
+        // The exclusion list belongs to the global tap; a tap on the call's processes has no OxSay process in it.
+        for pid in pids where scope == .global {
             // The process object of this very app appears once it uses audio; give it a moment before giving up.
             let object = Retry.firstNonNil(attempts: 4, wait: { Thread.sleep(forTimeInterval: 0.05) }) { Self.processObject(for: pid) }
             if let object {
@@ -116,7 +119,7 @@ final class SystemAudioTap {
                 log.error("system audio tap: no audio process object for pid \(pid, privacy: .public); this app's own sound is not excluded")
             }
         }
-        let fresh = try build(excluded: excluded, withMainSubDevice: withMainSubDevice)
+        let fresh = try build(scope: scope, excluded: excluded, withMainSubDevice: withMainSubDevice)
         let swap: (old: Instance?, stale: Bool) = stateLock.withLock {
             if epoch != requested { return (nil, true) }
             let old = current
@@ -137,13 +140,17 @@ final class SystemAudioTap {
         return true
     }
 
-    private func build(excluded: [AudioObjectID], withMainSubDevice: Bool) throws -> Instance {
+    private func build(scope: TapScope, excluded: [AudioObjectID], withMainSubDevice: Bool) throws -> Instance {
         let instance = Instance()
         func fail(_ message: String) -> Failure {
             instance.teardown()
             return Failure(description: message)
         }
-        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: excluded)
+        let description: CATapDescription
+        switch scope {
+        case .global: description = CATapDescription(stereoGlobalTapButExcludeProcesses: excluded)
+        case .call(let processes): description = CATapDescription(stereoMixdownOfProcesses: processes.sorted().map { AudioObjectID($0) })
+        }
         description.uuid = UUID()
         description.muteBehavior = .unmuted
         description.isPrivate = true

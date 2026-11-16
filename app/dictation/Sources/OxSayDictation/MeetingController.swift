@@ -72,6 +72,10 @@ final class MeetingController: NSObject, MeetingFeature {
     private var monitor = RecordingMonitor()
     /// Since when some other process has been playing audio without a break (nil = none is).
     private var playingSince: Date?
+    /// Since when another process, outside the call-scoped tap, has been playing; nil when none, or the tap is not scoped.
+    private var outsidePlayingSince: Date?
+    /// The bundle ids already named in the log as playing outside the call app, so each is logged once per recording.
+    private var outsideLogged = Set<String>()
     private var playingPolledAt = Date.distantPast
     private var lastSource = ""
     private var offerLife = OfferLifetime()
@@ -105,6 +109,7 @@ final class MeetingController: NSObject, MeetingFeature {
         }
         recorder.onMicrophoneFailed = { [weak self] in self?.host.notify(L10nKey.noticeMeetingMicLost.text) }
         recorder.onMicrophoneRecovered = { [weak self] in self?.host.notify(L10nKey.noticeMeetingMicRecovered.text) }
+        recorder.onTapScope = { [weak self] scope in self?.tapScopeChanged(scope) }
         badge.onStop = { [weak self] in self?.stop() }
         badge.onDontRecord = { [weak self] in self?.dontRecordThisOne() }
         badge.onRecord = { [weak self] in self?.recordFromPrompt() }
@@ -278,11 +283,13 @@ final class MeetingController: NSObject, MeetingFeature {
                     return
                 }
                 guard let dir = info.dir else { throw StudioError.badResponse }
-                try recorder.start(into: URL(fileURLWithPath: dir, isDirectory: true))
+                try recorder.start(into: URL(fileURLWithPath: dir, isDirectory: true), callBundleID: callBundleID(for: source))
                 current = (info, origin)
                 syncCallActivity()
                 monitor = RecordingMonitor()
                 playingSince = nil
+                outsidePlayingSince = nil
+                outsideLogged = []
                 playingPolledAt = .distantPast
                 badge.showRecording(auto: origin == .auto, elapsed: 0)
                 startTick()
@@ -297,6 +304,21 @@ final class MeetingController: NSObject, MeetingFeature {
             }
             render()
         }
+    }
+
+    /// The app whose sound is "the other side" (#530): the call the watcher last saw, when it is the one being recorded
+    /// (a call started by hand, from the menu, takes whatever call is live). nil when no call is known, which records
+    /// everything the Mac plays and says so.
+    private func callBundleID(for source: String) -> String? {
+        guard let call = liveCall, source == "manual" || call.source == source else { return nil }
+        return call.bundleID
+    }
+
+    /// The other side's scope changed, or was first set: a fallback to the whole Mac is told once per change.
+    private func tapScopeChanged(_ scope: TapScope) {
+        guard scope == .global else { return }
+        host.notify(L10nKey.noticeMeetingTapGlobal.text)
+        log.info("system audio tap: scope is the whole Mac (the call's process is not known)")
     }
 
     /// A start that did not become a recording says why — in the log, in the status line, on the plate until it is
@@ -363,7 +385,8 @@ final class MeetingController: NSObject, MeetingFeature {
         let tick = RecordingMonitor.Tick(elapsed: recorder.elapsed, writeFailed: recorder.writeFailed,
                                          callbacks: stats.callbacks, peak: stats.peak,
                                          playingFor: playingSince.map { Date().timeIntervalSince($0) } ?? 0,
-                                         heardLoud: recorder.heardTheOtherSide, meLoud: l.me > Self.loudMic, dt: 0.25)
+                                         heardLoud: recorder.heardTheOtherSide, meLoud: l.me > Self.loudMic, dt: 0.25,
+                                         outsidePlayingFor: outsidePlayingSince.map { Date().timeIntervalSince($0) } ?? 0)
         for action in monitor.observe(tick) {
             switch action {
             case .stop(.diskFull):
@@ -376,6 +399,7 @@ final class MeetingController: NSObject, MeetingFeature {
                 return
             case .say(.tapSilent): tellSilentTap()
             case .say(.noSystemAudio): host.notify(L10nKey.noticeMeetingNoSystemAudio.text)
+            case .say(.playingOutsideScope): host.notify(L10nKey.noticeMeetingTapOutsideScope.text)
             }
         }
     }
@@ -388,11 +412,29 @@ final class MeetingController: NSObject, MeetingFeature {
         guard Date().timeIntervalSince(playingPolledAt) >= 1 else { return }
         playingPolledAt = Date()
         let me = getpid()
-        guard let processes = CoreAudioProps.audioProcesses() else { return }
-        if processes.contains(where: { $0.runningOutput && $0.pid != me }) {
+        // A process without a bundle id counts only for a scoped tap, which has to tell it from the call's; the whole-Mac
+        // judgement is the one it always was.
+        let scope = recorder.tapScope
+        var scoped = false
+        if case .call = scope { scoped = true }
+        guard let processes = CoreAudioProps.scopeProcesses(keepUnnamed: scoped) else { return }
+        // With the tap on the call's processes, only their sound counts as "something is playing": music elsewhere does
+        // not make a quiet far side look like a silent tap. What plays outside the call app is tracked apart, so a far side
+        // that plays from another app is named instead of being blamed on the permission (`SystemAudioGuard`).
+        let playback = CallAudioScope.playback(processes: processes, scope: scope, call: recorder.observedCall, ownPID: me)
+        if playback.inScope {
             if playingSince == nil { playingSince = Date() }
         } else {
             playingSince = nil
+        }
+        if case .call = scope, !playback.outside.isEmpty {
+            if outsidePlayingSince == nil { outsidePlayingSince = Date() }
+        } else {
+            outsidePlayingSince = nil
+        }
+        let fresh = playback.outside.filter { outsideLogged.insert($0).inserted }
+        if !fresh.isEmpty {
+            log.info("system audio: playing outside the call app: \(fresh.joined(separator: ","), privacy: .public)")
         }
     }
 
@@ -565,6 +607,9 @@ final class MeetingController: NSObject, MeetingFeature {
         } else {
             watcher.stop()
             host.callActivity.setCallSeen(false)
+            // A stopped watcher no longer knows which call is live: a recording started by hand must not take the last one
+            // it saw for the app of a different call (#530).
+            liveCall = nil
         }
         // Off means no offers: a prompt or consent badge that is still up must not keep asking.
         if !OfferLifetime.offersAllowed(mode: mode) {

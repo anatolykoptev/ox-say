@@ -1,4 +1,5 @@
 import CoreAudio
+import DictationCore
 
 /// Small typed reads of CoreAudio object properties.
 enum CoreAudioProps {
@@ -48,7 +49,9 @@ enum CoreAudioProps {
 extension CoreAudioProps {
     /// The processes CoreAudio knows (macOS 14.2+): pid, bundle id and whether each has input / output running.
     /// nil when CoreAudio itself failed — not the same as "no process has audio" (`[]`).
-    static func audioProcesses() -> [(pid: Int32, bundleID: String, runningInput: Bool, runningOutput: Bool)]? {
+    /// A process whose bundle id cannot be read is left out, unless `keepUnnamed`: then it is kept with an empty id (a system
+    /// daemon that plays a call's audio, FaceTime's `avconferenced`, may have none), so the recorder can see it play.
+    static func audioProcesses(keepUnnamed: Bool = false) -> [(pid: Int32, bundleID: String, runningInput: Bool, runningOutput: Bool, objectID: AudioObjectID)]? {
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
                                                  mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         var size: UInt32 = 0
@@ -59,9 +62,19 @@ extension CoreAudioProps {
         guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &objects) == noErr else { return nil }
         return objects.compactMap { object in
             guard let pid = uint32(object, kAudioProcessPropertyPID), let running = uint32(object, kAudioProcessPropertyIsRunningInput),
-                  let bundle = string(object, kAudioProcessPropertyBundleID) else { return nil }
+                  let bundle = string(object, kAudioProcessPropertyBundleID) ?? (keepUnnamed ? "" : nil) else { return nil }
             let playing = uint32(object, kAudioProcessPropertyIsRunningOutput) ?? 0
-            return (Int32(bitPattern: pid), bundle, running != 0, playing != 0)
+            return (Int32(bitPattern: pid), bundle, running != 0, playing != 0, object)
+        }
+    }
+}
+
+extension CoreAudioProps {
+    /// The processes the recorder scopes by (`CallAudioScope`), nameless ones included unless `keepUnnamed` is false. nil when
+    /// CoreAudio itself failed.
+    static func scopeProcesses(keepUnnamed: Bool = true) -> [AudioProcess]? {
+        audioProcesses(keepUnnamed: keepUnnamed)?.map {
+            AudioProcess(objectID: $0.objectID, pid: $0.pid, bundleID: $0.bundleID, runningOutput: $0.runningOutput)
         }
     }
 }

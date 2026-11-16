@@ -105,6 +105,10 @@ public enum L10nKey: String, CaseIterable {
     case badgeCollapse = "badge.collapse"
     case badgeExpand = "badge.expand"
     /// A recording plate that cannot be seen on this screen: said as a notification, which does show over a full-screen Space.
+    /// The call's own process could not be found: the other side is everything the Mac plays (#530).
+    case noticeMeetingTapGlobal = "notice.meeting.tap_global"
+    /// The tap is on the call app only, and another app is playing while the user talks: the far side may be there (#530).
+    case noticeMeetingTapOutsideScope = "notice.meeting.tap_outside_scope"
     case noticeMeetingPlateHiddenTitle = "notice.meeting.plate_hidden.title"
     case noticeMeetingPlateHidden = "notice.meeting.plate_hidden"
     /// The record question that could not be shown: the way to record it anyway.

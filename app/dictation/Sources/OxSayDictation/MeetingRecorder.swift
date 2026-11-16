@@ -89,6 +89,17 @@ final class MeetingRecorder {
     private let activity = ActivityHold.system
     /// #531: the channel files are synced to the disk every `RecordingDurability.flushInterval` seconds.
     private lazy var flusher = PeriodicFlush { [weak self] in self?.flushChannels() }
+    /// The call app the other side is taken from, and what the running tap actually hears (#530). `callBundleID` is the
+    /// app only when its per-app scope is verified (`CallAudioScope.verifiedScopedApps`), else nil: an unverified app is
+    /// treated as "no call known". `observedCall` is the app the watcher saw, for the log and the playback diagnostics.
+    private var callBundleID: String?
+    private(set) var observedCall: String?
+    private(set) var tapScope: TapScope = .global
+    private var scopeTimer: DispatchSourceTimer?
+    private var scopeAnnounced = false
+    /// Called on the main thread when the scope the tap runs with changes, and once at the first start: the caller says
+    /// the fallback (`.global`) to the user.
+    var onTapScope: ((TapScope) -> Void)?
     private(set) var started: Date?
     /// P0a (macOS 26.5.1): the default layout, main sub-device = the default output, recorded cleanly. Branch A.
     var useMainSubDevice = true
@@ -117,7 +128,11 @@ final class MeetingRecorder {
         }
     }
 
-    func start(into dir: URL) throws {
+    /// `callBundleID`: the call app's bundle id when it is known (#530), so the other side is the call's own sound.
+    /// nil, or a call whose audio process cannot be found, records everything the Mac plays except OxSay (`TapScope.global`).
+    func start(into dir: URL, callBundleID: String? = nil) throws {
+        self.observedCall = callBundleID
+        self.callBundleID = CallAudioScope.scopedCall(callBundleID)
         try Self.checkMicrophone()
         let t0 = HostClock.nanos(fromHostTicks: AudioGetCurrentHostTime())
         let meWriter = try PcmChannelWriter(url: dir.appendingPathComponent("me.pcm"), t0: t0)
@@ -180,7 +195,10 @@ final class MeetingRecorder {
         syncFailureLogged = false
         flusher.start()
         // The microphone alone is still a recording: a tap that cannot start is told and retried (`tapStarted`).
+        scopeAnnounced = false
+        tapScope = .global
         startTap()
+        watchScope()
         watchOutputDevice()
     }
 
@@ -219,6 +237,8 @@ final class MeetingRecorder {
         micObserver = nil
         micChain.cancel()
         tapRecovery.end()
+        scopeTimer?.cancel()
+        scopeTimer = nil
         unwatchOutputDevice()
         mic.inputNode.removeTap(onBus: 0)
         mic.stop()
@@ -326,12 +346,38 @@ final class MeetingRecorder {
     /// Starts or rebuilds the tap off the main thread; the answer comes back to `tapStarted` on main.
     private func startTap() {
         let token = tapRecovery.token
-        tap.start(excludingPIDs: [getpid()], withMainSubDevice: useMainSubDevice) { [weak self] outcome in
-            self?.tapStarted(outcome, token: token)
+        let scope = CallAudioScope.scopeForRebuild(current: tapScope, wanted: wantedScope())
+        tap.start(scope: scope, excludingPIDs: [getpid()], withMainSubDevice: useMainSubDevice) { [weak self] outcome in
+            self?.tapStarted(outcome, token: token, scope: scope)
         }
     }
 
-    private func tapStarted(_ outcome: SystemAudioTap.StartOutcome, token: Int) {
+    /// The call's audio processes as CoreAudio lists them now. A CoreAudio error reads as "none found": the fallback.
+    private func wantedScope() -> TapScope {
+        CallAudioScope.scope(callBundleID: callBundleID, processes: CoreAudioProps.scopeProcesses() ?? [], ownPID: getpid())
+    }
+
+    /// The public log line for a tap that started: the scope kind and the bundle ids it matched. Bundle ids only.
+    private func logScope(_ scope: TapScope) {
+        let line = CallAudioScope.describe(scope: scope, observed: observedCall, processes: CoreAudioProps.scopeProcesses() ?? [], ownPID: getpid())
+        log.info("system audio tap: \(line, privacy: .public)")
+    }
+
+    /// Every few seconds while recording: a call process that appeared since the tap was built (a browser's new audio
+    /// helper) is added by building the tap again. Nothing to follow without a known call.
+    private func watchScope() {
+        guard callBundleID != nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 3, repeating: 3, leeway: .milliseconds(500))
+        timer.setEventHandler { [weak self] in
+            guard let self, self.started != nil else { return }
+            if CallAudioScope.needsRebuild(current: self.tapScope, wanted: self.wantedScope()) { self.scheduleTapRebuild(after: 0) }
+        }
+        timer.resume()
+        scopeTimer = timer
+    }
+
+    private func tapStarted(_ outcome: SystemAudioTap.StartOutcome, token: Int, scope: TapScope) {
         // The decisions (a stale answer, the retry streak, whether the system audio is lost) are `TapRecovery`'s; this
         // reads the tap's state and carries the action out.
         // A rebuild that failed while the old tap still DELIVERS loses nothing: retried and logged, not announced. Once
@@ -340,7 +386,18 @@ final class MeetingRecorder {
         let kind: TapRecovery.Outcome
         var failure: Error?
         switch outcome {
-        case .started: kind = .started
+        case .started:
+            kind = .started
+            if started != nil, token == tapRecovery.token {
+                logScope(scope) // at the start and at every rebuild
+                if tapScope != scope || !scopeAnnounced {
+                    tapScope = scope
+                    scopeAnnounced = true
+                    // Only a call whose scope is verified is told when it falls back: an unverified app (all of them, today)
+                    // runs on the whole-Mac tap as it always did, and that is not news.
+                    if callBundleID != nil { onTapScope?(scope) }
+                }
+            }
         case .stopped: kind = .stopped
         case .failed(let error): kind = .failed; failure = error
         }
