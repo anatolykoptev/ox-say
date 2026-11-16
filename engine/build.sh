@@ -9,10 +9,12 @@
 #   ox-llm      from the pinned llama.cpp's llama-server, own ggml (meeting notes: Qwen3.5 GGUF)
 #   ox-diar     from engine/diar, a Swift package on FluidAudio's Core ML models (speaker diarization), arm64
 #   ox-clean    from engine/clean, a Swift package on a Core ML mask model (voice cleanup), arm64 and x86_64
+#   ox-aec      from engine/aec on the pinned freedesktop webrtc-audio-processing (meeting echo
+#               cancellation, AEC3), meson+ninja into a static lib, arm64 and x86_64
 # The first three carry engine/patches/ggml on their ggml tree, on both architectures: on
 # unified memory the patches are inert or bug fixes (engine/README.md).
 #
-# Usage: [OX_SAY_ONLY=stt] engine/build.sh [work-dir]      (default: build/engine)
+# Usage: [OX_SAY_ONLY=stt|aec] engine/build.sh [work-dir]  (default: build/engine)
 # Output: <work-dir>/out/{tts-server,ox-stt,ox-align,ox-llm,ox-diar (arm64),ox-clean,audiocpp_server (arm64),
 #                        each <bin>.metallib (+<bin>-tensor.metallib on a
 #                        macOS 26 SDK) when the Metal toolchain is present,
@@ -37,8 +39,9 @@ jobs=${OX_SAY_JOBS:-$(sysctl -n hw.physicalcpu)}
 
 # The target is the shell's architecture. CMake build dirs are named after it:
 # a dir configured on another architecture keeps that CMAKE_SYSTEM_PROCESSOR
-# and would build the wrong one.
-arch=$(uname -m)
+# and would build the wrong one. OX_SAY_ARCH overrides it for a cross compile
+# (clang multiarch needs no emulator to BUILD the other slice; running it does).
+arch=${OX_SAY_ARCH:-$(uname -m)}
 case $arch in
     x86_64 | arm64) ;;
     *) echo "engine/build.sh: unsupported architecture $arch" >&2; exit 1 ;;
@@ -204,17 +207,126 @@ set_cmake_flags() {
         -DGGML_OPENMP=OFF "-DCMAKE_C_FLAGS=-I$inc$opt" "-DCMAKE_CXX_FLAGS=-I$inc$opt")
 }
 
+# --- ox-aec (meeting echo cancellation): freedesktop's webrtc-audio-processing ---
+# The only engine built with meson+ninja rather than cmake: that is the upstream's build
+# system. Cloned at WEBRTC_APM_COMMIT, built --default-library=static with abseil from its own
+# wrap subproject (--wrap-mode=forcefallback: without it pkg-config picks up a shared system
+# abseil, which would not ship). meson link_wholes every component — the webrtc subtrees and the
+# bundled abseil — into a single libwebrtc-audio-processing-2.a that the engine's CMakeLists
+# links, so the binary does not depend on the build tree. No ggml, no Metal: check_patched does
+# not apply.
+build_ox_aec() {
+    local apm="$work/webrtc-audio-processing" apmb stamp actual
+    apmb="$apm/build-$arch"
+    command -v meson >/dev/null 2>&1 && command -v ninja >/dev/null 2>&1 || {
+        echo "engine/build.sh: ox-aec needs meson and ninja on PATH (pip install meson ninja, or brew install meson)" >&2
+        exit 1
+    }
+    stamp=$( { echo "$WEBRTC_APM_REPO $WEBRTC_APM_COMMIT"
+        if [ -d "$here/patches/webrtc-apm" ]; then
+            find "$here/patches/webrtc-apm" -name '*.patch' -type f | LC_ALL=C sort | stamp_patches
+        fi; } | shasum -a 256 | cut -d' ' -f1)
+    if ! fresh "$apm" "$stamp"; then
+        rm -rf "$apm"
+        git clone --quiet "$WEBRTC_APM_REPO" "$apm"
+        git -C "$apm" checkout --quiet "$WEBRTC_APM_COMMIT"
+        # A tag object or a short ref must not stand in for the pinned commit.
+        actual=$(git -C "$apm" rev-parse HEAD)
+        if [ "$actual" != "$WEBRTC_APM_COMMIT" ]; then
+            echo "webrtc-audio-processing is $actual, expected the commit $WEBRTC_APM_COMMIT" >&2
+            exit 1
+        fi
+        if [ -d "$here/patches/webrtc-apm" ]; then
+            for p in "$here"/patches/webrtc-apm/*.patch; do git -C "$apm" apply "$p"; done
+        fi
+        echo "$stamp" > "$apm/.ox-say-stamp"
+    fi
+    # Same baseline as set_cmake_flags: a distribution build pins the M1 and the 13.3 deployment
+    # target; a local build targets this CPU. x86_64 needs no SIMD flags in either mode: upstream
+    # compiles its AVX2 files separately and picks them at runtime.
+    local apm_c="" aec_flags=()
+    if [ "${OX_SAY_DIST:-0}" = 1 ]; then
+        apm_c="-mmacosx-version-min=13.3"
+        aec_flags=(-DCMAKE_OSX_DEPLOYMENT_TARGET=13.3)
+        if [ "$arch" = arm64 ]; then
+            apm_c="$apm_c -mcpu=apple-m1"
+            aec_flags+=("-DCMAKE_CXX_FLAGS=-mcpu=apple-m1")
+        fi
+    elif [ "$arch" = arm64 ]; then
+        apm_c="-mcpu=native"
+        aec_flags=("-DCMAKE_CXX_FLAGS=-mcpu=native")
+    else
+        apm_c="-march=native"
+        aec_flags=("-DCMAKE_CXX_FLAGS=-march=native")
+    fi
+    # Building for the other slice is a cross compile for meson even though clang multiarch
+    # makes it one flag; cpu_family is meson's name for it (aarch64, not arm64).
+    local meson_arch=()
+    if [ "$arch" != "$(uname -m)" ]; then
+        local cpu_family=$arch crossf="$work/meson-cross-$arch.ini"
+        [ "$arch" = arm64 ] && cpu_family=aarch64
+        printf "[binaries]\nc = ['clang', '-arch', '%s']\ncpp = ['clang++', '-arch', '%s']\n\n[host_machine]\nsystem = 'darwin'\ncpu_family = '%s'\ncpu = '%s'\nendian = 'little'\n" \
+            "$arch" "$arch" "$cpu_family" "$cpu_family" > "$crossf"
+        meson_arch=(--cross-file "$crossf")
+    fi
+    if [ -f "$apmb/build.ninja" ]; then
+        meson setup --reconfigure "$apmb" "$apm" --default-library=static --buildtype=release \
+            --wrap-mode=forcefallback "${meson_arch[@]+"${meson_arch[@]}"}" \
+            "-Dc_args=$apm_c" "-Dcpp_args=$apm_c" > "$work/aec-meson.log"
+    else
+        meson setup "$apmb" "$apm" --default-library=static --buildtype=release \
+            --wrap-mode=forcefallback "${meson_arch[@]+"${meson_arch[@]}"}" \
+            "-Dc_args=$apm_c" "-Dcpp_args=$apm_c" > "$work/aec-meson.log"
+    fi
+    ninja -C "$apmb" -j "$jobs" >> "$work/aec-meson.log"
+    # meson link_wholes every component (webrtc subtrees and the bundled abseil) into this one
+    # archive, so it links self-contained; merging the per-directory archives on top would only
+    # add duplicate members.
+    local apmlib
+    apmlib=$(find "$apmb" -name 'libwebrtc-audio-processing-2.a' | head -1)
+    [ -f "$apmlib" ] || { echo "engine/build.sh: no libwebrtc-audio-processing-2.a under $apmb" >&2; exit 1; }
+    cmake -S "$here/aec" -B "$work/aec-build-$arch" -DCMAKE_BUILD_TYPE=Release \
+        "-DCMAKE_OSX_ARCHITECTURES=$arch" \
+        -DWEBRTC_APM_SRC="$apm" -DWEBRTC_APM_LIB="$apmlib" \
+        ${aec_flags[@]+"${aec_flags[@]}"} > "$work/aec-configure.log"
+    cmake --build "$work/aec-build-$arch" --target ox-aec -j "$jobs" > "$work/aec-build.log"
+    cp "$work/aec-build-$arch/ox-aec" "$out/ox-aec"
+    strip -x "$out/ox-aec"
+    check_static "$out/ox-aec"
+    check_dist "$out/ox-aec"
+    cp "$apm/COPYING" "$out/licenses/webrtc-audio-processing.LICENSE"
+    local d found=0
+    for d in "$apm"/subprojects/abseil-cpp-*/; do
+        if [ -f "$d/LICENSE" ]; then
+            cp "$d/LICENSE" "$out/licenses/abseil-cpp.LICENSE"
+            found=1
+            break
+        fi
+    done
+    if [ "$found" = 0 ]; then
+        echo "engine/build.sh: the abseil subproject has no LICENSE" >&2
+        exit 1
+    fi
+    echo "built $out/ox-aec"
+}
+
 mkdir -p "$out/licenses"
 # An interrupted build must not leave the previous build's pins next to new binaries; the stamp is written last.
 rm -f "$out/pins.env"
 
 # OX_SAY_ONLY=stt builds ox-stt alone (the Parakeet spike, eval harness): everything before and after the
-# ox-stt block is skipped. Never set for a release build.
+# ox-stt block is skipped. OX_SAY_ONLY=aec likewise builds ox-aec alone. Never set for a release build.
 only_stt=0
 if [ "${OX_SAY_ONLY:-}" = stt ]; then only_stt=1; fi
-if [ -n "${OX_SAY_ONLY:-}" ] && [ "$only_stt" = 0 ]; then
-    echo "engine/build.sh: OX_SAY_ONLY accepts only 'stt', got '$OX_SAY_ONLY'" >&2
+only_aec=0
+if [ "${OX_SAY_ONLY:-}" = aec ]; then only_aec=1; fi
+if [ -n "${OX_SAY_ONLY:-}" ] && [ "$only_stt" = 0 ] && [ "$only_aec" = 0 ]; then
+    echo "engine/build.sh: OX_SAY_ONLY accepts 'stt' or 'aec', got '$OX_SAY_ONLY'" >&2
     exit 1
+fi
+if [ "$only_aec" = 1 ]; then
+    build_ox_aec
+    exit 0
 fi
 
 # --- tts-server (qwentts.cpp) ---
@@ -507,6 +619,9 @@ if audiocpp_gate "$arch" "$out"; then
     copy_audiocpp_licenses "$ac" "$out/licenses"
     echo "built $out/audiocpp_server"
 fi
+
+# --- ox-aec on the full-build path (OX_SAY_ONLY=aec already ran it above and exited) ---
+build_ox_aec
 
 # Licence files copied out of read-only checkouts keep their 0400/0444 mode; an install over an earlier one cannot
 # open such a file for writing (the 0.1.30 update failure). Ship them 0644.
