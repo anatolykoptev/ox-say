@@ -9,6 +9,7 @@ private let overlayLog = Logger(subsystem: "io.github.anatolykoptev.ox-say.dicta
 /// while the daemon transcribes, and a short message when something went wrong.
 /// It never takes focus, so the paste still goes to the app you were typing in,
 /// and it lets clicks through.
+@MainActor
 final class Overlay {
     private let panel: NSPanel
     private let background: NSVisualEffectView
@@ -122,7 +123,7 @@ final class Overlay {
             background.addSubview(button)
         }
         // #306.2: a check the lock or a sleeping display skipped runs once more when the screen is back.
-        let wake: (Notification) -> Void = { [weak self] _ in self?.screenCameBack() }
+        let wake: @Sendable (Notification) -> Void = { [weak self] _ in MainActor.assumeIsolated { self?.screenCameBack() } }
         screenObservers = [
             NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main, using: wake),
             DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main, using: wake),
@@ -252,7 +253,7 @@ final class Overlay {
         panel.ignoresMouseEvents = false
         show()
         tickPlayback()
-        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in self?.tickPlayback() }
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.tickPlayback() } }
         RunLoop.main.add(timer, forMode: .common)
         playbackTimer = timer
     }
@@ -415,14 +416,16 @@ final class Overlay {
             context.duration = 0.15
             panel.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
-            guard let self, self.shown == fading else { return }
-            self.panel.orderOut(nil)
-            self.watch = PlateWatch()
+            MainActor.assumeIsolated {
+                guard let self, self.shown == fading else { return }
+                self.panel.orderOut(nil)
+                self.watch = PlateWatch()
+            }
         })
     }
 
     /// From the microphone, any thread.
-    func setLevels(_ levels: [Float]) {
+    nonisolated func setLevels(_ levels: [Float]) {
         DispatchQueue.main.async { [bars] in bars.target(levels) }
     }
 

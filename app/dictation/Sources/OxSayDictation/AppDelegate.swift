@@ -1394,13 +1394,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Where the installer's output of the last attempt lands.
-    private static var updateLogURL: URL {
+    nonisolated private static var updateLogURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/ox-say/update.log")
     }
 
     /// What the installer printed since byte `since` of the update log, its last 8 KB at most: the failed alert
     /// quotes the installer's last sentence (UpdateInstaller.refusalReason).
-    private static func updateLogText(since: UInt64) -> String? {
+    nonisolated private static func updateLogText(since: UInt64) -> String? {
         guard let handle = try? FileHandle(forReadingFrom: updateLogURL) else { return nil }
         defer { try? handle.close() }
         guard let end = try? handle.seekToEnd() else { return nil }

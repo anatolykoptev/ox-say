@@ -7,33 +7,34 @@ struct StudioHost {
     var client: StudioClient
     /// The pill of Studio task `task` with this text, or that task's end for nil. Each task has its own
     /// slot: one ending never takes another's pill down (TaskPills).
-    var pill: (_ task: String, _ text: String?) -> Void
+    var pill: @MainActor (_ task: String, _ text: String?) -> Void
     /// A short message in the status line and on the pill.
-    var notify: (String) -> Void
+    var notify: @MainActor (String) -> Void
     /// Plays a WAV; `onFinish` runs once when it ends on its own.
-    var play: (_ wav: Data, _ showPill: Bool, _ onFinish: (() -> Void)?) -> Void
-    var stopPlayback: () -> Void
+    var play: @MainActor (_ wav: Data, _ showPill: Bool, _ onFinish: (() -> Void)?) -> Void
+    var stopPlayback: @MainActor () -> Void
     /// How many clips the shared player has started; a variant stops only if it is still the last one.
-    var playbackSerial: () -> Int
+    var playbackSerial: @MainActor () -> Int
     /// Confirms and runs the studio voice install.
-    var installStudioVoice: () -> Void
-    var installing: () -> Bool
+    var installStudioVoice: @MainActor () -> Void
+    var installing: @MainActor () -> Bool
     /// Work the studio was doing has ended (a voiceover finished or was forgotten,
     /// a voice design closed): a version handshake held back for it runs again.
-    var workEnded: () -> Void
+    var workEnded: @MainActor () -> Void
     /// The Create a Voice menu row: the window opens on Voices with the describe-a-voice sheet up.
-    var openVoiceDesign: () -> Void
+    var openVoiceDesign: @MainActor () -> Void
     /// The New Voiceover menu row: the window opens on Озвучка, where the text, a document and the voice are chosen.
-    var openSpeak: () -> Void
+    var openSpeak: @MainActor () -> Void
     /// The Stop row: the window opens on that voiceover, where stopping asks for its confirmation (never an alert over every app).
-    var openSpeakProject: (_ id: String) -> Void
+    var openSpeakProject: @MainActor (_ id: String) -> Void
     /// What the window and the app show at this moment (a finished voiceover is announced unless it is on screen).
-    var windowShown: () -> ShownWindow
+    var windowShown: @MainActor () -> ShownWindow
 }
 
 /// The Studio submenu: draws the rows StudioMenu decides and runs what they do — continue a voiceover on battery, open
 /// its folder, follow it to the end. A new voiceover, a stop and a new voice open the window (Озвучка, the describe-a-voice
 /// sheet); a finished voiceover is told by a notification and by its row there, never by an alert.
+@MainActor
 final class StudioController: NSObject {
     let submenu = NSMenu()
     let host: StudioHost

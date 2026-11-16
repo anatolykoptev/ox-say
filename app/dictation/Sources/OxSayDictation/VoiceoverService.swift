@@ -5,15 +5,16 @@ import Foundation
 /// either is followed to its end by the same `VoiceoverFollower` (its polls survive daemon outages and an app that came
 /// back mid-run), and the version handshake reads `following` so a restart never cuts a running project.
 /// Used from the main thread only, like the follower it owns.
+@MainActor
 final class VoiceoverService {
     private let client: StudioClient
     private var follower: VoiceoverFollower!
     private var changeObservers: [() -> Void] = []
     private var finishObservers: [(ProduceJob) -> Void] = []
     /// What the window and the app show now, read when a voiceover ends: one the person is looking at needs no notification.
-    private let windowShown: () -> ShownWindow
+    private let windowShown: @MainActor () -> ShownWindow
 
-    init(client: StudioClient, windowShown: @escaping () -> ShownWindow) {
+    init(client: StudioClient, windowShown: @escaping @MainActor () -> ShownWindow) {
         self.client = client
         self.windowShown = windowShown
         follower = VoiceoverFollower(
