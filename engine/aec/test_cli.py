@@ -7,13 +7,16 @@ The fixture is generated in code with a pinned seed; nothing is committed.
 The far end is a speech-like signal (noise shaped by a syllable envelope),
 the echo is that signal convolved with a short synthetic impulse response at
 -10 dB with the path delay under test, the near end is a different signal in
-separate stretches plus one double-talk stretch. Two cases: the echo trailing
-the render by +60 ms, and the render stamped 80 ms after the echo (a negative
-lag, which only the alignment step can survive).
+separate stretches plus one double-talk stretch. Cases: the echo trailing the
+render by +60 ms, the render stamped 80 ms after the echo (a negative lag,
+which only the alignment step can survive), the same -80 ms at a -20 dB echo,
+and a lag-step fixture whose near-end noise bursts must stay sample-aligned.
 
-Mutation that must turn this RED: disable the capture shift in
-engine/aec/ox-aec.cpp (the `int s =` line) -- the negative-lag case fails
-its ERLE assertion.
+Mutations that must turn this RED: write the emitted frame back at its feed
+position in engine/aec/ox-aec.cpp (drop the `- apm_latency` in emit_block's
+`long x =`) -- the alignment test's cross-correlation peaks move off 0. In
+engine/aec/lag.h, scoring by render energy alone (best_v / ea, no ratio gate)
+turns lag_test.cpp's uncorrelated-rejection case red; see aec-fix1-report.md.
 """
 import argparse
 import json
@@ -114,7 +117,7 @@ def read_pcm(path):
     return list(struct.unpack("<%dh" % (len(data) // 2), data))
 
 
-def build_case(delay_s):
+def build_case(delay_s, echo_db=ECHO_DB):
     """Return (render, capture, regions) for a path delay in samples."""
     n = int(DUR * SR)
     render = [0.0] * n
@@ -128,10 +131,10 @@ def build_case(delay_s):
         seg = synth_near(int((b * SR - a * SR)), 500 + k, 190.0 + 35 * k, 4.6 + 0.4 * k)
         near[int(a * SR):int(b * SR)] = seg
     echo = convolve(render, make_ir())
-    # scale the echo to ECHO_DB below the render level inside far-only stretches
+    # scale the echo to echo_db below the render level inside far-only stretches
     e_ref = energy(sum((render[int(a * SR):int(b * SR)] for a, b in FAR_ONLY), []))
     e_echo = energy(sum((echo[int(a * SR):int(b * SR)] for a, b in FAR_ONLY), []))
-    gain = math.sqrt(e_ref / e_echo) * 10 ** (ECHO_DB / 20.0)
+    gain = math.sqrt(e_ref / e_echo) * 10 ** (echo_db / 20.0)
     echo = [v * gain for v in echo]
     capture = list(near)
     for i, v in enumerate(echo):
@@ -139,6 +142,69 @@ def build_case(delay_s):
         if 0 <= j < len(capture):
             capture[j] += v
     return clip16(render), clip16(capture), (FAR_ONLY, NEAR_ONLY)
+
+
+# --- lag-step fixture for the alignment test --------------------------------
+# The echo delay steps at render STEP_S (a 10 s lag-window boundary) so the
+# feed mapping jumps mid-stream. Near-end is only the noise bursts below;
+# render stays voiced enough elsewhere for the AEC to keep running.
+STEP_S = 20.0
+STEP_LAGS = (int(0.060 * SR), int(-0.040 * SR))  # +60 ms before, -40 ms after
+STEP_FAR = [(2.0, 6.0), (12.0, 16.0), (24.0, 28.0), (34.0, 38.0)]
+# (start s, length s): near-end-only bursts. 8.5 s sits in a silent-render gap
+# (still fed -> processed); 19.95 s lands right after the lag step (some
+# samples are fed twice by the backward jump); 21.0 s is an in-span burst
+# under the new lag; 39.9 s straddles the processed/passthrough boundary where
+# the render file ends; 40.3 s is pure passthrough tail.
+BURSTS = [(8.5, 0.4), (19.95, 0.4), (21.0, 0.4), (39.9, 0.4), (40.3, 0.4)]
+BURST_AMP = 18000.0
+
+
+def build_step_case():
+    """Return (render, capture, burst_sample_spans) for the alignment test."""
+    n = int(DUR * SR)
+    render = [0.0] * n
+    for k, (a, b) in enumerate(STEP_FAR):
+        seg = synth_far(int((b - a) * SR), 300 + k, 3.5 + 0.4 * k)
+        render[int(a * SR):int(b * SR)] = seg
+    echo = convolve(render, make_ir())
+    e_ref = energy(sum((render[int(a * SR):int(b * SR)] for a, b in STEP_FAR), []))
+    e_echo = energy(sum((echo[int(a * SR):int(b * SR)] for a, b in STEP_FAR), []))
+    gain = math.sqrt(e_ref / e_echo) * 10 ** (ECHO_DB / 20.0)
+    capture = [0.0] * (n + int(TAIL * SR))
+    step = int(STEP_S * SR)
+    for i, v in enumerate(echo):
+        d = STEP_LAGS[0] if i < step else STEP_LAGS[1]
+        j = i + d
+        if 0 <= j < len(capture):
+            capture[j] += v * gain
+    rng = random.Random(99)
+    spans = []
+    for t0, blen in BURSTS:
+        c0, c1 = int(t0 * SR), int((t0 + blen) * SR)
+        for i in range(c0, c1):
+            capture[i] += BURST_AMP * rng.gauss(0, 1)
+        spans.append((c0, c1))
+    return clip16(render), clip16(capture), spans
+
+
+def best_offset(a, b, search):
+    """Shift d in [-search, +search] maximizing the normalized correlation of
+    a[i] against b[i+d]. b must be len(a) + 2*search long."""
+    ma = sum(a) / len(a)
+    aa = sum((v - ma) ** 2 for v in a)
+    best_d, best_s = 0, -2.0
+    for d in range(-search, search + 1):
+        seg = b[d + search:d + search + len(a)]
+        mb = sum(seg) / len(seg)
+        bb = sum((v - mb) ** 2 for v in seg)
+        if bb <= 0.0 or aa <= 0.0:
+            s = 0.0
+        else:
+            s = sum((a[i] - ma) * (seg[i] - mb) for i in range(len(a))) / math.sqrt(aa * bb)
+        if s > best_s:
+            best_d, best_s = d, s
+    return best_d, best_s
 
 
 def run_aec(tmp, name, render, capture, want_rc=0):
@@ -211,6 +277,46 @@ class AecCase(unittest.TestCase):
             self.assertGreaterEqual(v, 20.0, "far-end-only ERLE %.1f dB below 20" % v)
         print("\n  -80 ms case: ERLE per far-only stretch =",
               ", ".join("%.1f" % v for v in vals))
+
+    def test_negative_lag_weak_echo(self):
+        # -80 ms lag at a -20 dB echo: the combination the render-energy-only
+        # score rejected. The lag must still measure and cancel.
+        render, capture, (far, near) = build_case(int(-0.080 * SR), echo_db=-20.0)
+        p, out, report = run_aec(self.tmp, "neg20", render, capture)
+        self._check_common(report, capture, out, -80.0)
+        vals = [erle(capture, out, a, b) for a, b in far]
+        for v in vals:
+            self.assertGreaterEqual(v, 15.0, "far-end-only ERLE %.1f dB below 15" % v)
+        print("\n  -80 ms / -20 dB case: ERLE per far-only stretch =",
+              ", ".join("%.1f" % v for v in vals))
+
+    def test_output_alignment(self):
+        # Near-end-only noise bursts under a lag step: every burst in the
+        # output must sit at the same capture index, processed or passthrough.
+        render, capture, spans = build_step_case()
+        p, out, report = run_aec(self.tmp, "align", render, capture)
+        self.assertEqual(len(out), len(capture), "output must stay on the capture timeline")
+        self.assertFalse(report.get("diverged"), "AEC diverged")
+        lat = report.get("apm_latency_samples")
+        self.assertIsNotNone(lat, "report misses apm_latency_samples")
+        self.assertGreaterEqual(lat, 0, "apm latency must be non-negative")
+        self.assertLessEqual(lat, 3200, "apm latency outside the probe's sanity bound")
+        lags = report.get("lag_ms") or []
+        self.assertAlmostEqual(lags[1], 60.0, delta=2.0,
+                               msg="pre-step lag should be +60 ms")
+        self.assertAlmostEqual(lags[2], -40.0, delta=2.0,
+                               msg="post-step lag should be -40 ms")
+        self.assertEqual(report.get("alignment"), "measured",
+                         "every voiced window should measure a lag")
+        search = 640  # +-40 ms: far beyond any plausible APM pipeline delay
+        for t0, blen in BURSTS:
+            c0, c1 = int(t0 * SR), int((t0 + blen) * SR)
+            d, s = best_offset(capture[c0:c1], out[c0 - search:c1 + search], search)
+            self.assertLessEqual(
+                abs(d), 1,
+                "burst at %.2f s came out shifted %+d samples (corr %.3f): the output "
+                "left the capture timeline" % (t0, d, s))
+            print("\n  burst %5.2f s: shift %+d, corr %.3f" % (t0, d, s), end="")
 
     def test_silent_render_passthrough(self):
         render, capture, _ = build_case(0)
