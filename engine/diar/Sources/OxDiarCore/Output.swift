@@ -5,8 +5,8 @@ public struct RawSegment: Equatable {
     public var start: Double
     public var end: Double
     public var speaker: String
-    /// The cluster's VBx centroid (256 floats); FluidAudio repeats it on every segment of the cluster.
-    /// The Nemotron engine has none.
+    /// The cluster's embedding. The Nemotron engine has none, so this stays empty; the field is the contract's
+    /// (`embedding` in diarization.json), which the daemon still reads.
     public var embedding: [Float]
 
     public init(start: Double, end: Double, speaker: String, embedding: [Float] = []) {

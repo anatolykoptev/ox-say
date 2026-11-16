@@ -71,11 +71,9 @@ public enum SystemAudioGuard {
 
 /// Limits the app keeps to what the daemon accepts and can use.
 public enum MeetingLimits {
-    /// The daemon separates the far side's voices on the default engine (Nemotron) up to six hours of audio
-    /// (internal/daemon/diarize.go, `diarMaxSecondsNemotron`: ox-diar streams the channel in 30 s chunks, so memory
-    /// stays flat). A longer call keeps one far-side label. A Mac that chose the pyannote engine takes two hours
-    /// (`diarMaxSeconds`, the whole channel in memory, about 1.06 GB per hour): a recording between two and six hours
-    /// keeps one far-side label there, with the number-free `too_long` sentence; the recording itself is not lost. The
+    /// The daemon separates the far side's voices up to six hours of audio (internal/daemon/diarize.go,
+    /// `diarMaxSecondsNemotron`: ox-diar streams the channel in 30 s chunks, so memory stays flat). A longer call keeps
+    /// one far-side label, with the number-free `too_long` sentence; the recording itself is not lost. The
     /// recording stops a minute short of the cap, so the stop's own lag (one badge tick, the finish call) cannot tip
     /// the channel over. Disk is not the limit: both channels together are about 230 MB an hour.
     /// `MeetingLimitsTests` reads the Go constant, so the two cannot drift apart.

@@ -19,8 +19,7 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_NOTES_PORT` | `8098` | Loopback port the notes engine binds. Set explicitly, it must differ from the other listeners or the daemon refuses to start; left at the default, a collision turns notes off (`port_blocked` in `/status`) and the rest of the daemon runs |
 | `OX_SAY_NOTES_IDLE_STOP_SECS` | `120` | Stop the notes engine after N s idle |
 | `OX_SAY_ASSUME_MEMORY_GB` | unset | Test and diagnostic knob. Makes the daemon decide as if the Mac had N GB for ONE thing: whether the large engines (fast voice, studio voice, notes model) take turns, which they do on Apple Silicon below 24 GB (`/status` `memory_mode` is `one_large_engine`, otherwise `shared`). It does not change the memory gates: the studio voice and the notes model still read the real memory. Use it to exercise the turn-taking on a bigger Mac |
-| `OX_SAY_DIAR_BIN` | `<engine dir>/ox-diar` | The speaker diarization engine (meeting voices); Apple Silicon, macOS 15 or later |
-| `OX_SAY_DIAR_ENGINE` | `nemotron` | Which model separates the voices of a meeting: `nemotron` (Nemotron 3 Diarization fast128 on the Neural Engine) or `pyannote` (the previous pipeline, kept until it is removed). Case and surrounding spaces do not matter; a value that is neither is logged once and the default is used. A Mac whose engine set is not fetched keeps one far-side label (`models_missing`) until `scripts/fetch-models.sh` has run; `nemotron` takes calls up to 6 hours, `pyannote` up to 2. The app records up to 6 hours (a minute less) on either; on `pyannote` a recording over 2 hours keeps one far-side label. `GET /status` shows the engine in use as `config.diar_engine` |
+| `OX_SAY_DIAR_BIN` | `<engine dir>/ox-diar` | The speaker diarization engine (meeting voices; Nemotron 3 Diarization on the Neural Engine); Apple Silicon, macOS 15 or later. A Mac whose model set is not fetched keeps one far-side label (`models_missing`) until `scripts/fetch-models.sh` has run. Calls up to 6 hours are separated; a longer recording keeps one far-side label. `OX_SAY_DIAR_ENGINE`, which used to pick the pyannote pipeline, is gone: an old value in a LaunchAgent is ignored, and the next install drops it |
 | `OX_SAY_CLEAN_BIN` | `<engine dir>/ox-clean` | The voice-cleanup engine (MossFormer2 on Core ML); its model set (131 MB) is downloaded on first use |
 | `OX_SAY_IDLE_STOP_SECS` | `300` | Stop the idle engine after N s; 0 = never |
 | `OX_SAY_STARTUP_TIMEOUT_SECS` | `180` | Covers the first-start Metal shader compile |
@@ -51,5 +50,5 @@ its version; anywhere else it is `$OX_SAY_HOME/engine`. A user-set
 defeats the co-versioning, and the installer carries such a variable over from
 the installed agent. `GET /status` shows the path each engine resolved to
 under `config` (`engine_bin`, `stt_bin`, `voxcpm2_bin`, `notes_bin`,
-`diar_bin`) and the diarization engine in use (`diar_engine`).
+`diar_bin`).
 

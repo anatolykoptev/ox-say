@@ -91,41 +91,8 @@ private func os(_ major: Int, _ minor: Int = 0) -> OperatingSystemVersion {
 }
 
 @Suite struct PinnedTests {
-    /// The spike's `parity0`, read back from the configuration ox-diar runs with.
-    @Test func theConfigurationIsTheMeasuredOne() {
-        let c = Pinned.config()
-        #expect(c.clustering.threshold == 0.7)
-        #expect(c.segmentation.stepRatio == 0.1)
-        #expect(c.embedding.minSegmentDurationSeconds == 0)
-        #expect(c.postProcessing.exclusiveSegments)
-    }
-
     @Test func theGPUIsLeftToParakeet() {
         #expect(Pinned.computeUnits == .cpuAndNeuralEngine)
-        #expect(Pinned.mlConfiguration().computeUnits == .cpuAndNeuralEngine)
-    }
-
-    /// main.swift loads the models through `Pinned.loadModels(from:)`, which hands the loader its configuration.
-    /// A recording loader stands in for `OfflineDiarizerModels.load`, so this sees what is PASSED to it, not what is
-    /// logged: a loader called with a default configuration (or none) turns this red.
-    @Test func theLoaderIsHandedThePinnedComputeUnits() async throws {
-        var seen: [(URL, MLComputeUnits)] = []
-        let dir = URL(fileURLWithPath: "/models", isDirectory: true)
-        let marker = try await Pinned.loadModels(from: dir, using: { url, ml in
-            seen.append((url, ml.computeUnits))
-            return 42
-        })
-        #expect(marker == 42, "the loader's result is returned")
-        #expect(seen.count == 1)
-        #expect(seen.first?.0 == dir)
-        #expect(seen.first?.1 == .cpuAndNeuralEngine)
-    }
-
-    @Test func aLoaderFailureIsNotSwallowed() async {
-        struct Boom: Error {}
-        await #expect(throws: Boom.self) {
-            try await Pinned.loadModels(from: URL(fileURLWithPath: "/m"), using: { (_: URL, _: MLModelConfiguration) async throws -> Int in throw Boom() })
-        }
     }
 
     /// The name main.swift logs and test_cli.py reads back from the real binary's stderr.
@@ -134,11 +101,6 @@ private func os(_ major: Int, _ minor: Int = 0) -> OperatingSystemVersion {
         #expect(Pinned.name(of: .cpuOnly) == "cpuOnly")
         #expect(Pinned.name(of: .all) == "all")
         #expect(Pinned.name(of: .cpuAndGPU) == "cpuAndGPU")
-    }
-
-    /// The loader accepts the models' revision marker only when it equals the revision the library asks for.
-    @Test func theModelsRevisionIsTheOneTheLibraryAsksFor() {
-        #expect(Pins.modelsRevision == Repo.diarizer.revision)
     }
 
     /// The Nemotron preset ox-diar runs: fast128, the largest monolithic chunk that still compiles for the
@@ -282,30 +244,5 @@ private func os(_ major: Int, _ minor: Int = 0) -> OperatingSystemVersion {
         #expect(NemotronPhaseError.load(Boom()).exitCode == .models)
         #expect(NemotronPhaseError.stream(Boom()).exitCode == .failure)
         #expect(NemotronPhaseError.stream(Boom()).underlying is Boom)
-    }
-}
-
-@Suite struct PCMTests {
-    private func file(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ox-diar-pcm-\(UUID().uuidString)")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
-    @Test func samplesAreSignedLittleEndianAndScaled() throws {
-        let url = try file([0x00, 0x00, 0x00, 0x40, 0x00, 0x80, 0xFF, 0x7F])
-        defer { try? FileManager.default.removeItem(at: url) }
-        #expect(try readPCM16(at: url) == [0, 0.5, -1, Float(32767) / 32768])
-    }
-
-    @Test func anOddTrailingByteIsIgnoredAndAnEmptyFileIsAnError() throws {
-        let odd = try file([0x00, 0x40, 0x01])
-        let empty = try file([])
-        let single = try file([0x07])
-        defer { for u in [odd, empty, single] { try? FileManager.default.removeItem(at: u) } }
-        #expect(try readPCM16(at: odd) == [0.5])
-        #expect(throws: PCMError.empty) { try readPCM16(at: empty) }
-        #expect(throws: PCMError.empty) { try readPCM16(at: single) }
-        #expect(throws: PCMError.unreadable) { try readPCM16(at: URL(fileURLWithPath: "/nonexistent/ox-diar.pcm")) }
     }
 }

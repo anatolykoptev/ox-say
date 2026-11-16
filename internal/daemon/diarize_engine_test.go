@@ -24,8 +24,9 @@ func writeMarker(t *testing.T, cfg *config.Config, rel, revision string) {
 }
 
 const (
-	wespeakerMarker = "speaker-diarization/.fluidaudio-revision"
-	nemotronMarker  = "nemotron-3-diarization/.ox-say-revision"
+	oldPyannoteMarker = "speaker-diarization/.fluidaudio-revision" // the set of the removed pyannote engine
+	oldPyannoteRev    = "df2625ac79a7ac6b65ad868fee6d80f320da4232"
+	nemotronMarker    = "nemotron-3-diarization/.ox-say-revision"
 )
 
 func asAppleSilicon15(t *testing.T) {
@@ -36,53 +37,84 @@ func asAppleSilicon15(t *testing.T) {
 	osMajor = func() (int, bool) { return 15, true }
 }
 
-// diarReady asks the models of the engine in use, no other: a Mac that has only the pyannote set is not ready on
-// nemotron (models_missing), and a Mac with only the Nemotron set is not ready on pyannote.
-// Mutation: internal/daemon/diarize.go diarReady, change `d.Cfg.DiarModelsReady()` to `config.DiarModelsRevision == ""`
-// (never ready) or delete the check (always ready) -> RED.
-func TestDiarReadyAsksTheModelsOfTheEngineInUse(t *testing.T) {
+// diarReady asks for the Nemotron set and nothing else: a Mac that has only the set of the removed pyannote engine is
+// not ready (models_missing: the updater fetches the Nemotron set before it swaps the engine, so this is the Mac that
+// has not finished an update), and a Mac with the Nemotron set is ready whether or not the old folder is still there.
+// Mutation: internal/daemon/diarize.go diarReady, delete the `!d.Cfg.DiarModelsReady()` branch (always ready) -> RED on
+// the first row; internal/config/config.go DiarModelsReady, read the speaker-diarization marker -> RED on both rows.
+func TestDiarReadyAsksForTheNemotronSetOnly(t *testing.T) {
 	asAppleSilicon15(t)
 	for _, tc := range []struct {
-		engine string
 		marker string
 		rev    string
 		want   string
 	}{
-		{config.DiarEngineNemotron, wespeakerMarker, config.DiarModelsRevision, meeting.DiarModelsMissing},
-		{config.DiarEngineNemotron, nemotronMarker, config.NemotronModelsRevision, ""},
-		{config.DiarEnginePyannote, nemotronMarker, config.NemotronModelsRevision, meeting.DiarModelsMissing},
-		{config.DiarEnginePyannote, wespeakerMarker, config.DiarModelsRevision, ""},
+		{oldPyannoteMarker, oldPyannoteRev, meeting.DiarModelsMissing},
+		{nemotronMarker, config.NemotronModelsRevision, ""},
 	} {
 		home := t.TempDir()
-		cfg := &config.Config{Home: home, DiarBin: filepath.Join(home, "ox-diar"), DiarEngine: tc.engine}
+		cfg := &config.Config{Home: home, DiarBin: filepath.Join(home, "ox-diar")}
 		if err := os.WriteFile(cfg.DiarBin, []byte("x"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		writeMarker(t, cfg, tc.marker, tc.rev)
 		if got := (&Daemon{Cfg: cfg}).diarReady(); got != tc.want {
-			t.Errorf("engine %s with only %s: diarReady = %q, want %q", tc.engine, tc.marker, got, tc.want)
+			t.Errorf("with only %s: diarReady = %q, want %q", tc.marker, got, tc.want)
 		}
 	}
 }
 
-// The journey of a Mac on the Nemotron engine that has not fetched the Nemotron set yet (an install that updated
-// from the pyannote release has only the WeSpeaker set): the meeting finishes with one far-side label and the reason
-// models_missing; a voices retry is refused while the set is missing (voices_not_ready, so the app shows the reason
-// and no "Try Again"); after the fetch the same retry is accepted, ox-diar is started with --engine nemotron, the
-// voices come out, and the voiceprint file is gone.
+// A Mac whose LaunchAgent still says OX_SAY_DIAR_ENGINE=pyannote (an override an earlier release honoured, carried over
+// by the installer on every update) runs the one engine there is: the daemon loads its config without a complaint, finds
+// the Nemotron set ready, and starts ox-diar with the contract arguments and no engine flag. The stub fails the run (exit 9)
+// on anything but `<pcm> <out> --models <dir>`, so a daemon that forwarded the stale value, or any engine name, is seen.
+// Mutation: internal/daemon/diarize.go runDiarizer, append `"--engine", os.Getenv("OX_SAY_DIAR_ENGINE")` to the args ->
+// RED (the stub is given six arguments and the run fails); internal/config/config.go load, return an error when
+// OX_SAY_DIAR_ENGINE is set -> RED (the config does not load).
+func TestAStaleDiarEngineSettingRunsTheOneEngine(t *testing.T) {
+	asAppleSilicon15(t)
+	for _, stale := range []string{"pyannote", "PYANNOTE ", "nemotron", "nemotorn"} {
+		t.Run(stale, func(t *testing.T) {
+			stub, pcm := stubDiar(t, `
+[ "$#" = 4 ] && [ "$3" = "--models" ] || { echo "args: $*" >&2; exit 9; }
+printf '{"version":1,"duration_s":1,"speakers":[],"segments":[]}' > "$2"
+`)
+			t.Setenv("OX_SAY_HOME", stub.Home)
+			t.Setenv("OX_SAY_DIAR_BIN", stub.DiarBin)
+			t.Setenv("OX_SAY_DIAR_ENGINE", stale)
+			cfg, err := config.Load(nil)
+			if err != nil {
+				t.Fatalf("a LaunchAgent with OX_SAY_DIAR_ENGINE=%q stopped the daemon: %v", stale, err)
+			}
+			writeMarker(t, cfg, nemotronMarker, config.NemotronModelsRevision) // the set an update fetches first
+			d := &Daemon{Cfg: cfg}
+			if got := d.diarReady(); got != "" {
+				t.Fatalf("diarReady = %q, want ready on the Nemotron set", got)
+			}
+			if _, err := runDiarizer(t.Context(), cfg, pcm); err != nil {
+				t.Fatalf("OX_SAY_DIAR_ENGINE=%q: %v", stale, err)
+			}
+		})
+	}
+}
+
+// The journey of a Mac that has not fetched the Nemotron set yet (an install that updated from the pyannote release has
+// only the old set): the meeting finishes with one far-side label and the reason models_missing; a voices retry is
+// refused while the set is missing (voices_not_ready, so the app shows the reason and no "Try Again"); after the fetch
+// the same retry is accepted, ox-diar is started, the voices come out, and the voiceprint file is gone.
 // Mutation: internal/daemon/meetings.go initMeetings, change `DiarizeReady: d.diarReady` to `DiarizeReady: func()
 // string { return "" }` -> RED (the meeting is sent to ox-diar without models, and the retry is not refused);
 // internal/daemon/diarize.go diarReady, delete the `!d.Cfg.DiarModelsReady()` branch -> RED (F4).
 func TestMacOnNemotronWithoutTheSetSaysModelsMissingAndWorksAfterAFetch(t *testing.T) {
 	asAppleSilicon15(t)
 	stub := `
-[ "$5" = "--engine" ] && [ "$6" = "nemotron" ] || { echo "engine args: $*" >&2; exit 9; }
+[ "$#" = 4 ] || { echo "args: $*" >&2; exit 9; }
 printf 'ran' >> "$(dirname "$2")/../ox-diar-ran"
 printf '{"version":1,"duration_s":15,"speakers":[{"id":0,"speech_s":60},{"id":1,"speech_s":50},{"id":2,"speech_s":46}],"segments":[{"s":0,"e":5,"spk":0},{"s":5,"e":10,"spk":1},{"s":10,"e":16,"spk":2}]}' > "$2"
 `
 	stubCfg, _ := stubDiar(t, stub)
-	d, mux := meetingFixture(t, func(c *config.Config) { c.DiarBin, c.DiarEngine = stubCfg.DiarBin, config.DiarEngineNemotron })
-	writeMarker(t, d.Cfg, wespeakerMarker, config.DiarModelsRevision) // the old set only
+	d, mux := meetingFixture(t, func(c *config.Config) { c.DiarBin = stubCfg.DiarBin })
+	writeMarker(t, d.Cfg, oldPyannoteMarker, oldPyannoteRev) // the old set only
 
 	rec := call(t, mux, "POST", "/v1/meetings", `{"title":"Plan","labels":{"me":"Anatoly","them":"Other","speaker":"Speaker"}}`)
 	var created createMeetingResponse

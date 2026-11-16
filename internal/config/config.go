@@ -82,13 +82,9 @@ const NotesModelBytes = 2740937888
 // NotesModelEntry.MinMemoryGB.
 const NotesMinMemoryGB = 16
 
-// DiarModelsRevision is the Hugging Face revision of the diarization models. scripts/fetch-models.sh downloads that
-// revision (diar_rev), engine/diar names it in Pins.swift, and a test compares the three.
-const DiarModelsRevision = "df2625ac79a7ac6b65ad868fee6d80f320da4232"
-
-// NemotronModelsRevision is the Hugging Face revision of the Nemotron 3 Diarization fast128 Core ML set, the ox-diar
-// engine that replaces the pyannote pipeline. scripts/fetch-models.sh downloads that revision (nem_rev), engine/diar
-// names it in Pins.swift, and a test compares the three; ox-diar reads the set on the nemotron engine.
+// NemotronModelsRevision is the Hugging Face revision of the Nemotron 3 Diarization fast128 Core ML set, the models
+// ox-diar runs. scripts/fetch-models.sh downloads that revision (nem_rev), engine/diar names it in Pins.swift, and a
+// test compares the three.
 const NemotronModelsRevision = "25a90f97f254428d4b30374b76af9c74fdee8327"
 
 // CleanModelsRevision is the Hugging Face commit of the MossFormer2 voice-cleanup Core ML set
@@ -102,14 +98,6 @@ const CleanModelsRevision = "da0d6b45be2fe7f2ec495ee76280132848a789c0"
 // On a bump, refetch (`scripts/fetch-models.sh --clean-only <dest>`) and re-sum every regular file under
 // <dest>/clean/mossformer2-se-48k except .ox-say-revision: 12 files; nothing else ties this number to the pins (#457).
 const CleanModelsBytes = 130931995
-
-// The ox-diar engines the daemon can ask for (OX_SAY_DIAR_ENGINE, passed to ox-diar as --engine). DefaultDiarEngine
-// stays pyannote until the Nemotron engine passes its gates; flipping it is its own change.
-const (
-	DiarEnginePyannote = "pyannote"
-	DiarEngineNemotron = "nemotron"
-	DefaultDiarEngine  = DiarEngineNemotron
-)
 
 const bytesPerGB = 1 << 30
 
@@ -201,11 +189,6 @@ type Config struct {
 	NotesIdleStop time.Duration // OX_SAY_NOTES_IDLE_STOP_SECS
 	DiarBin       string        // OX_SAY_DIAR_BIN: path to ox-diar (speaker diarization)
 	CleanBin      string        // OX_SAY_CLEAN_BIN: path to ox-clean (voice cleanup)
-	DiarEngine    string        // OX_SAY_DIAR_ENGINE: pyannote | nemotron (ox-diar --engine)
-	// DiarEngineIgnored is the raw OX_SAY_DIAR_ENGINE value load did not recognise and replaced by the default ("" when
-	// the setting was fine). The serve command logs it: a typo in the plist, which the installer carries over on every
-	// update, must not stop the daemon, and must not pass silently either.
-	DiarEngineIgnored string
 	// NotesPortBlocked is set by load when the DEFAULT notes port collides
 	// with another ox-say listener: an explicitly set colliding port is a
 	// load error, but a colliding default must not take the daemon down for
@@ -265,7 +248,6 @@ var flagNames = map[string]string{
 	"notes-port":        "OX_SAY_NOTES_PORT",
 	"notes-idle-stop":   "OX_SAY_NOTES_IDLE_STOP_SECS",
 	"diar-bin":          "OX_SAY_DIAR_BIN",
-	"diar-engine":       "OX_SAY_DIAR_ENGINE",
 	"clean-bin":         "OX_SAY_CLEAN_BIN",
 	// A test and diagnostic knob: see Config.AssumedMemoryBytes.
 	"assume-memory-gb": "OX_SAY_ASSUME_MEMORY_GB",
@@ -414,35 +396,19 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	if c.CleanBin = get("OX_SAY_CLEAN_BIN"); c.CleanBin == "" {
 		c.CleanBin = filepath.Join(engineDir, "ox-clean")
 	}
-	raw := get("OX_SAY_DIAR_ENGINE")
-	switch v := strings.ToLower(strings.TrimSpace(raw)); v {
-	case "":
-		c.DiarEngine = DefaultDiarEngine
-	case DiarEnginePyannote, DiarEngineNemotron:
-		c.DiarEngine = v
-	default:
-		c.DiarEngine, c.DiarEngineIgnored = DefaultDiarEngine, raw
-	}
 	return c, nil
 }
 
-// Engine is the ox-diar engine in use; a Config that never went through Load (a test's zero value) has the default.
-func (c *Config) Engine() string { return orDefault(c.DiarEngine, DefaultDiarEngine) }
-
-// DiarModelsDir is what ox-diar takes as --models: scripts/fetch-models.sh writes speaker-diarization/ inside it.
+// DiarModelsDir is what ox-diar takes as --models: scripts/fetch-models.sh writes nemotron-3-diarization/ inside it.
 func (c *Config) DiarModelsDir() string { return filepath.Join(c.Home, "models", "diar") }
 
-// DiarModelsReady reports whether the models of the engine in use are all there. Each engine reads its own revision
-// marker and no other: pyannote needs the WeSpeaker set (speaker-diarization/.fluidaudio-revision == DiarModelsRevision);
-// nemotron needs the Nemotron set (nemotron-3-diarization/.ox-say-revision == NemotronModelsRevision) and nothing
-// else, because it has no embeddings. fetch-models.sh writes a marker last, after every file of its set passed its
-// checksum, so a fetch that was cut short, or an older revision, reads as not ready. The marker is read per call: a
-// model fetched later works at once.
+// DiarModelsReady reports whether the diarization models are all there: the Nemotron set's marker
+// (nemotron-3-diarization/.ox-say-revision) names NemotronModelsRevision and nothing else is read. fetch-models.sh
+// writes the marker last, after every file of the set passed its checksum, so a fetch that was cut short, or an older
+// revision, reads as not ready. The marker is read per call: a model fetched later works at once. A
+// speaker-diarization/ folder left by an earlier release is never looked at.
 func (c *Config) DiarModelsReady() bool {
-	if c.Engine() == DiarEngineNemotron {
-		return markerIs(filepath.Join(c.DiarModelsDir(), "nemotron-3-diarization", ".ox-say-revision"), NemotronModelsRevision)
-	}
-	return markerIs(filepath.Join(c.DiarModelsDir(), "speaker-diarization", ".fluidaudio-revision"), DiarModelsRevision)
+	return markerIs(filepath.Join(c.DiarModelsDir(), "nemotron-3-diarization", ".ox-say-revision"), NemotronModelsRevision)
 }
 
 // CleanModelsDir is where scripts/fetch-models.sh --clean-only writes the voice-cleanup set: mossformer2-se-48k/ inside it.

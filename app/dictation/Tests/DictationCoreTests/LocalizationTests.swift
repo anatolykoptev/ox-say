@@ -50,8 +50,8 @@ final class LocalizationTests: XCTestCase {
     }
 
     /// The recording cap sentence names the cap the app really has (6 h, `MeetingLimits.maxRecordingSeconds`), and the
-    /// `too_long` sentence names no number at all: the daemon says `too_long` above 6 h on the default engine but
-    /// above 2 h on a Mac that chose pyannote, and the app cannot tell which engine said it.
+    /// `too_long` sentence names no number at all: the cap is the daemon's to change, and the app does not hold a
+    /// copy of it in a string.
     /// Mutations: en "notice.meeting.cap_reached" back to "2 hours" -> RED; en "meeting.diar.unavailable.too_long" given
     /// a number ("longer than 6 hours") -> RED.
     func testTheCapSentencesNameTheRealCapAndTooLongNamesNone() {

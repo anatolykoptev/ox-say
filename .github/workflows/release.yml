@@ -246,7 +246,7 @@ jobs:
           OX_SAY_CLEAN_DEVELOPER_DIR: ${{ matrix.clean_xcode }}
         run: scripts/package-release.sh "$VERSION"
 
-      # ox-diar's Core ML models (221 MB: the 22 MB community-1 set plus the 199 MB Nemotron fast128 set):
+      # ox-diar's Core ML models (the 199 MB Nemotron fast128 set):
       # fetch-models.sh checks every file against its pinned SHA-256 whatever the
       # cache held, so the cache only saves the download. Keyed by the hash of the script that pins them.
       - name: Cache the diarization models
@@ -411,12 +411,9 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/build"
           if [ "$ARCH" = arm64 ]; then
             afconvert -f WAVE -d LEI16@16000 -c 1 "$GITHUB_WORKSPACE/engine/diar/testdata/ami-es2004a-780-180s.flac" "$RUNNER_TEMP/diar-clip.wav"
-            # the default engine (Nemotron), forced to the CPU like the CI job (the runner's Neural Engine is not
-            # guaranteed), then the pyannote engine's contract until that engine is deleted
+            # forced to the CPU like the CI job (the runner's Neural Engine is not guaranteed)
             OX_DIAR_COMPUTE_UNITS=cpuOnly python3 "$GITHUB_WORKSPACE/engine/diar/test_cli.py" --bin engine/ox-diar \
                 --models "$RUNNER_TEMP/diar-models/diar" --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4
-            python3 "$GITHUB_WORKSPACE/engine/diar/test_cli.py" --bin engine/ox-diar --models "$RUNNER_TEMP/diar-models/diar" \
-                --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4 --engine pyannote
           fi
           # ox-clean, the packaged binary, against the model-free half of its CLI contract: usage, version, the macOS-15
           # gate, the input and output refusals, a missing or unusable models folder (every test of

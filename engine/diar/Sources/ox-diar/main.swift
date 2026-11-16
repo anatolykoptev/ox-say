@@ -3,10 +3,9 @@ import FluidAudio
 import Foundation
 import OxDiarCore
 
-// ox-diar <pcm16k-mono-s16le> <out.json> --models DIR [--engine pyannote|nemotron]   one diarization, then exit
+// ox-diar <pcm16k-mono-s16le> <out.json> --models DIR   one diarization, then exit
 // ox-diar --version
-// DIR holds the model sets scripts/fetch-models.sh downloads: speaker-diarization/ for the pyannote engine
-// (the default until Task 8), nemotron-3-diarization/ for the nemotron engine. Nothing here touches the
+// DIR holds the model set scripts/fetch-models.sh downloads: nemotron-3-diarization/. Nothing here touches the
 // network: ModelHub.offlineMode makes every download path throw, so a missing model is exit 3, never a fetch.
 // Exit codes: OxDiarCore.ExitCode.
 
@@ -22,12 +21,12 @@ case .version:
     exit(ExitCode.ok.rawValue)
 case .usage(let message):
     die(.usage, message)
-case .diarize(let pcmPath, let outPath, let modelsPath, let engine):
-    await diarize(pcmPath: pcmPath, outPath: outPath, modelsPath: modelsPath, engine: engine)
+case .diarize(let pcmPath, let outPath, let modelsPath):
+    await diarize(pcmPath: pcmPath, outPath: outPath, modelsPath: modelsPath)
 }
 
-/// The gates shared by both engines, then the engine's own pipeline, then the JSON answer on disk.
-func diarize(pcmPath: String, outPath: String, modelsPath: String, engine: Arguments.Engine) async {
+/// The platform and output gates, then the pipeline, then the JSON answer on disk.
+func diarize(pcmPath: String, outPath: String, modelsPath: String) async {
     // Before anything of FluidAudio runs: its BNNS crash on macOS 14 is a crash, not an error.
     let version = Platform.effectiveVersion(
         real: ProcessInfo.processInfo.operatingSystemVersion,
@@ -45,15 +44,7 @@ func diarize(pcmPath: String, outPath: String, modelsPath: String, engine: Argum
     ModelHub.offlineMode = true
 
     let modelsDir = URL(fileURLWithPath: modelsPath, isDirectory: true)
-    let duration: Double
-    let segments: [RawSegment]
-    let timing: [String: Double]
-    switch engine {
-    case .pyannote:
-        (duration, segments, timing) = await diarizePyannote(pcmPath: pcmPath, modelsDir: modelsDir)
-    case .nemotron:
-        (duration, segments, timing) = await diarizeNemotron(pcmPath: pcmPath, modelsDir: modelsDir)
-    }
+    let (duration, segments, timing) = await diarizeNemotron(pcmPath: pcmPath, modelsDir: modelsDir)
 
     let answer = Diarization.make(duration: duration, segments: segments, timing: timing)
     let encoded: Data
@@ -69,54 +60,8 @@ func diarize(pcmPath: String, outPath: String, modelsPath: String, engine: Argum
     }
 }
 
-/// The pyannote engine: segmentation, WeSpeaker embeddings, PLDA, VBx — the pipeline that has been shipping.
-/// Its `.fluidaudio-revision` marker (the revision FluidAudio itself asks for, Pins.modelsRevision) is checked
-/// by the library's own loader inside `Pinned.loadModels`.
-func diarizePyannote(pcmPath: String, modelsDir: URL) async -> (Double, [RawSegment], [String: Double]) {
-    // The audio is read here, whole, into memory: no FluidAudio call that writes it to a temporary file (see readPCM16).
-    let samples: [Float]
-    do {
-        samples = try readPCM16(at: URL(fileURLWithPath: pcmPath))
-    } catch PCMError.empty {
-        die(.input, "\(pcmPath) holds no audio")
-    } catch {
-        die(.input, "cannot read \(pcmPath)")
-    }
-    let duration = Double(samples.count) / 16_000
-
-    // The configuration and the compute units are pinned in OxDiarCore (Pinned), where `swift test` reads them.
-    let started = Date()
-    let models: OfflineDiarizerModels
-    do {
-        models = try await Pinned.loadModels(from: modelsDir)
-    } catch {
-        die(.models, "cannot load the models from \(modelsDir.path): \(error.localizedDescription)")
-    }
-    let loaded = Date()
-
-    let manager = OfflineDiarizerManager(config: Pinned.config())
-    manager.initialize(models: models)
-
-    var segments: [RawSegment] = []
-    do {
-        let result = try await manager.process(audio: samples)
-        segments = result.segments.map {
-            RawSegment(start: Double($0.startTimeSeconds), end: Double($0.endTimeSeconds), speaker: $0.speakerId,
-                       embedding: $0.embedding)
-        }
-    } catch OfflineDiarizationError.noSpeechDetected {
-        // silence is an answer, not an error
-    } catch {
-        die(.failure, "diarization failed: \(error.localizedDescription)")
-    }
-    let finished = Date()
-    return (duration, segments,
-            ["load": loaded.timeIntervalSince(started), "diarize": finished.timeIntervalSince(loaded)])
-}
-
-/// The Nemotron engine: fast128 on the Neural Engine over the mapped file (Variant B — no embeddings, no
-/// WeSpeaker load, every speaker's `embedding` stays empty). Its readiness is its own marker: a models dir
-/// holding only `nemotron-3-diarization/` runs.
+/// Nemotron 3 fast128 on the Neural Engine over the mapped file (no embeddings, every speaker's `embedding`
+/// stays empty). Its readiness is its own marker: a models dir holding only `nemotron-3-diarization/` runs.
 func diarizeNemotron(pcmPath: String, modelsDir: URL) async -> (Double, [RawSegment], [String: Double]) {
     let source: MappedPCM16Source
     do {
@@ -128,8 +73,7 @@ func diarizeNemotron(pcmPath: String, modelsDir: URL) async -> (Double, [RawSegm
     }
     let duration = Double(source.sampleCount) / 16_000
 
-    // fetch-models.sh writes the revision it fetched into the marker, our marker — never the pyannote set's
-    // .fluidaudio-revision, so a models dir without speaker-diarization/ still runs.
+    // fetch-models.sh writes the revision it fetched into the marker, ours: no loader outside this repo reads it.
     let nemDir = modelsDir.appendingPathComponent("nemotron-3-diarization", isDirectory: true)
     let marker = try? String(contentsOf: nemDir.appendingPathComponent(Pins.nemotronMarker), encoding: .utf8)
     guard marker?.trimmingCharacters(in: .whitespacesAndNewlines) == Pins.nemotronModelsRevision else {

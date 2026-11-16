@@ -482,31 +482,24 @@ func TestDeleteLeavesAnEngineThatIsServingARequest(t *testing.T) {
 // untouched, so DiarModelsReady keeps telling the truth.
 func TestDeleteCannotReachTheDiarizationModels(t *testing.T) {
 	d, base, _ := modelsServer(t)
-	for _, engineName := range []string{config.DiarEnginePyannote, config.DiarEngineNemotron} {
-		d.Cfg.DiarEngine = engineName
-		dir, rev := "speaker-diarization", config.DiarModelsRevision
-		marker := ".fluidaudio-revision"
-		if engineName == config.DiarEngineNemotron {
-			dir, rev, marker = "nemotron-3-diarization", config.NemotronModelsRevision, ".ox-say-revision"
+	dir, marker := "nemotron-3-diarization", ".ox-say-revision"
+	path := filepath.Join(d.Cfg.DiarModelsDir(), dir, marker)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(config.NemotronModelsRevision+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !d.Cfg.DiarModelsReady() {
+		t.Fatal("the fixture is not ready")
+	}
+	for _, id := range []string{"diar", "diarization", "nemotron", "pyannote", dir, "models"} {
+		if code, _ := doJSON(t, http.MethodDelete, base+"/v1/models/"+id, ""); code != http.StatusNotFound {
+			t.Fatalf("DELETE %s = %d, want 404", id, code)
 		}
-		path := filepath.Join(d.Cfg.DiarModelsDir(), dir, marker)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(rev+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if !d.Cfg.DiarModelsReady() {
-			t.Fatalf("%s: the fixture is not ready", engineName)
-		}
-		for _, id := range []string{"diar", "diarization", "nemotron", "pyannote", dir, "models"} {
-			if code, _ := doJSON(t, http.MethodDelete, base+"/v1/models/"+id, ""); code != http.StatusNotFound {
-				t.Fatalf("DELETE %s = %d, want 404", id, code)
-			}
-		}
-		if !d.Cfg.DiarModelsReady() || !exists(path) {
-			t.Fatalf("%s: a delete reached the diarization models", engineName)
-		}
+	}
+	if !d.Cfg.DiarModelsReady() || !exists(path) {
+		t.Fatal("a delete reached the diarization models")
 	}
 	for _, m := range listModels(t, base) {
 		if strings.Contains(m.ID, "diar") || strings.Contains(m.ID, "nemotron") {

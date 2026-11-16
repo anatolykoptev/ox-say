@@ -393,7 +393,7 @@ while IFS= read -r f; do
 done <<< "$found"
 echo "built $out/ox-llm"
 
-# --- ox-diar (speaker diarization: FluidAudio's Core ML port of pyannote community-1) ---
+# --- ox-diar (speaker diarization: NVIDIA's Nemotron 3 Diarization through FluidAudio's Core ML port) ---
 # A Swift package, not a ggml engine: set_cmake_flags and the metallib steps do not apply. It links only system
 # frameworks (Core ML, Accelerate, AVFoundation) and the Swift runtime the OS ships, so check_static passes; Swift
 # and clang emit no instruction past the baseline, and check_dist proves it on the output. Needs Xcode 26 (Swift

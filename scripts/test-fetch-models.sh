@@ -9,12 +9,10 @@
 #   * fetch-models.sh: delete the `models=("Qwen3.5-4B..."` line in the
 #     notes_only block -> the script goes for the other models too -> "only the
 #     notes model" fails
-#   * fetch-models.sh: delete the `models=("${diar_models[@]}")` line under `if [ "$diar_only" = 1 ]` ->
+#   * fetch-models.sh: delete the `models=("${nem_models[@]}")` line under `if [ "$diar_only" = 1 ]` ->
 #     --diar-only goes for the other models too -> "only the diarization models" fails
-#   * fetch-models.sh: delete the `rm -f "$dest/diar/speaker-diarization/.fluidaudio-revision"` line before the loop ->
-#     a failed fetch leaves an old marker -> "a failed fetch removes the marker of an earlier one" fails
-#   * fetch-models.sh: delete the `mv ... .fluidaudio-revision` line -> a complete fetch leaves no marker (the live
-#     acceptance probe sees it; this sandbox test only proves that a FAILED fetch leaves none)
+#   * fetch-models.sh: delete the leftover-folder `echo "note ...speaker-diarization..."` -> "a leftover pyannote folder
+#     is named" fails; make it `rm` the folder -> "a leftover pyannote folder is not deleted" fails
 #   * fetch-models.sh: delete the `diar/nemotron-3-diarization/*) rm -f "$nem_marker"` arm -> a bad nemotron file
 #     leaves an old marker -> "its marker is gone" fails
 #   * fetch-models.sh: delete the `mv ... .ox-say-revision` write -> a complete --nemotron-only fetch leaves no
@@ -51,9 +49,7 @@
 #     status -> "the retry after a 503 resumes" and "the failure names the HTTP status" fail (the fake honours -w)
 #   * fetch-models.sh: delete the `[ "$resume" = 1 ] || { resume=1; opts+=(-C -); }` line in fetch_part -> "after the
 #     self-heal, a retry resumes from the fresh .part" fails
-#   * fetch-models.sh: delete the `case $name in diar/*) rm -f "$diar_marker" ;; esac` line and put
-#     `rm -f "$dest/diar/speaker-diarization/.fluidaudio-revision"` before the loop -> "an unrelated failure keeps the
-#     marker" fails (and the delete alone makes "a failed fetch removes the marker" fail)
+#   * fetch-models.sh: put `rm -f "$nem_marker"` before the loop -> "an unrelated failure keeps the marker" fails
 #   * fetch-models.sh: delete the `notes_only ... with_whisper` conflict check -> "an option for another set is
 #     refused" fails
 #   * fetch-models.sh: change `curl -fsSL` to `curl -fL` -> the fake curl prints
@@ -137,20 +133,20 @@ else
 fi
 if [ ! -e "$tmp/nonet-calls" ]; then pass "a refused --notes never reached the network"; else fail "a refused --notes called curl"; fi
 
-# --diar-only: the 24 diarization files, under <dest>/diar/speaker-diarization/, nothing else, and no revision
-# marker unless every file passed its checksum (FluidAudio refuses a directory without it).
-rel=Embedding.mlmodelc/analytics/coremldata.bin
-mkdir -p "$tmp/dfrom/diar/speaker-diarization/Embedding.mlmodelc/analytics" "$tmp/ddest"
-echo "not a model" > "$tmp/dfrom/diar/speaker-diarization/$rel"
-out=$(OX_SAY_MODELS_FROM="$tmp/dfrom" bash "$root/scripts/fetch-models.sh" --diar-only "$tmp/ddest" 2>&1)
+# --diar-only: the Nemotron set (on an Apple Silicon Mac), under <dest>/diar/nemotron-3-diarization/, nothing else, and no
+# revision marker unless every file passed its checksum.
+rel=Nemotron3Diarizer_fast128.mlmodelc/model.mil
+mkdir -p "$tmp/dfrom/diar/nemotron-3-diarization/Nemotron3Diarizer_fast128.mlmodelc" "$tmp/ddest"
+echo "not a model" > "$tmp/dfrom/diar/nemotron-3-diarization/$rel"
+out=$(OX_SAY_NEMOTRON=1 OX_SAY_MODELS_FROM="$tmp/dfrom" bash "$root/scripts/fetch-models.sh" --diar-only "$tmp/ddest" 2>&1)
 rc=$?
 if [ "$rc" -ne 0 ]; then pass "a wrong diarization file is refused (exit $rc)"; else fail "a wrong diarization file was accepted"; fi
-case $out in *"checksum mismatch for diar/speaker-diarization/$rel"*) pass "the mismatch names the diarization file" ;; *) fail "no mismatch message: $out" ;; esac
+case $out in *"checksum mismatch for diar/nemotron-3-diarization/$rel"*) pass "the mismatch names the diarization file" ;; *) fail "no mismatch message: $out" ;; esac
 case $out in
-    *qwen*|*parakeet*|*silero*|*Qwen3.5*) fail "--diar-only looked at another model: $out" ;;
+    *qwen*|*parakeet*|*silero*|*Qwen3.5*|*speaker-diarization*) fail "--diar-only looked at another model: $out" ;;
     *) pass "only the diarization models are looked at" ;;
 esac
-if [ ! -e "$tmp/ddest/diar/speaker-diarization/.fluidaudio-revision" ] && [ ! -e "$tmp/ddest/diar/speaker-diarization/$rel" ]; then
+if [ ! -e "$tmp/ddest/diar/nemotron-3-diarization/.ox-say-revision" ] && [ ! -e "$tmp/ddest/diar/nemotron-3-diarization/$rel" ]; then
     pass "no marker and no file left behind by a failed fetch"
 else
     fail "files left in dest/diar: $(find "$tmp/ddest/diar" -type f 2>/dev/null)"
@@ -159,7 +155,7 @@ fi
 count_pins() { # array-name -> number of 64-hex SHA-256 entries inside name=( ... )
     awk -v a="$1" '$0 == a "=(" {on=1; next} on && $0 == ")" {on=0} on && /^    "[0-9a-f]{64}  [^ ]*"$/ {n++} END {print n+0}' "$root/scripts/fetch-models.sh"
 }
-for want in diar_files:24 diar_docs:4 nem_files:5 nem_docs:2 clean_files:8 clean_docs:4; do
+for want in nem_files:5 nem_docs:2 clean_files:8 clean_docs:4; do
     n=$(count_pins "${want%%:*}")
     if [ "$n" = "${want##*:}" ]; then pass "${want%%:*} lists $n pinned entries"; else fail "${want%%:*} lists $n pinned entries, want ${want##*:}"; fi
 done
@@ -180,20 +176,9 @@ else
     pass "no resolve/main URL in fetch-models.sh"
 fi
 
-# A marker from an earlier complete fetch must not outlive a failed one: the next run replaces files, and a marker over a
-# half-replaced set would tell the loader the models are all there.
-mkdir -p "$tmp/ddest2/diar/speaker-diarization"
-echo "df2625ac79a7ac6b65ad868fee6d80f320da4232" > "$tmp/ddest2/diar/speaker-diarization/.fluidaudio-revision"
-OX_SAY_MODELS_FROM="$tmp/dfrom" bash "$root/scripts/fetch-models.sh" --diar-only "$tmp/ddest2" > /dev/null 2>&1
-if [ ! -e "$tmp/ddest2/diar/speaker-diarization/.fluidaudio-revision" ]; then
-    pass "a failed fetch removes the marker of an earlier one"
-else
-    fail "the old revision marker survived a failed fetch"
-fi
-
 # Nemotron set, selected alone with --nemotron-only (the loop stops at the first bad entry, so the set under test must
-# be the only one listed): its own directory and marker; a bad file there removes ITS marker and leaves the WeSpeaker
-# marker alone.
+# be the only one listed): its own directory and marker; a bad file there removes ITS marker (a marker from an earlier
+# complete fetch must not outlive a failed one) and leaves the folder of the removed pyannote set alone.
 mkdir -p "$tmp/ndest/diar/speaker-diarization" "$tmp/nfrom/diar/nemotron-3-diarization"
 echo "df2625ac79a7ac6b65ad868fee6d80f320da4232" > "$tmp/ndest/diar/speaker-diarization/.fluidaudio-revision"
 mkdir -p "$tmp/ndest/diar/nemotron-3-diarization"
@@ -204,31 +189,11 @@ out=$(OX_SAY_NEMOTRON=1 OX_SAY_MODELS_FROM="$tmp/nfrom" bash "$root/scripts/fetc
 [ "$rc" -ne 0 ] && pass "a wrong nemotron file is refused" || fail "a wrong nemotron file was accepted"
 case $out in *"checksum mismatch for diar/nemotron-3-diarization/Nemotron3Diarizer_fast128.mlmodelc/model.mil"*) pass "the mismatch names the nemotron file" ;; *) fail "no mismatch message: $out" ;; esac
 [ ! -e "$tmp/ndest/diar/nemotron-3-diarization/.ox-say-revision" ] && pass "its marker is gone" || fail "stale nemotron marker survived"
-[ -e "$tmp/ndest/diar/speaker-diarization/.fluidaudio-revision" ] && pass "the WeSpeaker marker is untouched" || fail "--nemotron-only removed the WeSpeaker marker"
-# gating: a Mac that cannot run ox-diar does not download 199 MB. All 28 WeSpeaker files stand in the dest already
-# (the fake vouches "intact"), so the fetch walks the whole --diar-only list: with OX_SAY_NEMOTRON=0 that is 28 oks
-# and done; a nemotron set still listed would go on to the no-network stub and its name would reach the output.
-d="$tmp/nemgate"; mkdir -p "$d/bin" "$d/dest/diar/speaker-diarization"
-cat > "$d/bin/shasum" <<FAKE
-#!/bin/bash
-f=\${3:-}
-case \$f in
-    */speaker-diarization/*)
-        if [ "\$(cat "\$f")" = intact ]; then
-            rel=\${f#*/speaker-diarization/}
-            rel=\${rel%.part}
-            sed -n '/^diar_files=(/,/^)/p; /^diar_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | grep -m1 "^    \"[0-9a-f]\{64\}  \$rel\"\$" | sed 's/^    "\([0-9a-f]*\) .*/\1  -/'
-            exit 0
-        fi ;;
-esac
-exec /usr/bin/shasum "\$@"
-FAKE
-chmod +x "$d/bin/shasum"
-sed -n '/^diar_files=(/,/^)/p; /^diar_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | sed -n 's/^    "[0-9a-f]\{64\}  \(.*\)"$/\1/p' | while IFS= read -r rel; do
-    mkdir -p "$d/dest/diar/speaker-diarization/$(dirname "$rel")"
-    printf intact > "$d/dest/diar/speaker-diarization/$rel"
-done
-out=$(PATH="$d/bin:$PATH" OX_SAY_NEMOTRON=0 bash "$root/scripts/fetch-models.sh" --diar-only "$d/dest" 2>&1); rc=$?
+[ -e "$tmp/ndest/diar/speaker-diarization/.fluidaudio-revision" ] && pass "a leftover pyannote folder is untouched" || fail "--nemotron-only removed the leftover pyannote marker"
+# gating: a Mac that cannot run ox-diar does not download 199 MB. With OX_SAY_NEMOTRON=0 the diarization set is empty,
+# so --diar-only has nothing to fetch and says so, with no network call (the stub curl would fail the run) and no
+# nemotron name in the output.
+out=$(OX_SAY_NEMOTRON=0 bash "$root/scripts/fetch-models.sh" --diar-only "$tmp/nemgate" 2>&1); rc=$?
 if [ "$rc" -eq 0 ]; then pass "OX_SAY_NEMOTRON=0 --diar-only completes"; else fail "OX_SAY_NEMOTRON=0 --diar-only failed (rc $rc): $out"; fi
 case $out in *nemotron*) fail "OX_SAY_NEMOTRON=0 still listed the nemotron set: $out" ;; *) pass "OX_SAY_NEMOTRON=0 skips the nemotron set" ;; esac
 
@@ -243,11 +208,6 @@ cat > "$g/bin/shasum" <<FAKE
 f=\${3:-}
 if [ "\$(cat "\$f" 2>/dev/null)" = intact ]; then
     case \$f in
-        */diar/speaker-diarization/*)
-            rel=\${f#*/diar/speaker-diarization/}
-            rel=\${rel%.part}
-            sed -n '/^diar_files=(/,/^)/p; /^diar_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | grep -m1 "^    \"[0-9a-f]\{64\}  \$rel\"\$" | sed 's/^    "\([0-9a-f]*\) .*/\1  -/'
-            exit 0 ;;
         */diar/nemotron-3-diarization/*)
             rel=\${f#*/diar/nemotron-3-diarization/}
             rel=\${rel%.part}
@@ -264,13 +224,9 @@ exec /usr/bin/shasum "\$@"
 FAKE
 chmod +x "$g/bin/shasum"
 # Seed a copy of every name the default list or --diar-only can reach: the four engines at the top level,
-# then the two diarization sets in their directories.
+# then the diarization set in its directory.
 sed -n '/^models=(/,/^)/p' "$root/scripts/fetch-models.sh" | sed -n 's/^    "\([^ ]*\) [0-9a-f]\{64\} .*/\1/p' | while IFS= read -r name; do
     printf intact > "$g/from/$name"
-done
-sed -n '/^diar_files=(/,/^)/p; /^diar_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | sed -n 's/^    "[0-9a-f]\{64\}  \(.*\)"$/\1/p' | while IFS= read -r rel; do
-    mkdir -p "$g/from/diar/speaker-diarization/$(dirname "$rel")"
-    printf intact > "$g/from/diar/speaker-diarization/$rel"
 done
 sed -n '/^nem_files=(/,/^)/p; /^nem_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | sed 's/\$nem_bundle/Nemotron3Diarizer_fast128.mlmodelc/g' | sed -n 's/^    "[0-9a-f]\{64\}  \(.*\)"$/\1/p' | while IFS= read -r rel; do
     mkdir -p "$g/from/diar/nemotron-3-diarization/$(dirname "$rel")"
@@ -347,6 +303,24 @@ nem_listed "a Rosetta shell on arm64 macOS 15 lists the nemotron set" "$rc" "$ou
 fake_platform "$g/intel-14" x86_64 14.7 0
 out=$(PATH="$g/bin:$g/intel-14:$PATH" OX_SAY_NEMOTRON=1 OX_SAY_MODELS_FROM="$g/from" bash "$root/scripts/fetch-models.sh" --diar-only "$g/d10" 2>&1); rc=$?
 nem_listed "OX_SAY_NEMOTRON=1 lists the nemotron set even on Intel macOS 14" "$rc" "$out"
+
+# A folder left by the pyannote engine is named and never deleted: a default run on an Apple Silicon Mac that holds one
+# prints a note naming it, leaves its files and marker where they are, and does not list its files as models. A Mac
+# without one gets no note. Mutation: fetch-models.sh, delete the leftover `echo "note ..."` -> "a leftover pyannote folder
+# is named" fails; replace it with `rm -r "$old"` -> "a leftover pyannote folder is not deleted" fails.
+mkdir -p "$g/dleft/diar/speaker-diarization/Embedding.mlmodelc"
+echo old > "$g/dleft/diar/speaker-diarization/Embedding.mlmodelc/model.mil"
+echo df2625ac79a7ac6b65ad868fee6d80f320da4232 > "$g/dleft/diar/speaker-diarization/.fluidaudio-revision"
+out=$(run_gate "$g/arm64-15" "$g/dleft"); rc=$?
+[ "$rc" = 0 ] || fail "a default run beside a leftover pyannote folder failed (rc $rc): $out"
+case $out in *"note    $g/dleft/diar/speaker-diarization"*) pass "a leftover pyannote folder is named" ;; *) fail "no note for the leftover pyannote folder: $out" ;; esac
+if [ -f "$g/dleft/diar/speaker-diarization/Embedding.mlmodelc/model.mil" ] && [ -f "$g/dleft/diar/speaker-diarization/.fluidaudio-revision" ]; then
+    pass "a leftover pyannote folder is not deleted"
+else
+    fail "the leftover pyannote folder lost files"
+fi
+out=$(run_gate "$g/arm64-15" "$g/dclean"); rc=$?
+case $out in *speaker-diarization*) fail "a Mac without the old folder got a note: $out" ;; *) pass "no note without a leftover pyannote folder" ;; esac
 
 # The nemotron marker is written after every file of the set passed its checksum: a --nemotron-only run whose files
 # all copy clean ends with .ox-say-revision naming nem_rev. The fake shasum vouches for a file holding "intact" with
@@ -619,32 +593,32 @@ case $out in *"failed (curl exit 22)"*) pass "the failure names curl's exit stat
 
 # The marker: a failure on an unrelated model, before the diarization files, must not take the marker of intact
 # diarization files with it. The fake shasum vouches for a file holding "intact" with the pinned hash from the script's
-# own table, so the 28 files count as passed without shipping 22 MB of models.
-d="$tmp/marker"; mkdir -p "$d/bin" "$d/dest/diar/speaker-diarization" "$d/from"
+# own table, so the 7 files count as passed without shipping 199 MB of models.
+d="$tmp/marker"; mkdir -p "$d/bin" "$d/dest/diar/nemotron-3-diarization" "$d/from"
 cat > "$d/bin/shasum" <<FAKE
 #!/bin/bash
 f=\${3:-}
 case \$f in
-    */speaker-diarization/*)
+    */nemotron-3-diarization/*)
         if [ "\$(cat "\$f")" = intact ]; then
-            rel=\${f#*/speaker-diarization/}
-            grep -m1 "^    \"[0-9a-f]\{64\}  \$rel\"\\$" "$root/scripts/fetch-models.sh" | sed 's/^    "\([0-9a-f]*\) .*/\1  -/'
+            rel=\${f#*/nemotron-3-diarization/}
+            sed -n '/^nem_files=(/,/^)/p; /^nem_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | sed 's/\\\$nem_bundle/Nemotron3Diarizer_fast128.mlmodelc/g' | grep -m1 "^    \"[0-9a-f]\{64\}  \$rel\"\$" | sed 's/^    "\([0-9a-f]*\) .*/\1  -/'
             exit 0
         fi ;;
 esac
 exec /usr/bin/shasum "\$@"
 FAKE
 chmod +x "$d/bin/shasum"
-grep '^    "[0-9a-f]\{64\}  ' "$root/scripts/fetch-models.sh" | sed 's/^    "[0-9a-f]*  \(.*\)"$/\1/' | while IFS= read -r rel; do
-    mkdir -p "$d/dest/diar/speaker-diarization/$(dirname "$rel")"
-    printf intact > "$d/dest/diar/speaker-diarization/$rel"
+sed -n '/^nem_files=(/,/^)/p; /^nem_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | sed 's/\$nem_bundle/Nemotron3Diarizer_fast128.mlmodelc/g' | sed -n 's/^    "[0-9a-f]\{64\}  \(.*\)"$/\1/p' | while IFS= read -r rel; do
+    mkdir -p "$d/dest/diar/nemotron-3-diarization/$(dirname "$rel")"
+    printf intact > "$d/dest/diar/nemotron-3-diarization/$rel"
 done
-echo df2625ac79a7ac6b65ad868fee6d80f320da4232 > "$d/dest/diar/speaker-diarization/.fluidaudio-revision"
+echo 25a90f97f254428d4b30374b76af9c74fdee8327 > "$d/dest/diar/nemotron-3-diarization/.ox-say-revision"
 echo "not the model" > "$d/from/qwen-talker-0.6b-base-Q8_0.gguf"
-PATH="$d/bin:$PATH" OX_SAY_MODELS_FROM="$d/from" bash "$root/scripts/fetch-models.sh" "$d/dest" > "$d/out" 2>&1
+PATH="$d/bin:$PATH" OX_SAY_NEMOTRON=1 OX_SAY_MODELS_FROM="$d/from" bash "$root/scripts/fetch-models.sh" "$d/dest" > "$d/out" 2>&1
 rc=$?
 if [ "$rc" -ne 0 ] && grep -q 'checksum mismatch for qwen-talker' "$d/out"; then pass "(setup) an unrelated model fails first"; else fail "marker setup: exit $rc: $(cat "$d/out")"; fi
-if [ -e "$d/dest/diar/speaker-diarization/.fluidaudio-revision" ]; then
+if [ -e "$d/dest/diar/nemotron-3-diarization/.ox-say-revision" ]; then
     pass "an unrelated failure keeps the marker of intact diarization files"
 else
     fail "an unrelated failure removed the diarization marker"

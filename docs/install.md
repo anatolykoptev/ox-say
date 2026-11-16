@@ -7,8 +7,8 @@ curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | 
 
 The installer:
 - downloads a prebuilt release and checks its SHA-256;
-- fetches the models, checksummed: about 2.5 GB on Apple Silicon, including 221 MB of
-  speaker models for [Meetings](meetings.md) (the 199 MB Nemotron set is fetched whatever the macOS version, so a
+- fetches the models, checksummed: about 2.5 GB on Apple Silicon, including the 199 MB
+  speaker model for [Meetings](meetings.md) (fetched whatever the macOS version, so a
   Mac that upgrades to macOS 15 later already has it), and about 2.3 GB on an Intel Mac, which skips that set. The optional Whisper adds 1.6 GB. The meeting-notes model is not part of it: it
   is downloaded when you first ask for notes (5.7 GB for the default 9B on a Mac with 24 GB or more, 2.7 GB for the 4B that 16–23 GB Macs use);
 - starts the daemon as a LaunchAgent;

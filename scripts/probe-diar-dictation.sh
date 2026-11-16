@@ -12,7 +12,7 @@
 # phase 2 posts it while ox-diar loops over the long recording. Prints both p50 and p95 and exits 1 when the p95 during
 # a diarization is both 25 % and 150 ms above the idle one. Those two numbers are a starting guess, not a measurement:
 # the probe's first run on a real Mac is what sets them.
-# OX_DIAR_ARGS (e.g. "--engine pyannote") is passed to ox-diar; unset, it runs the default engine (Nemotron).
+# OX_DIAR_ARGS, if set, is a word list appended to the ox-diar command line.
 set -u
 bin=${1:?usage: $0 <ox-diar> <models-dir> <long.pcm> <clip.wav> [requests]}
 models=${2:?}; long=${3:?}; clip=${4:?}; n=${5:-20}
