@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.35](https://github.com/anatolykoptev/ox-say/compare/v0.1.34...v0.1.35) (2026-11-16)
+
+
+### Fixed
+
+* **dictation:** deliver the speakers-saved notice on the main actor ([#625](https://github.com/anatolykoptev/ox-say/issues/625)) ([d2121be](https://github.com/anatolykoptev/ox-say/commit/d2121be300d002dd06bc8267c07d3853be9b525c))
+* **meeting:** remove speaker echo word by word, keep the owner's words ([#626](https://github.com/anatolykoptev/ox-say/issues/626)) ([a094834](https://github.com/anatolykoptev/ox-say/commit/a0948348e1414c4573341fd80090bf4cf9ac2a8e))
+
 ## [0.1.34](https://github.com/anatolykoptev/ox-say/compare/v0.1.33...v0.1.34) (2026-11-16)
 
 
