@@ -75,15 +75,16 @@ type ggufMeta struct {
 // layer count, which layers attend, their KV head count and per-head K/V
 // widths). Keyed by the name after the architecture prefix.
 var ggufWantedNums = map[string]bool{
-	"context_length":          true,
-	"block_count":             true,
-	"embedding_length":        true,
-	"nextn_predict_layers":    true,
-	"full_attention_interval": true,
-	"attention.head_count":    true,
-	"attention.head_count_kv": true,
-	"attention.key_length":    true,
-	"attention.value_length":  true,
+	"context_length":             true,
+	"block_count":                true,
+	"embedding_length":           true,
+	"nextn_predict_layers":       true,
+	"full_attention_interval":    true,
+	"attention.head_count":       true,
+	"attention.head_count_kv":    true,
+	"attention.key_length":       true,
+	"attention.value_length":     true,
+	"attention.recurrent_layers": true,
 }
 
 // q8_0 stores 34 bytes per 32 elements (llama.cpp's block_q8_0: a half scale
@@ -106,7 +107,8 @@ const (
 // 34/32. Which layers keep KV follows llama.cpp: the trunk (block_count minus
 // nextn_predict_layers; the MTP layer is not in the main context); of those a
 // hybrid's full_attention_interval marks every interval-th layer as attention
-// (src/models/qwen35.cpp: is_recr = (il+1) % interval != 0), a per-layer
+// (src/models/qwen35.cpp: is_recr = (il+1) % interval != 0; an explicit
+// attention.recurrent_layers array there wins over the interval), a per-layer
 // head_count_kv array keeps the layers with a nonzero entry, and a plain
 // model keeps all of them. 0 when the metadata cannot say: the estimate is
 // never guessed, the fit just keeps the ask and lets llama.cpp's fitter and
@@ -120,6 +122,7 @@ func (m ggufMeta) kvPerToken() int64 {
 	if interval <= 0 && (m.Architecture == "qwen35" || m.Architecture == "qwen35moe") {
 		interval = ggufQwen35FullAttnInterval
 	}
+	recurrent := m.NumLists["attention.recurrent_layers"] // llama.cpp reads it before the interval: nonzero = no KV
 	kvHeads := m.NumLists["attention.head_count_kv"]
 	_, kvScalar := m.Nums["attention.head_count_kv"]
 	var elems int64
@@ -130,6 +133,8 @@ func (m ggufMeta) kvPerToken() int64 {
 		}
 		attends := true
 		switch {
+		case len(recurrent) > 0:
+			attends = il < int64(len(recurrent)) && recurrent[il] == 0
 		case interval > 0:
 			attends = (il+1)%interval == 0 // the others are linear-attention layers: recurrent state, no KV
 		case len(kvHeads) > 0:

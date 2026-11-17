@@ -369,7 +369,7 @@ func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("broken p
 func TestDictationIsNotBlockedByAnEndpointRequestsTurn(t *testing.T) {
 	d, _, _ := llmEndpointFixture(t, nil)
 	if d.STTSup == nil {
-		t.Skip("the fixture has no STT supervisor")
+		t.Fatal("the fixture has no STT supervisor: the test would prove nothing")
 	}
 	other := &engine.Supervisor{} // stands in for the fast voice
 	d.mem = &residency{
@@ -402,10 +402,83 @@ func TestDictationIsNotBlockedByAnEndpointRequestsTurn(t *testing.T) {
 	start := time.Now()
 	base, release, err := d.sttServer(sctx)
 	if err != nil {
-		t.Skipf("the fixture's STT server could not start (%v): the structural checks above stand", err)
+		t.Fatalf("dictation's server could not start while the notes turn was held: %v", err)
 	}
 	release()
 	if base == "" || time.Since(start) > 8*time.Second {
 		t.Fatalf("dictation's server took %v", time.Since(start))
 	}
+}
+
+// A request that was already queued when a notes job began must not slip into
+// the slot between two of that job's calls: with the slot in hand it re-checks
+// the job counter and is refused, instead of holding the model for
+// llm_endpoint_max_s while notes wait.
+// Mutation: llmendpoint.go llmAdmit, replace the `d.notesJobs.Load() > 0`
+// condition after takeNotesSlot with `false` -> RED (the queued request is
+// answered 200).
+func TestLLMEndpointWaiterIsRefusedWhenANotesJobBeganBehindIt(t *testing.T) {
+	keep, keepSlot := llmWaitBudget, llmSlotBudget
+	llmWaitBudget, llmSlotBudget = 10*time.Second, 5*time.Second
+	t.Cleanup(func() { llmWaitBudget, llmSlotBudget = keep, keepSlot })
+	d, mux, _ := llmEndpointFixture(t, nil)
+	llmPutSettings(t, d, mux, `{"llm_endpoint":"on"}`)
+	if err := d.notesReqSlot.take(t.Context(), false); err != nil { // an earlier request holds the slot
+		t.Fatal(err)
+	}
+	got := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		got <- llmReq(mux, http.MethodPost, "/v1/chat/completions", d.currentLLMKey(), `{"model":"notes","messages":[]}`)
+	}()
+	waitUntil(t, 5*time.Second, "the request to queue for the slot", func() bool { return len(d.llmGate) == 1 })
+	time.Sleep(300 * time.Millisecond) // past admission, parked in the slot wait
+	d.notesJobs.Add(1)                 // a meeting's notes job begins; its first call is not queued yet
+	d.notesReqSlot.release()           // the slot frees with no notes call waiting
+	rec := <-got
+	d.notesJobs.Add(-1)
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("the queued request -> %d, want 503 + Retry-After (it took the slot between the notes job's calls)", rec.Code)
+	}
+	if slotBusy(d.notesReqSlot) {
+		t.Fatal("the refused request left the slot busy")
+	}
+}
+
+// Turning the endpoint off while a stream is in flight cannot stop the child at
+// once (Stop waits for the guard); when the stream's request ends, the large
+// context goes — it is not left resident until the idle stop.
+// Mutation: llmendpoint.go llmAdmit's release func, delete the
+// d.recycleLargeCtxSoon() call -> RED (the child is still up after the stream).
+func TestLLMEndpointOffRecyclesWhenTheStreamEnds(t *testing.T) {
+	keep := llmWaitBudget
+	llmWaitBudget = 400 * time.Millisecond // the first attempt, made at the toggle, gives up inside the stream
+	t.Cleanup(func() { llmWaitBudget = keep })
+	t.Setenv("OXSAY_FAKE_LLM_ENDLESS", "1")
+	t.Setenv("OXSAY_FAKE_LLM_CHUNK_MS", "50")
+	d, mux, _ := llmEndpointFixture(t, nil)
+	llmPutSettings(t, d, mux, `{"llm_endpoint":"on","llm_endpoint_ctx":65536}`)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"notes","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+d.currentLLMKey())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if _, err := bufio.NewReader(resp.Body).ReadString('\n'); err != nil { // the stream runs
+		t.Fatal(err)
+	}
+	llmPutSettings(t, d, mux, `{"llm_endpoint":"off"}`)
+	time.Sleep(900 * time.Millisecond) // the toggle's own attempt has given up
+	if _, live := d.LLMSup.LiveURL(); !live {
+		t.Fatal("the child was stopped under a running stream")
+	}
+	cancel() // the stream's request ends
+	waitUntil(t, 10*time.Second, "the large-context child to go once the stream ended", func() bool {
+		_, live := d.LLMSup.LiveURL()
+		return !live
+	})
 }

@@ -47,6 +47,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -365,8 +366,25 @@ func (d *Daemon) llmAdmit(ctx context.Context) (string, func(), error) {
 		leave()
 		return "", nil, err
 	}
-	return base, func() { d.notesReqSlot.release(); g.Release(); leave() }, nil
+	// A notes job that started while this request waited owns the model: the slot is free between two of its
+	// calls, and an agent stream that slipped in there would hold it for llm_endpoint_max_s. Checked with the
+	// slot in hand, so a job that begins from here on queues as the priority waiter instead.
+	if d.notesJobs.Load() > 0 {
+		d.notesReqSlot.release()
+		g.Release()
+		leave()
+		return "", nil, errLLMNotesFirst
+	}
+	return base, func() {
+		d.notesReqSlot.release()
+		g.Release()
+		leave()
+		d.recycleLargeCtxSoon()
+	}, nil
 }
+
+// errLLMNotesFirst refuses a request that reached the slot after a meeting's notes job began.
+var errLLMNotesFirst = errors.New("a meeting's notes are being written")
 
 func minTime(a, b time.Time) time.Time {
 	if a.Before(b) {
@@ -479,6 +497,8 @@ func writeLLMBusy(w http.ResponseWriter, msg string) {
 func (d *Daemon) writeLLMRefusal(w http.ResponseWriter, err error) {
 	var busy *engineBusyError
 	switch {
+	case errors.Is(err, errLLMNotesFirst):
+		writeLLMBusy(w, "the notes model is writing a meeting's notes; retry shortly")
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &busy):
 		writeLLMBusy(w, "the notes model is busy; retry shortly")
 	case errors.Is(err, context.Canceled):
@@ -617,23 +637,50 @@ func (d *Daemon) handleLLMKeyRegenerate(w http.ResponseWriter, r *http.Request) 
 	d.writeLLMJSON(w, http.StatusOK, map[string]any{"llm_endpoint_key": key})
 }
 
+// llmCtxLeftover reports a resident notes child still running a context the
+// current settings no longer ask for — the endpoint's large one after the
+// endpoint was turned off.
+func (d *Daemon) llmCtxLeftover() bool {
+	if d.LLMSup == nil || d.llmEndpointOn() {
+		return false
+	}
+	if _, live := d.LLMSup.LiveURL(); !live {
+		return false
+	}
+	args := d.LLMSup.SpawnArgs()
+	c, model := notesFlagValue(args, "-c"), notesFlagValue(args, "-m")
+	return c != "" && model != "" && c != strconv.Itoa(d.notesCtxWantFor(model))
+}
+
+// recycleLargeCtxSoon re-arms llmEndpointOffRecycle from the places a safe
+// point appears — an endpoint request's release and a notes job's end — so a
+// child that could not be stopped when the endpoint was turned off (a stream
+// was in flight, or a notes job ran) is stopped at the next one. Cheap when
+// there is nothing to recycle.
+func (d *Daemon) recycleLargeCtxSoon() {
+	if d.llmCtxLeftover() {
+		go d.llmEndpointOffRecycle()
+	}
+}
+
 // llmEndpointOffRecycle stops a resident notes child that still runs the
-// endpoint's large context once the endpoint is off, at the next safe point:
-// never while a notes job is queued or running, and Supervisor.Stop itself
-// waits for the guard of a request in flight. It runs in the background and
-// is bounded.
+// endpoint's large context once the endpoint is off, at a safe point: never
+// while a notes job is queued or running, and Supervisor.Stop itself waits for
+// the guard of a request in flight. One attempt is bounded by llmWaitBudget;
+// the next safe point (recycleLargeCtxSoon) tries again. It does nothing, and
+// takes no turn, unless a child with the wrong context is resident.
 func (d *Daemon) llmEndpointOffRecycle() {
-	if d.LLMSup == nil || d.llmEndpointOn() || d.notesJobs.Load() > 0 {
+	if !d.llmCtxLeftover() || d.notesJobs.Load() > 0 {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), llmWaitBudget)
 	defer cancel()
 	leave, err := d.llmEndpointTurn(ctx)
 	if err != nil {
-		return // busy with voice work: the next notes call recycles it anyway
+		return // busy with voice work: the next safe point tries again
 	}
 	defer leave()
-	if d.llmEndpointOn() || d.notesJobs.Load() > 0 {
+	if !d.llmCtxLeftover() || d.notesJobs.Load() > 0 {
 		return
 	}
 	if err := d.notesStaleChild(ctx); err != nil {

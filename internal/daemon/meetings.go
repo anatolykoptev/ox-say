@@ -710,7 +710,13 @@ func (d *Daemon) notesJobTurn(ctx context.Context) (func(), error) {
 		return nil, err
 	}
 	var once sync.Once
-	return func() { once.Do(func() { leave(); d.notesJobs.Add(-1) }) }, nil
+	return func() {
+		once.Do(func() {
+			leave()
+			d.notesJobs.Add(-1)
+			d.recycleLargeCtxSoon() // a large-context child the endpoint left behind can go now
+		})
+	}, nil
 }
 
 // cpuPieceSeconds is the recognizer piece length on a Mac without unified memory.

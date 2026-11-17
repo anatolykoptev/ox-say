@@ -98,6 +98,22 @@ func TestLLMEndpointKeyIsOwnerOnly(t *testing.T) {
 	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
 		t.Fatalf("POST key Cache-Control = %q, want no-store", cc)
 	}
+	// A client that echoes the whole GET answer back changes nothing, so it is not refused...
+	echo := llmReq(mux, http.MethodGet, "/v1/meetings/settings", "", "").Body.String()
+	if rec := llmReq(mux, http.MethodPut, "/v1/meetings/settings", "", echo); rec.Code != http.StatusOK {
+		t.Fatalf("an unauthenticated echo of the settings answer -> %d %s, want 200", rec.Code, rec.Body)
+	}
+	// ...but the same echo with the context raised does.
+	raised := strings.Replace(echo, `"llm_endpoint_ctx":131072`, `"llm_endpoint_ctx":262144`, 1)
+	if raised == echo {
+		t.Fatal("the test's echo has no llm_endpoint_ctx to raise")
+	}
+	if rec := llmReq(mux, http.MethodPut, "/v1/meetings/settings", "", raised); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("an unauthenticated echo that raises the context -> %d, want 401", rec.Code)
+	}
+	if got := d.Meet.Store.Settings().LLMEndpointCtx; got == 262144 {
+		t.Fatal("the refused echo changed the context")
+	}
 	// Turning it off needs nobody: that only closes a door.
 	if rec := llmReq(mux, http.MethodPut, "/v1/meetings/settings", "", `{"llm_endpoint":"off"}`); rec.Code != http.StatusOK || d.llmEndpointOn() {
 		t.Fatalf("PUT off -> %d, on=%v", rec.Code, d.llmEndpointOn())
