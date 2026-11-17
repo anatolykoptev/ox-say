@@ -562,12 +562,19 @@ final class MainWindowSource {
         let keyRead = llmKeys.beginRead()
         let daemon = try? await host.client.meetingDaemonSettings()
         let notes = host.daemonStatus()?.notes
+        // Read after the await, with no suspension before the assignment: a rotation that finished while the settings
+        // request was in flight is in here, so the key the page already shows survives the reload.
+        let shown = model.data.meetingSettings.llmEndpoint
         model.data.meetingSettings = pickedFolder.map {
             MeetingSettingsModel.folderPicked($0, defaults: host.defaults, daemon: daemon,
                                               notesWriter: NotesWriterState.of(notes), fullName: NSFullUserName())
         } ?? MeetingSettingsModel.load(
             defaults: host.defaults, daemon: daemon, notesWriter: NotesWriterState.of(notes),
             fullName: NSFullUserName())
+        if shown.on, model.data.meetingSettings.llmEndpoint.on {
+            model.data.meetingSettings.llmEndpoint.key = shown.key
+            model.data.meetingSettings.llmEndpoint.keyUnavailable = shown.keyUnavailable
+        }
         await loadLLMKey(after: keyRead)
     }
 
