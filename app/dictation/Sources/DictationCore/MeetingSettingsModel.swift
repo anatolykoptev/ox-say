@@ -158,6 +158,8 @@ public enum MeetingSettingsModel {
                             fullName: String, home: URL = FileManager.default.homeDirectoryForCurrentUser,
                             probe: ICloudSync.Probe = ICloudSync.probe) -> MeetingSettingsValues {
         let folder = MeetingSettings.folder(d, home: home, probe: probe)
+        // What the daemon just said is the app's copy from now on, so the fallback never revives an older value.
+        if let daemonLiveCaptions { MeetingSettings.setLiveCaptionsCopy(daemonLiveCaptions, d) }
         return MeetingSettingsValues(
             enabled: MeetingSettings.enabled(d), callMode: MeetingSettings.callMode(d), apps: CallPolicy.apps(d),
             folderPath: folder.path, folderSyncsICloud: ICloudSync.syncs(folder, home: home, probe: probe),
@@ -178,6 +180,14 @@ public enum MeetingSettingsModel {
         return load(defaults: d, daemonRetention: daemonRetention, daemonLiveCaptions: daemonLiveCaptions,
                     liveCaptionsDefault: liveCaptionsDefault, notesWriter: notesWriter,
                     fullName: fullName, home: home, probe: probe)
+    }
+
+    /// A read that an edit overtook: everything it carries stands, except the switch, which stays as the edit left it.
+    public static func keepingPendingEdit(_ loaded: MeetingSettingsValues, current: MeetingSettingsValues) -> MeetingSettingsValues {
+        var out = loaded
+        out.liveCaptions = current.liveCaptions
+        out.liveCaptionsVerified = current.liveCaptionsVerified
+        return out
     }
 
     /// The edits that take `old` to `new`.

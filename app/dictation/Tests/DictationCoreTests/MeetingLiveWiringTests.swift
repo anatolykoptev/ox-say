@@ -31,7 +31,7 @@ final class MeetingLiveWiringTests: XCTestCase {
         XCTAssertTrue(schedule.contains("syncLive()"))
         let sync = try body(text, of: "private func syncLive() {")
         XCTAssertTrue(sync.contains("model.section == .meetings,"))
-        XCTAssertTrue(sync.contains("LivePolling.target(visible: visible, selected: selected, meetings: model.data.meetings)"))
+        XCTAssertTrue(sync.contains("liveTargeting.target(visible: visible, selected: selected, meetings: model.data.meetings,"))
         XCTAssertTrue(sync.contains("stopLive()"))
         let stop = try body(text, of: "private func stopClocks() {")
         XCTAssertTrue(stop.contains("stopLive()"), "a hidden or closed window polls nothing")

@@ -87,9 +87,17 @@ final class LiveCaptionsControlsTests: XCTestCase {
                        MainRoute(section: .meetings, meetingID: "20261115-100000-abcdef"))
     }
 
-    func testAClickAfterTheRecordingStoppedOpensTheMeetingsListAndNothingElse() {
-        XCTAssertEqual(PlateClick.route(recordingID: nil), MainRoute(section: .meetings, meetingID: nil))
-        XCTAssertEqual(PlateClick.route(recordingID: ""), MainRoute(section: .meetings, meetingID: nil))
+    func testAClickAfterTheRecordingStoppedOpensTheListWithNoMeetingChosen() {
+        for none in [nil, ""] {
+            let route = PlateClick.route(recordingID: none)
+            XCTAssertEqual(route.section, .meetings)
+            XCTAssertNil(route.selection(current: "20261115-090000-old"), "the list, not the meeting that happened to be open")
+            XCTAssertEqual(route.resolved().selection(current: "x"), nil, "resolving keeps the instruction")
+            XCTAssertNil(route.pruned(knownMeetingIDs: ["a"]).selection(current: "x"))
+        }
+        // nil keeps its old meaning for every other caller: the open meeting stays.
+        XCTAssertEqual(MainRoute(section: .meetings).selection(current: "open"), "open")
+        XCTAssertEqual(MainRoute(section: .meetings, meetingID: "m2").selection(current: "open"), "m2")
     }
 
     // MARK: #612 row caption
@@ -128,14 +136,116 @@ final class LiveCaptionsControlsTests: XCTestCase {
 
     // MARK: #612 polling target
 
-    func testTheLivePollFollowsTheSelectedRecordingElseTheRecordingInTheList() {
-        let other = MeetingInfo(id: "old", status: .done)
-        XCTAssertEqual(LivePolling.target(visible: true, selected: recording, meetings: [other, recording]), "m1")
-        XCTAssertEqual(LivePolling.target(visible: true, selected: other, meetings: [other, recording]), "m1",
+    private let old = MeetingInfo(id: "old", status: .done)
+
+    func testTheLivePollFollowsTheSelectedRecordingElseTheRecordingThePlateShows() {
+        let t = LiveTargeting()
+        let other = MeetingInfo(id: "m2", status: .recording)
+        XCTAssertEqual(t.target(visible: true, selected: recording, meetings: [old, recording], recordingID: "m1"), "m1")
+        XCTAssertEqual(t.target(visible: true, selected: old, meetings: [old, recording], recordingID: "m1"), "m1",
                        "the row shows the last line even while another meeting is open")
-        XCTAssertEqual(LivePolling.target(visible: true, selected: nil, meetings: [other, recording]), "m1")
-        XCTAssertNil(LivePolling.target(visible: false, selected: recording, meetings: [recording]))
-        XCTAssertNil(LivePolling.target(visible: true, selected: nil, meetings: [other]))
+        XCTAssertNil(t.target(visible: false, selected: recording, meetings: [recording], recordingID: "m1"))
+        XCTAssertNil(t.target(visible: true, selected: nil, meetings: [old], recordingID: "m1"))
+        XCTAssertNil(t.target(visible: true, selected: nil, meetings: [recording], recordingID: nil), "the app records nothing: no fallback")
+        _ = other
+    }
+
+    /// With two rows that say "recording" the fallback is the one the plate shows, not the first in the list.
+    /// Mutation: LiveTargeting.target, `$0.id == recordingID && ` removed (first recording row) -> RED.
+    func testTheFallbackFollowsThePlatesRecordingNotTheFirstRecordingRow() {
+        let stale = MeetingInfo(id: "stale", status: .recording)
+        let live = MeetingInfo(id: "live", status: .recording)
+        XCTAssertEqual(LiveTargeting().target(visible: true, selected: nil, meetings: [stale, live], recordingID: "live"), "live")
+    }
+
+    /// `/live` says "not recording", the list read behind it fails, the old row keeps saying "recording": every
+    /// reschedule asks for a target again. It must ask once, not once per pass.
+    /// Mutation: LiveTargeting.reportedStopped, `stopped.insert(id)` removed -> RED (a request on every pass).
+    func testAStoppedRecordingIsNotPolledAgainWhenTheListReadFails() {
+        var t = LiveTargeting()
+        var liveRequests = 0
+        let rows = [MeetingInfo(id: "m1", status: .recording)] // the list never refreshes: its read failed
+        for _ in 0..<50 { // 50 reschedules in a window
+            guard let id = t.target(visible: true, selected: rows[0], meetings: rows, recordingID: "m1") else { continue }
+            liveRequests += 1
+            t.reportedStopped(id) // the daemon answered recording: false
+        }
+        XCTAssertEqual(liveRequests, 1)
+    }
+
+    // MARK: #611 saves
+
+    /// Off then on, quickly; the first PUT is still running when the second intent arrives. The daemon must end on the last
+    /// intent and the page must show the value the daemon took last.
+    /// Mutation: LiveCaptionsSaveQueue.submit, `latest = on` removed (the newer intent is dropped) -> RED.
+    @MainActor func testTwoQuickTogglesEndWithTheDaemonAndThePageOnTheLastIntent() async {
+        var daemon = true
+        var sent: [Bool] = []
+        var gate: CheckedContinuation<Void, Never>?
+        var outcomes: [LiveCaptionsSaveQueue.Outcome] = []
+        let queue = LiveCaptionsSaveQueue(send: { on in
+            sent.append(on)
+            if sent.count == 1 { await withCheckedContinuation { gate = $0 } } // the first PUT is slow
+            daemon = on
+            return nil
+        }, finished: { outcomes.append($0) })
+        queue.submit(false)
+        for _ in 0..<100 where gate == nil { await Task.yield() }
+        queue.submit(true)
+        XCTAssertTrue(queue.busy)
+        gate?.resume()
+        await queue.idle()
+        XCTAssertEqual(sent, [false, true], "one at a time, in the order chosen")
+        XCTAssertTrue(daemon)
+        XCTAssertEqual(outcomes, [.saved(true)])
+        XCTAssertFalse(queue.busy)
+    }
+
+    @MainActor func testAFailureOfTheLastSendIsTheOutcomeAndAnEarlierOneIsNot() async {
+        var calls = 0
+        var outcomes: [LiveCaptionsSaveQueue.Outcome] = []
+        let queue = LiveCaptionsSaveQueue(send: { _ in calls += 1; return calls == 1 ? "refused" : nil }, finished: { outcomes.append($0) })
+        queue.submit(false)
+        queue.submit(true) // arrives before the first send ran
+        await queue.idle()
+        XCTAssertEqual(outcomes.count, 1)
+        let failing = LiveCaptionsSaveQueue(send: { _ in "refused" }, finished: { outcomes.append($0) })
+        failing.submit(false)
+        await failing.idle()
+        XCTAssertEqual(outcomes.last, .failed("refused"))
+    }
+
+    /// A settings read that began before an edit, or while one ran, is older than the edit: the switch keeps the edit.
+    @MainActor func testAReadOlderThanAnEditIsIgnoredForTheSwitch() async throws {
+        let queue = LiveCaptionsSaveQueue(send: { _ in nil }, finished: { _ in })
+        let before = queue.beginRead()
+        XCTAssertFalse(queue.isStale(before), "no edit: the read stands")
+        queue.submit(false)
+        XCTAssertTrue(queue.isStale(before), "an edit began after the read started")
+        let during = queue.beginRead()
+        XCTAssertTrue(queue.isStale(during), "a save is running")
+        await queue.idle()
+        XCTAssertTrue(queue.isStale(during), "the read started while a save ran: it may carry the old value")
+        XCTAssertTrue(queue.isStale(before))
+        XCTAssertFalse(queue.isStale(queue.beginRead()), "a read that began after the save is current")
+
+        let d = suite()
+        let daemon = try XCTUnwrap(MeetingDaemonSettings.decode(Data(#"{"retention_days":30,"live_captions":true}"#.utf8)))
+        var current = load(d, daemon: daemon)
+        current.liveCaptions = false // the edit
+        let loadedOld = load(d, daemon: daemon) // the old GET says on
+        XCTAssertTrue(MeetingSettingsModel.keepingPendingEdit(loadedOld, current: current).liveCaptions == false)
+    }
+
+    func testASuccessfulReadRefreshesTheStoredCopy() throws {
+        let d = suite()
+        MeetingSettings.setLiveCaptionsCopy(false, d)
+        let daemon = try XCTUnwrap(MeetingDaemonSettings.decode(Data(#"{"retention_days":30,"live_captions":true}"#.utf8)))
+        _ = load(d, daemon: daemon)
+        XCTAssertEqual(MeetingSettings.liveCaptionsCopy(d), true)
+        _ = load(d, daemon: nil)
+        XCTAssertEqual(MeetingSettings.liveCaptionsCopy(d), true, "an unreachable daemon changes nothing")
+        XCTAssertTrue(load(d, daemon: nil).liveCaptions, "so the fallback is the last value the daemon said")
     }
 
     // MARK: app glue (pinned as source text, like the other wiring tests: the AppKit side cannot run here)
@@ -149,18 +259,22 @@ final class LiveCaptionsControlsTests: XCTestCase {
         let controller = try source("OxSayDictation/MeetingController.swift")
         XCTAssertTrue(controller.contains("badge.onOpenLive = { [weak self] in self?.openLive() }"))
         XCTAssertTrue(controller.contains("host.openRoute(PlateClick.route(recordingID: current?.info.id))"))
-        XCTAssertTrue(try source("OxSayDictation/MeetingBadge.swift").contains("iconButton(\"text.bubble\", L10nKey.badgeOpenLive.text)"))
+        XCTAssertTrue(try source("OxSayDictation/MeetingBadge.swift").contains(
+            "iconButton(\"text.bubble\", L10nKey.badgeOpenLive.text) { [weak self] in self?.onOpenLive?() }"), "the button's action calls onOpenLive")
         XCTAssertTrue(try source("OxSayDictation/AppDelegate.swift").contains("openRoute: { [unowned self] route in self.mainWindow.show(route) }"))
     }
 
     func testTheSettingsSwitchShowsAFailedSaveOnItsOwnPage() throws {
         let page = try source("MainWindowUI/SettingsPage.swift")
-        XCTAssertTrue(page.contains("isOn: s.liveCaptions)"))
         XCTAssertTrue(page.contains("if let notice = model.data.notice { NoticeBar("), "Settings has no notice bar of its own")
     }
 
     func testTheRecordingRowReadsTheFeedOfTheMeetingItShows() throws {
         XCTAssertTrue(try source("MainWindowUI/MeetingsPage.swift").contains("MeetingRowCaption.line(info: m, feed: model.data.live[m.id])"))
-        XCTAssertTrue(try source("OxSayDictation/MainWindowSource.swift").contains("LivePolling.target(visible: visible, selected: selected, meetings: model.data.meetings)"))
+        let window = try source("OxSayDictation/MainWindowSource.swift")
+        XCTAssertTrue(window.contains("recordingID: host.meetings()?.recordingID"), "the fallback follows the plate's recording")
+        XCTAssertTrue(window.contains("liveTargeting.reportedStopped(id)"))
+        XCTAssertTrue(window.contains("model.selectedMeeting = route.selection(current: model.selectedMeeting)"))
+        XCTAssertTrue(window.contains("liveSaves.submit(on)"), "the switch is saved through the queue")
     }
 }

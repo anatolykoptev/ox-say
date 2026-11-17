@@ -28,6 +28,8 @@ struct MeetingHost {
 protocol MeetingFeature: AnyObject {
     var submenu: NSMenu { get }
     var isRecording: Bool { get }
+    /// The meeting being recorded now; nil when none is.
+    var recordingID: String? { get }
     func daemonStatusChanged()
     func menuWillOpen()
     /// Closes a recording in progress and hands it to the daemon; bounded, for quit.
@@ -97,6 +99,7 @@ final class MeetingController: NSObject, MeetingFeature {
     }
 
     var isRecording: Bool { current != nil }
+    var recordingID: String? { current?.info.id }
     var recordingElapsed: TimeInterval? { current == nil ? nil : recorder.elapsed }
 
     func startRecording() { start(origin: .manual, source: "manual") }
