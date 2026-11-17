@@ -138,6 +138,20 @@ func (d *Daemon) handleGlossaryList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"pairs": pairs})
 }
 
+// glossaryAdd files a heard → meant pair for an agent: the dictionary verdict
+// on the heard form, the store's validation and sighting, and the drop of the
+// pair cache so the next dictation sees the new state. POST /v1/glossary and
+// the glossary_add tool share it; the bool reports whether the pair is new.
+func (d *Daemon) glossaryAdd(heard, meant, context string) (glossary.Pair, bool, error) {
+	p, created, err := d.Glossary.AddChecked(heard, meant, context, d.heardIsVetted(heard))
+	if err != nil {
+		return glossary.Pair{}, false, err
+	}
+	d.invalidateGlossary()
+	d.log.Info("glossary pair filed", slog.String("id", p.ID), slog.String("status", string(p.Status)), slog.Int("seen", p.Seen))
+	return p, created, nil
+}
+
 func (d *Daemon) handleGlossaryAdd(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Heard   string `json:"heard"`
@@ -148,13 +162,11 @@ func (d *Daemon) handleGlossaryAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	p, err := d.Glossary.AddChecked(in.Heard, in.Meant, in.Context, d.heardIsVetted(in.Heard))
+	p, _, err := d.glossaryAdd(in.Heard, in.Meant, in.Context)
 	if err != nil {
 		writeErr(w, glossaryStatus(err), d.glossaryMessage(err))
 		return
 	}
-	d.invalidateGlossary()
-	d.log.Info("glossary pair filed", slog.String("id", p.ID), slog.String("status", string(p.Status)), slog.Int("seen", p.Seen))
 	writeJSON(w, http.StatusOK, p)
 }
 

@@ -54,7 +54,7 @@ func finishMeeting(t *testing.T, d *daemon.Daemon) string {
 // `ox-say serve` starts the meeting runner before serving and stops it after:
 // a finished meeting is worked on while the daemon serves, and is left queued
 // once serve has returned. The serve path is the production cmdServe with
-// go-mcpserver's Serve replaced by a stub (no OnShutdown, so only cmdServe's
+// go-mcpserver's Run replaced by a stub (no OnShutdown, so only cmdServe's
 // own StopMeetings can stop the runner).
 // Mutation: internal/cli/cli.go cmdServe - delete `d.StartMeetings()` -> RED
 // (the meeting is never processed while serving).
@@ -69,8 +69,8 @@ func TestServeStartsAndStopsTheMeetingRunner(t *testing.T) {
 	t.Setenv("OX_SAY_ENGINE_PORT", strconv.Itoa(ports[1]))
 	t.Setenv("OX_SAY_STT_PORT", strconv.Itoa(ports[2]))
 
-	oldNew, oldServe := newDaemon, serve
-	defer func() { newDaemon, serve = oldNew, oldServe }()
+	oldNew, oldRun := newDaemon, runMCP
+	defer func() { newDaemon, runMCP = oldNew, oldRun }()
 	var d *daemon.Daemon
 	newDaemon = func(cfg *config.Config, l *slog.Logger) (*daemon.Daemon, error) {
 		var err error
@@ -96,7 +96,7 @@ func TestServeStartsAndStopsTheMeetingRunner(t *testing.T) {
 		return m.Status
 	}
 	var whileServing meeting.Status
-	serve = func(_ *mcp.Implementation, _ mcpserver.Config, _ func(*mcp.Server)) error {
+	runMCP = func(_ *mcp.Server, _ mcpserver.Config) error {
 		id := finishMeeting(t, d)
 		deadline := time.Now().Add(10 * time.Second)
 		for state(id) != meeting.StatusDone && time.Now().Before(deadline) {
@@ -157,8 +157,8 @@ func TestServeFinishesAnOrphanedRecording(t *testing.T) {
 		_ = os.Chtimes(filepath.Join(dir, name), old, old)
 	}
 
-	oldNew, oldServe := newDaemon, serve
-	defer func() { newDaemon, serve = oldNew, oldServe }()
+	oldNew, oldRun := newDaemon, runMCP
+	defer func() { newDaemon, runMCP = oldNew, oldRun }()
 	var d *daemon.Daemon
 	newDaemon = func(cfg *config.Config, l *slog.Logger) (*daemon.Daemon, error) {
 		var err error
@@ -177,7 +177,7 @@ func TestServeFinishesAnOrphanedRecording(t *testing.T) {
 		return d, nil
 	}
 	finished := false
-	serve = func(_ *mcp.Implementation, cfg mcpserver.Config, _ func(*mcp.Server)) error {
+	runMCP = func(_ *mcp.Server, cfg mcpserver.Config) error {
 		ln, err := net.Listen("tcp", net.JoinHostPort(cfg.Host, cfg.Port))
 		if err != nil {
 			return err

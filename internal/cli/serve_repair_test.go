@@ -21,7 +21,7 @@ import (
 
 // `ox-say serve` repairs a stored voice whose transcript runs past its audio,
 // once the listener is up. The serve path is the production cmdServe with
-// go-mcpserver's Serve replaced by a stub that binds the configured address
+// go-mcpserver's Run replaced by a stub that binds the configured address
 // and waits for the repair; the STT is the one seam injected.
 // Mutation: internal/cli/cli.go cmdServe — delete `d.StartVoiceRepair()` ->
 // RED (the voice is never repaired).
@@ -56,8 +56,8 @@ func TestServeRepairsBrokenVoice(t *testing.T) {
 		}
 		words[i] = voices.Word{W: tok, S: float64(i) * 0.4, E: float64(i)*0.4 + 0.3}
 	}
-	oldNew, oldServe := newDaemon, serve
-	defer func() { newDaemon, serve = oldNew, oldServe }()
+	oldNew, oldRun := newDaemon, runMCP
+	defer func() { newDaemon, runMCP = oldNew, oldRun }()
 	newDaemon = func(cfg *config.Config, l *slog.Logger) (*daemon.Daemon, error) {
 		d, err := daemon.New(cfg, l)
 		if err == nil {
@@ -66,7 +66,7 @@ func TestServeRepairsBrokenVoice(t *testing.T) {
 		return d, err
 	}
 	repaired := false
-	serve = func(_ *mcp.Implementation, cfg mcpserver.Config, _ func(*mcp.Server)) error {
+	runMCP = func(_ *mcp.Server, cfg mcpserver.Config) error {
 		ln, err := net.Listen("tcp", net.JoinHostPort(cfg.Host, cfg.Port))
 		if err != nil {
 			return err

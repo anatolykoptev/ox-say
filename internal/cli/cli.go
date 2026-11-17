@@ -160,10 +160,14 @@ func cmdServe(args []string, stderr io.Writer, version string) int {
 	d.StartCleanScratchSweep()
 	daemon.SetVersion(version)
 
-	err = serve(&mcp.Implementation{
+	// The server is built by the daemon (NewMCPServer): mcpserver.Serve cannot
+	// set the server Instructions (go-mcpserver's Config has no field for
+	// them). mcpserver.Run applies everything else — the NewServer-only Config
+	// fields ox-say would lose are unset anyway, and Run warns if that changes.
+	err = runMCP(d.NewMCPServer(&mcp.Implementation{
 		Name:    "ox-say",
 		Version: version,
-	}, d.ServerConfig(version), d.RegisterTools)
+	}), d.ServerConfig(version))
 	// Serve returns on a failed bind too, possibly without OnShutdown. The
 	// repair pass may already be running (it only waits for SOMETHING to
 	// accept on the address): wait for it here rather than exit mid-rewrite.
@@ -179,11 +183,11 @@ func cmdServe(args []string, stderr io.Writer, version string) int {
 	return 0
 }
 
-// newDaemon and serve are seams for tests: the production wiring is
-// daemon.New and go-mcpserver's Serve.
+// newDaemon and runMCP are seams for tests: the production wiring is
+// daemon.New, Daemon.NewMCPServer and go-mcpserver's Run.
 var (
 	newDaemon = daemon.New
-	serve     = mcpserver.Serve
+	runMCP    = mcpserver.Run
 )
 
 // daemonURL is where the CLI finds the daemon.

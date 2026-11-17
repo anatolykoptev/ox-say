@@ -55,10 +55,10 @@ func serveSweepEnv(t *testing.T) (stale, fresh string, addr string) {
 // Mutation: internal/cli/cli.go cmdServe - delete `d.StartCleanScratchSweep()` -> RED (the stale directory stays).
 func TestServeSweepsStaleCleanScratchOnceListening(t *testing.T) {
 	stale, fresh, _ := serveSweepEnv(t)
-	oldServe := serve
-	defer func() { serve = oldServe }()
+	oldRun := runMCP
+	defer func() { runMCP = oldRun }()
 	gone := false
-	serve = func(_ *mcp.Implementation, cfg mcpserver.Config, _ func(*mcp.Server)) error {
+	runMCP = func(_ *mcp.Server, cfg mcpserver.Config) error {
 		ln, err := net.Listen("tcp", net.JoinHostPort(cfg.Host, cfg.Port))
 		if err != nil {
 			return err
@@ -88,9 +88,9 @@ func TestServeSweepsStaleCleanScratchOnceListening(t *testing.T) {
 // Mutation: internal/daemon/clean.go StartCleanScratchSweep - delete the waitListening guard -> RED.
 func TestServeThatNeverListensSweepsNothing(t *testing.T) {
 	stale, _, _ := serveSweepEnv(t)
-	oldServe := serve
-	defer func() { serve = oldServe }()
-	serve = func(*mcp.Implementation, mcpserver.Config, func(*mcp.Server)) error {
+	oldRun := runMCP
+	defer func() { runMCP = oldRun }()
+	runMCP = func(*mcp.Server, mcpserver.Config) error {
 		time.Sleep(300 * time.Millisecond) // a sweep that did not wait for the listener would have run by now
 		return errors.New("bind: address already in use")
 	}
