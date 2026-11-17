@@ -166,6 +166,11 @@ public final class MainWindowModel: ObservableObject {
                 })
     }
 
+    func codePack(_ pack: CodePack) -> Binding<Bool> {
+        Binding(get: { self.data.codePacks.contains(pack) },
+                set: { self.data.codePacks = CodeVocabulary.toggled(self.data.codePacks, pack, on: $0); self.actions.setCodePack(pack, $0) })
+    }
+
     var startAtLogin: Binding<Bool> {
         Binding(get: { self.data.about.startAtLogin }, set: { self.data.about.startAtLogin = $0; self.actions.setStartAtLogin($0) })
     }

@@ -343,6 +343,15 @@ final class MainWindowSource {
             self.host.setStartAtLogin(on)
             self.model.data.about.startAtLogin = self.host.startAtLogin()
         }
+        a.setCodePack = { [weak self] _, _ in
+            guard let self else { return }
+            // The model already holds the new set (the switch's binding wrote it); the daemon is told the whole set,
+            // and a refused save shows the daemon's own value again.
+            let packs = self.model.data.codePacks
+            Task { @MainActor in
+                do { try await self.host.client.setCodeVocabulary(packs) } catch { await self.reloadSettingsAsync() }
+            }
+        }
         a.dismissNotice = { [weak self] in self?.model.data.notice = nil }
         a.searchTyped = { [weak self] text in self?.searchEvent(.typed(text)) }
         a.retrySearch = { [weak self] in self?.searchEvent(.retry) }
@@ -549,6 +558,7 @@ final class MainWindowSource {
         if let pickedFolder { MeetingSettings.setFolder(pickedFolder, host.defaults) }
         let daemon = try? await host.client.meetingDaemonSettings()
         let notes = host.daemonStatus()?.notes
+        if let packs = try? await host.client.codeVocabulary() { model.data.codePacks = packs }
         model.data.meetingSettings = pickedFolder.map {
             MeetingSettingsModel.folderPicked($0, defaults: host.defaults, daemonRetention: daemon?.retention,
                                               notesWriter: NotesWriterState.of(notes), fullName: NSFullUserName())

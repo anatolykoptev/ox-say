@@ -154,6 +154,8 @@ public struct MainWindowData: Equatable {
     public var dictation: DictationValues
     public var voices: VoicesValues
     public var about: AboutValues
+    /// The code vocabulary packs that are on (the daemon keeps them).
+    public var codePacks: Set<CodePack>
     public var speak: SpeakValues
     public var transcribe: TranscribeValues
     public var clean: CleanValues
@@ -166,7 +168,7 @@ public struct MainWindowData: Equatable {
                 meetingSettings: MeetingSettingsValues, permissions: [PermissionItem],
                 dictation: DictationValues, voices: VoicesValues, about: AboutValues, speak: SpeakValues = SpeakValues(),
                 transcribe: TranscribeValues = TranscribeValues(), clean: CleanValues = CleanValues(),
-                live: [String: LiveFeed] = [:]) {
+                live: [String: LiveFeed] = [:], codePacks: Set<CodePack> = []) {
         self.meetings = meetings
         self.meetingsLoad = meetingsLoad
         self.details = details
@@ -185,6 +187,7 @@ public struct MainWindowData: Equatable {
         self.transcribe = transcribe
         self.clean = clean
         self.live = live
+        self.codePacks = codePacks
     }
 }
 
@@ -229,6 +232,8 @@ public struct MainWindowActions {
     /// «Скачать студийный голос»: the app's own studio voice install, with its confirmation.
     public var installStudioVoice: () -> Void = {}
     public var setStartAtLogin: (Bool) -> Void = { _ in }
+    /// A code vocabulary switch: the pack and whether it is now on (the app tells the daemon).
+    public var setCodePack: (CodePack, Bool) -> Void = { _, _ in }
     public var dismissNotice: () -> Void = {}
     /// The search field's text, as typed (the app debounces, cancels and retries).
     public var searchTyped: (String) -> Void = { _ in }

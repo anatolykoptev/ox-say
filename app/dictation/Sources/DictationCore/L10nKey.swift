@@ -287,6 +287,8 @@ public enum L10nKey: String, CaseIterable {
     case permUnknown = "permission.state.unknown"
     case permFix = "permission.fix"
     case permOpenSettings = "permission.open_settings"
+    case settingsCodeVocab = "settings.code_vocab"
+    case settingsCodeVocabHint = "settings.code_vocab.hint"
     case settingsGeneral = "settings.general"
     case settingsLogin = "settings.login"
     case settingsCheckUpdates = "settings.check_updates"
