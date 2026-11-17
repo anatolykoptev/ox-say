@@ -132,10 +132,18 @@ func (d *Daemon) handleGlossaryList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, glossaryStatus(err), d.glossaryMessage(err))
 		return
 	}
-	if pairs == nil {
-		pairs = []glossary.Pair{}
+	views := make([]pairView, len(pairs))
+	for i, p := range pairs {
+		views[i] = pairView{Pair: p, Needed: glossary.Needed(p)}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"pairs": pairs})
+	writeJSON(w, http.StatusOK, map[string]any{"pairs": views})
+}
+
+// pairView is a pair as the list answers it: the stored fields plus the read-only number of distinct
+// sentences it needs to activate on its own evidence, so a client can show progress without the rule.
+type pairView struct {
+	glossary.Pair
+	Needed int `json:"needed"`
 }
 
 // glossaryAdd files a heard → meant pair for an agent: the dictionary verdict
@@ -260,6 +268,9 @@ func (d *Daemon) invalidateGlossary() {
 	d.glMu.Lock()
 	d.glSet = false
 	d.glMu.Unlock()
+	d.rcMu.Lock()
+	d.rcSet = false
+	d.rcMu.Unlock()
 }
 
 // glossaryPairs loads the active pairs, cached by the file's mtime+size.

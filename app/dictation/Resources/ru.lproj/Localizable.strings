@@ -879,7 +879,9 @@
 "glossary.col.heard" = "Услышано";
 "glossary.col.meant" = "Имелось в виду";
 "glossary.col.status" = "Статус";
-"glossary.col.seen" = "Раз";
+"glossary.col.seen" = "Фразы";
+"glossary.progress" = "%1$@ из %2$@";
+"glossary.provenance" = "Снова услышано в диктовке: %1$@. Предложено ассистентами: %2$@.";
 "glossary.status.candidate" = "На проверке";
 "glossary.status.active" = "Работает";
 "glossary.status.rejected" = "Отклонена";

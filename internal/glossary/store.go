@@ -54,7 +54,10 @@ type Pair struct {
 	Meant     string   `json:"meant"`
 	Status    Status   `json:"status"`
 	Sightings []string `json:"sightings,omitempty"` // hashes of distinct sentences
-	Seen      int      `json:"seen"`
+	Seen      int      `json:"seen"`                // agent filings of this pair
+	// SeenDictation is how many of Sightings came from a later dictation whose raw recognition carried the heard
+	// form again (see Recurrence); the rest were filed by an agent. A file written before the field reads as 0.
+	SeenDictation int `json:"seen_dictation"`
 	// Vetted: the dictionary was consulted when the pair was filed and the heard form is a single word that is not
 	// ordinary words of its language. Only a vetted pair may activate on the evidence of its meant form's other
 	// spellings; a pair with no verdict (filed with no dictionary, or before this field) activates on its own
@@ -287,6 +290,7 @@ func (s *Store) Edit(id, meant string) (Pair, error) {
 	}
 	pairs[i].Meant = meant
 	pairs[i].Sightings = nil
+	pairs[i].SeenDictation = 0
 	if pairs[i].Status != Active {
 		// One agent filing of the new meant must not reach the activation threshold and settle a pair the owner
 		// only re-opened: activation needs fresh evidence or an owner approve.

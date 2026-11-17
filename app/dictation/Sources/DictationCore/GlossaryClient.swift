@@ -23,13 +23,37 @@ public struct GlossaryPair: Equatable, Identifiable {
     public let status: GlossaryStatus
     /// How many times an agent filed it.
     public let seen: Int
+    /// The distinct sentences the pair has been heard in (the daemon lists their hashes, never the sentences).
+    public let sightings: Int
+    /// How many of those came from a later dictation carrying the heard form again; the rest an agent filed.
+    public let seenDictation: Int
+    /// The sentences it needs to activate on its own evidence; 0 when an older daemon does not say.
+    public let needed: Int
 
-    public init(id: String, heard: String, meant: String, status: GlossaryStatus, seen: Int) {
+    public init(id: String, heard: String, meant: String, status: GlossaryStatus, seen: Int,
+                sightings: Int = 0, seenDictation: Int = 0, needed: Int = 0) {
         self.id = id
         self.heard = heard
         self.meant = meant
         self.status = status
         self.seen = seen
+        self.sightings = sightings
+        self.seenDictation = seenDictation
+        self.needed = needed
+    }
+
+    /// The evidence cell: a candidate shows its progress toward activation («1 из 2»); any other pair, or a
+    /// candidate whose daemon does not say what it needs, shows the plain count of sentences.
+    public var progressText: String {
+        if status == .candidate, needed > 0 {
+            return L10nKey.glossaryProgress.text(String(min(sightings, needed)), String(needed))
+        }
+        return String(sightings)
+    }
+
+    /// Where the sightings came from, for the row's tooltip.
+    public var provenanceText: String {
+        L10nKey.glossaryProvenance.text(String(seenDictation), String(max(0, sightings - seenDictation)))
     }
 
     /// `{"pairs":[…]}`; nil when it is not that. A row with no id, heard or meant is skipped, never shown half.
@@ -48,7 +72,8 @@ public struct GlossaryPair: Equatable, Identifiable {
         guard let id = row["id"] as? String, !id.isEmpty, let heard = row["heard"] as? String,
               let meant = row["meant"] as? String else { return nil }
         return GlossaryPair(id: id, heard: heard, meant: meant, status: GlossaryStatus(row["status"] as? String ?? ""),
-                            seen: (row["seen"] as? Int) ?? 0)
+                            seen: (row["seen"] as? Int) ?? 0, sightings: (row["sightings"] as? [Any])?.count ?? 0,
+                            seenDictation: (row["seen_dictation"] as? Int) ?? 0, needed: (row["needed"] as? Int) ?? 0)
     }
 }
 

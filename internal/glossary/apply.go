@@ -94,6 +94,7 @@ func containsSeq(hay, needle []string) bool {
 }
 
 type compiled struct {
+	id    string
 	heard []string
 	// stems[k] is nominalStem(heard[k]): "" when that word matches only itself.
 	stems []string
@@ -106,15 +107,19 @@ type compiled struct {
 	trail string
 }
 
-// compile keeps the active pairs, longest heard form first.
 func compile(pairs []Pair) []compiled {
+	return compileWhere(pairs, func(p Pair) bool { return p.Status == Active })
+}
+
+// compileWhere compiles the pairs keep accepts, longest heard form first.
+func compileWhere(pairs []Pair, keep func(Pair) bool) []compiled {
 	var cs []compiled
 	for _, p := range pairs {
-		if p.Status != Active {
+		if !keep(p) {
 			continue
 		}
 		if h := words(p.Heard); len(h) > 0 {
-			c := compiled{heard: h, stems: make([]string, len(h)), meant: p.Meant}
+			c := compiled{id: p.ID, heard: h, stems: make([]string, len(h)), meant: p.Meant}
 			// A Cyrillic meant is a Russian word in a case of its own («Кролик», «Москва»): replacing «в маскве» by
 			// stem would write «в Москва». Only a meant in Latin letters stands for every case of the heard word.
 			if !hasCyrillic(p.Meant) {

@@ -891,6 +891,8 @@ public enum L10nKey: String, CaseIterable {
     case glossaryColMeant = "glossary.col.meant"
     case glossaryColStatus = "glossary.col.status"
     case glossaryColSeen = "glossary.col.seen"
+    case glossaryProgress = "glossary.progress"
+    case glossaryProvenance = "glossary.provenance"
     case glossaryStatusCandidate = "glossary.status.candidate"
     case glossaryStatusActive = "glossary.status.active"
     case glossaryStatusRejected = "glossary.status.rejected"

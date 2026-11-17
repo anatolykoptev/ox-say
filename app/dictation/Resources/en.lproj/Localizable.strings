@@ -885,7 +885,9 @@
 "glossary.col.heard" = "Heard";
 "glossary.col.meant" = "Meant";
 "glossary.col.status" = "Status";
-"glossary.col.seen" = "Seen";
+"glossary.col.seen" = "Sentences";
+"glossary.progress" = "%1$@ of %2$@";
+"glossary.provenance" = "Heard again in dictation: %1$@. Filed by assistants: %2$@.";
 "glossary.status.candidate" = "To review";
 "glossary.status.active" = "Active";
 "glossary.status.rejected" = "Rejected";
