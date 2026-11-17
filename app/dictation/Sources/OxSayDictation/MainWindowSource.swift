@@ -71,6 +71,13 @@ final class MainWindowSource {
     private var liveTask: Task<Void, Never>?
     private var liveMeeting: String?
     private let audio = MeetingAudioPlayer()
+    /// "New key" taps of the model-access section, one rotation at a time (see `LLMEndpointKeyQueue`).
+    private lazy var llmKeys = LLMEndpointKeyQueue(
+        send: { [weak self] in
+            guard let self else { throw StudioError.daemonUnreachable }
+            return try await self.host.client.regenerateLLMEndpointKey(ownerToken: OwnerToken.read(home: DaemonHome.current()))
+        },
+        finished: { [weak self] in self?.llmKeyRotated($0) })
     private var voiceSource: VoiceSource!
     private var speakSource: SpeakSource!
     private var transcribeSource: TranscribeSource!
@@ -552,6 +559,7 @@ final class MainWindowSource {
     /// read back through the model's one step after the reply, so the iCloud answer is the new folder's own.
     private func reloadSettingsAsync(pickedFolder: URL? = nil) async {
         if let pickedFolder { MeetingSettings.setFolder(pickedFolder, host.defaults) }
+        let keyRead = llmKeys.beginRead()
         let daemon = try? await host.client.meetingDaemonSettings()
         let notes = host.daemonStatus()?.notes
         model.data.meetingSettings = pickedFolder.map {
@@ -560,6 +568,19 @@ final class MainWindowSource {
         } ?? MeetingSettingsModel.load(
             defaults: host.defaults, daemon: daemon, notesWriter: NotesWriterState.of(notes),
             fullName: NSFullUserName())
+        await loadLLMKey(after: keyRead)
+    }
+
+    /// The endpoint's key, from the owner-only route: asked only while the endpoint is on, with the owner token read
+    /// now. A failure is shown as "not readable", never as a stale or empty key; an answer that a rotation has
+    /// overtaken since the read began is dropped, so the page keeps the newer key.
+    private func loadLLMKey(after token: LLMEndpointKeyQueue.ReadToken) async {
+        let ep = model.data.meetingSettings.llmEndpoint
+        guard ep.on, ep.verified else { return }
+        let key = try? await host.client.llmEndpointKey(ownerToken: OwnerToken.read(home: DaemonHome.current()))
+        guard !llmKeys.isStale(token), model.data.meetingSettings.llmEndpoint.on else { return }
+        model.data.meetingSettings.llmEndpoint.key = key ?? ""
+        model.data.meetingSettings.llmEndpoint.keyUnavailable = key == nil
     }
 
     /// Stamps and sets the microphone and Accessibility rows at once, and starts the notification read unless one is
@@ -813,16 +834,18 @@ final class MainWindowSource {
         }
     }
 
-    /// A fresh endpoint bearer: the daemon writes it, the page reads it back through the settings reload.
-    private func regenerateLLMKey() {
-        Task { @MainActor in
-            do {
-                let key = try await host.client.regenerateLLMEndpointKey()
-                model.data.meetingSettings.llmEndpoint.key = key
-                model.data.notice = L10nKey.settingsLLMEndpointKeyNew.text
-            } catch {
-                model.data.notice = MeetingErrorText.sentence(error, action: .settings)
-            }
+    /// A fresh endpoint bearer, rotated through the owner-only route. Taps are serialized (`llmKeys`): the key shown is
+    /// the answer of the last rotation, never a late answer to an earlier one.
+    private func regenerateLLMKey() { llmKeys.regenerate() }
+
+    private func llmKeyRotated(_ result: Result<String, Error>) {
+        switch result {
+        case .success(let key):
+            model.data.meetingSettings.llmEndpoint.key = key
+            model.data.meetingSettings.llmEndpoint.keyUnavailable = false
+            model.data.notice = L10nKey.settingsLLMEndpointKeyNew.text
+        case .failure(let error):
+            model.data.notice = MeetingErrorText.sentence(error, action: .settings)
         }
     }
 

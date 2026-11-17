@@ -32,7 +32,7 @@ Meeting routes (see [Meetings](meetings.md); the app uses them, and so can an ag
 | `GET /v1/meetings/<id>/speakers`, `PATCH …/speakers` | The other side's voices; name, merge and split them in one request |
 | `POST /v1/meetings/<id>/voices` | Tell the voices apart again after the voice engine failed |
 | `DELETE /v1/meetings/<id>` | Delete a meeting that nothing is working on |
-| `GET /v1/meetings/settings`, `PUT …/settings` | `retention_days`: how long audio is kept — 0 (forever), 7, 30 or 90; `live_captions`: live captions while recording (the answer carries the effective value and `live_captions_default`: on for Apple Silicon, off for Intel); `meeting_aec`: `on`/`off` — run `ox-aec` echo cancellation on the mic channel before transcription (on by default; a settings file written before the key existed reads as on, `"off"` is the explicit opt-out); `llm_endpoint`: `on`/`off` — the OpenAI-compatible model endpoint for other apps (off when the key was never written, so it fails closed); `llm_endpoint_ctx`: the context the notes child runs with while the endpoint is on (0/unset = 131072, never below the notes context, clamped to the largest multiple of 4096 that fits memory); the answer also carries `llm_endpoint_url` and `llm_endpoint_key` for the Settings pane — both are response-only, a PUT ignores them. A PUT changes the fields it carries and keeps the rest |
+| `GET /v1/meetings/settings`, `PUT …/settings` | `retention_days`: how long audio is kept — 0 (forever), 7, 30 or 90; `live_captions`: live captions while recording (the answer carries the effective value and `live_captions_default`: on for Apple Silicon, off for Intel); `meeting_aec`: `on`/`off` — run `ox-aec` echo cancellation on the mic channel before transcription (on by default; a settings file written before the key existed reads as on, `"off"` is the explicit opt-out); `llm_endpoint`: `on`/`off` — the OpenAI-compatible model endpoint for other apps (off when the key was never written, so it fails closed); `llm_endpoint_ctx`: the context the notes child is asked to run with while the endpoint is on (unset = 131072; a PUT accepts the notes context up to 1,048,576 tokens, rounds down to a multiple of 4096 and refuses anything else with 400; the daemon may run less when memory or the model's own limit says so); `llm_endpoint_max_s`: the longest one endpoint request may run (unset = 600; 10–1200). The answer reports the asked context as `llm_endpoint_ctx` and what the child runs with — or would on its next start — as the read-only `llm_endpoint_ctx_effective`, plus `llm_endpoint_url`; **it never carries the key**. Turning `llm_endpoint` `on` and setting `llm_endpoint_ctx` or `llm_endpoint_max_s` need the owner bearer (`Authorization: Bearer <owner.token>`; `401` without it); turning it `off` and every other field do not. Turning it off ends a large-context child at the next safe point (never under a running notes job). A PUT changes the fields it carries and keeps the rest |
 | `GET /v1/meetings/notes-model` | The notes model in use: resolved `model` (catalog id or `custom`), `source` (`env`, `saved`, `automatic`), `path`, `installed`, and `choices` — one row per catalog model with `installed` and `supported`, and `upstream` on the uncensored row while it is not installed (`available`, `gone`, `unknown`: a background HEAD of its download URL, 404/410 and 401/403 read as `gone`, everything else as `unknown`) |
 | `PUT /v1/meetings/notes-model` | `{"id":"<catalog id>"}` or `{"path":"/abs/file.gguf"}` — choose the notes model. `400`: unknown id, relative path, neither field, or an own file that fails the trial load. `409`: the model is busy (a download, or a meeting queued, running or recording). On success the choice is saved, a resident notes engine is stopped and the next notes run loads the new file — no restart |
 | `POST /v1/meetings/notes-model/validate` | Try an own notes model without choosing it: `{"path":"/abs/file.gguf"}` → `200` with `{"ok":true,"name","architecture","bytes"}` — the file's own GGUF `general.name`/`general.architecture` — or `{"ok":false,"reason"}`. The check is the one `PUT {"path"}` runs: a v2/v3 GGUF that fits 70% of this Mac's memory, then `ox-llm` really loading it on a private port, answering `/health` and one short completion |
@@ -91,12 +91,23 @@ routes answer 404 as if they did not exist. Every request needs
 `Authorization: Bearer <key>` with the per-install key the daemon writes at
 `<run dir>/llm-endpoint.key` (0600, generated on first use; the file is the source
 of truth — the daemon must authenticate with the app not running, so there is no
-Keychain copy). It is a third credential: not `owner.token`, not the MCP auth, and
-not the notes child's own per-spawn key; the comparison is constant-time. A
-request that would wait for dictation, a meeting recording or a running notes job
-gets a bounded 503 with `Retry-After` — voice work is never preempted. A request
-that starts the notes engine cold may wait for the model to load, up to the normal
-startup timeout. Only the model is served: OxSay tools, meetings, glossary and MCP
+Keychain copy; a file that was group- or other-readable is replaced by a fresh key
+at start). It is a third credential: not `owner.token`, not the MCP auth, and
+not the notes child's own per-spawn key; the comparison is constant-time. The key
+itself is the owner's: no settings answer carries it, and reading, rotating it and
+turning the endpoint on need the owner bearer (below). Scheduling: at most one
+request runs and two queue (a fourth is refused with `503` before its body is
+read); a queued request waits up to 20 s for the model's single decode slot. Admission
+— the dictation yield, the memory turn, the slot — runs under one 30 s deadline; a
+request that cannot be admitted in it, or arrives while dictation, a meeting
+recording or a meeting-notes job is queued or running, gets `503` with
+`Retry-After` — voice work and meeting notes are never preempted, and a meeting's
+notes call is served before queued endpoint requests. A request that starts the
+notes engine cold is exempt from the 30 s: its model load may take up to the normal
+startup timeout. One request runs at most `llm_endpoint_max_s` (600 s by default)
+and is then ended cleanly; a client that stops reading is cut after 30 s per write.
+Dictation uses the separate STT server, which this surface never waits for or
+blocks. Only the model is served: OxSay tools, meetings, glossary and MCP
 are not reachable through these routes, and request/response bodies are never
 logged. `GET /v1/models` dispatches on the header: a request carrying
 `Authorization` is answered as below; one without it keeps the internal catalog
@@ -107,12 +118,14 @@ above.
 | `GET /v1/models` (with `Authorization`) | `{"object":"list","data":[{"id","object":"model","created","owned_by":"ox-say"}]}` — exactly one model, `id` the selected notes model's catalog id (`custom` for an own GGUF). `401` on a missing or wrong key |
 | `POST /v1/chat/completions` | The JSON body is proxied to the notes engine unchanged — `tools`, `tool_choice`, `chat_template_kwargs`, `reasoning_effort` and sampling fields all reach llama-server — and the answer is streamed back as it arrives (SSE or a plain response), never buffered whole; a client disconnect cancels the upstream request. `401` no/wrong key; `400` a body over 64 MiB or unreadable; `502` the engine unreachable; `503` + `Retry-After: 30` when voice work or another request holds the model |
 
-Key management (the app Settings pane calls these; they sit on the same
-unauthenticated loopback surface as the rest of the meeting settings):
+Key management (the app Settings pane calls these). Both need the owner bearer —
+`Authorization: Bearer <owner.token>`, the credential the glossary's owner routes
+use; without it, `401` — and both answer with `Cache-Control: no-store`:
 
 | Route | Description |
 |-------|-------------|
-| `POST /v1/meetings/llm-endpoint/key` | Generate and store a fresh endpoint bearer, answer `{"llm_endpoint_key":"<64 hex>"}` once. The old key stops working the moment the file is replaced |
+| `GET /v1/meetings/llm-endpoint/key` | `{"llm_endpoint_key":"<64 hex>"}`: the key in force |
+| `POST /v1/meetings/llm-endpoint/key` | Generate and store a fresh endpoint bearer, answer it once. The old key stops working when the new one is published; concurrent rotations leave the file and the daemon agreeing on one key |
 
 Streaming transcription sessions — incremental decoding on the resident
 `ox-stt --serve` (requires the VAD model; unavailable when it is absent or

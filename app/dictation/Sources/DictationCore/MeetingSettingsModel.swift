@@ -86,29 +86,49 @@ public enum NotesWriterState: Equatable {
 }
 
 /// The OpenAI-compatible endpoint as the daemon answered it (`GET /v1/meetings/settings`): whether other local
-/// apps may use the notes model, its loopback URL and per-install key, and the context the child runs with.
-/// `verified` is false when the daemon could not be asked: the other fields then say nothing real.
+/// apps may use the notes model, its loopback URL, and the context the child runs with against the one asked.
+/// `verified` is true only when the daemon's answer carried the endpoint fields: while it could not be asked, or
+/// answered like an older daemon without the feature, the toggle stays off and disabled and the rest says nothing.
+/// The per-install `key` is not part of that answer — it is fetched separately, with the owner token, and is empty
+/// until then (`keyUnavailable` says that the fetch failed).
 public struct LLMEndpointValues: Equatable {
     public var on: Bool
     public var url: String
     public var key: String
+    public var keyUnavailable: Bool
     /// The context the notes child runs with under the endpoint, in tokens (0 until the daemon answers).
     public var contextTokens: Int
+    /// The context the settings ask for, in tokens (0 until the daemon answers).
+    public var askedTokens: Int
     public var verified: Bool
 
-    public init(on: Bool = false, url: String = "", key: String = "", contextTokens: Int = 0, verified: Bool = false) {
+    public init(on: Bool = false, url: String = "", key: String = "", keyUnavailable: Bool = false, contextTokens: Int = 0,
+                askedTokens: Int = 0, verified: Bool = false) {
         self.on = on
         self.url = url
         self.key = key
+        self.keyUnavailable = keyUnavailable
         self.contextTokens = contextTokens
+        self.askedTokens = askedTokens
         self.verified = verified
     }
 
     /// The values of a daemon answer; absent fields read as the feature's defaults (off, empty, unverified).
     public static func of(_ daemon: MeetingDaemonSettings?) -> LLMEndpointValues {
-        guard let daemon else { return LLMEndpointValues() }
-        return LLMEndpointValues(on: daemon.llmEndpointOn, url: daemon.llmEndpointURL, key: daemon.llmEndpointKey,
-                                 contextTokens: daemon.llmEndpointCtx, verified: true)
+        guard let daemon, daemon.llmEndpointAnswered else { return LLMEndpointValues() }
+        return LLMEndpointValues(on: daemon.llmEndpointOn, url: daemon.llmEndpointURL,
+                                 contextTokens: daemon.llmEndpointCtxEffective, askedTokens: daemon.llmEndpointCtx, verified: true)
+    }
+}
+
+extension LLMEndpointValues {
+    /// The context sentence: what the notes model runs with, and — when the daemon fit or the model's own limit gave
+    /// less than was asked — what was asked, so a smaller number is never read as the setting being ignored.
+    public func contextLine(text: (L10nKey) -> String = { $0.text }) -> String {
+        if askedTokens > 0, askedTokens != contextTokens {
+            return String(format: text(.settingsLLMEndpointCtxAsked), contextTokens, askedTokens)
+        }
+        return String(format: text(.settingsLLMEndpointCtx), contextTokens)
     }
 }
 
@@ -218,10 +238,14 @@ public enum MeetingSettingsModel {
 public struct MeetingSettingsApplier {
     public var defaults: UserDefaults
     public var client: StudioClient
+    /// The owner bearer, read when a call needs it and kept nowhere (`OwnerToken.read` on the daemon's home).
+    public var ownerToken: () -> String?
 
-    public init(defaults: UserDefaults, client: StudioClient) {
+    public init(defaults: UserDefaults, client: StudioClient,
+                ownerToken: @escaping () -> String? = { OwnerToken.read(home: DaemonHome.current()) }) {
         self.defaults = defaults
         self.client = client
+        self.ownerToken = ownerToken
     }
 
     /// nil when saved; else the sentence for the user (nothing was changed).
@@ -244,7 +268,7 @@ public struct MeetingSettingsApplier {
             MeetingSettings.setRetention(pick, defaults)
         case .llmEndpoint(let on):
             do {
-                try await client.setLLMEndpoint(on: on)
+                try await client.setLLMEndpoint(on: on, ownerToken: ownerToken())
             } catch {
                 return MeetingErrorText.sentence(error, action: .settings, text: text)
             }

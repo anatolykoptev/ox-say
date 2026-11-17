@@ -155,7 +155,9 @@ the key and copy buttons. The surface is OpenAI-compatible on the same loopback 
 `GET /v1/models`, `POST /v1/chat/completions` (streaming and tools included) — gated by a per-install
 bearer the daemon writes at `$OX_SAY_HOME/run/llm-endpoint.key`. Only the model is served: tools,
 meetings, glossary and MCP are not reachable through it. Dictation and a meeting recording keep
-priority — a request that would wait for them gets a bounded 503 instead of queueing. OpenCode, for
+priority — a request that would wait for them, or that arrives while a meeting's notes are being
+written, gets a bounded 503; at most two requests queue behind the one running. The key and turning
+the endpoint on are the owner's: they need the same `owner.token` bearer as the glossary routes. OpenCode, for
 example, points its OpenAI-compatible provider at it:
 
 ```json

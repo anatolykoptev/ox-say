@@ -23,23 +23,29 @@ public enum MeetingRetention: Int, CaseIterable, Equatable {
 
 /// The settings the daemon keeps for meetings (`GET /v1/meetings/settings`): how long audio stays, and the
 /// OpenAI-compatible endpoint other local apps reach the notes model through (`llm_endpoint`, off until the user
-/// turns it on). The endpoint's key is the per-install bearer external clients send; the daemon generates it, and
-/// the field is empty while a daemon that cannot show it answers.
+/// turns it on). The endpoint's key is NOT in this answer: the daemon serves it only to the owner, on its own route
+/// (`StudioClient.llmEndpointKey`).
 public struct MeetingDaemonSettings: Equatable {
     public var retentionDays: Int
     public var llmEndpointOn: Bool
-    /// The context the notes child actually runs with under the endpoint (tokens; 0 when the daemon did not say).
+    /// Whether the answer carried the endpoint fields at all: a daemon that predates the feature does not, and its
+    /// absent `llm_endpoint` must not read as an "off" the user could switch on.
+    public var llmEndpointAnswered: Bool
+    /// The context the settings ASK for (`llm_endpoint_ctx`, tokens; 0 when the daemon did not say).
     public var llmEndpointCtx: Int
+    /// The context the notes model actually runs with, or would on its next start (`llm_endpoint_ctx_effective`):
+    /// read-only, after the daemon's fit and the model's own limit.
+    public var llmEndpointCtxEffective: Int
     public var llmEndpointURL: String
-    public var llmEndpointKey: String
 
-    public init(retentionDays: Int, llmEndpointOn: Bool = false, llmEndpointCtx: Int = 0,
-                llmEndpointURL: String = "", llmEndpointKey: String = "") {
+    public init(retentionDays: Int, llmEndpointOn: Bool = false, llmEndpointAnswered: Bool = false,
+                llmEndpointCtx: Int = 0, llmEndpointCtxEffective: Int = 0, llmEndpointURL: String = "") {
         self.retentionDays = retentionDays
         self.llmEndpointOn = llmEndpointOn
+        self.llmEndpointAnswered = llmEndpointAnswered
         self.llmEndpointCtx = llmEndpointCtx
+        self.llmEndpointCtxEffective = llmEndpointCtxEffective
         self.llmEndpointURL = llmEndpointURL
-        self.llmEndpointKey = llmEndpointKey
     }
 
     public var retention: MeetingRetention { MeetingRetention(rawValue: retentionDays) ?? .month }
@@ -52,9 +58,10 @@ public struct MeetingDaemonSettings: Equatable {
         return MeetingDaemonSettings(
             retentionDays: days,
             llmEndpointOn: obj["llm_endpoint"] as? String == "on",
+            llmEndpointAnswered: obj["llm_endpoint"] is String && obj["llm_endpoint_url"] is String,
             llmEndpointCtx: obj["llm_endpoint_ctx"] as? Int ?? 0,
-            llmEndpointURL: obj["llm_endpoint_url"] as? String ?? "",
-            llmEndpointKey: obj["llm_endpoint_key"] as? String ?? "")
+            llmEndpointCtxEffective: obj["llm_endpoint_ctx_effective"] as? Int ?? 0,
+            llmEndpointURL: obj["llm_endpoint_url"] as? String ?? "")
     }
 }
 

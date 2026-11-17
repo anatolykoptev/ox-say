@@ -132,11 +132,13 @@ struct SettingsPage: View {
                 HintedRow(title: L10nKey.settingsLLMEndpointURL.text, hint: ep.url) {
                     Button(L10nKey.settingsLLMEndpointCopyEndpoint.text) { model.actions.copyText(ep.url) }
                 }
-                HintedRow(title: L10nKey.settingsLLMEndpointKey.text, hint: ep.key) {
+                HintedRow(title: L10nKey.settingsLLMEndpointKey.text,
+                          hint: ep.keyUnavailable ? L10nKey.settingsLLMEndpointKeyUnavailable.text : ep.key) {
                     Button(L10nKey.settingsLLMEndpointCopyKey.text) { model.actions.copyText(ep.key) }
+                        .disabled(ep.key.isEmpty)
                     Button(L10nKey.settingsLLMEndpointRegen.text) { model.actions.regenerateLLMKey() }
                 }
-                Text(String(format: L10nKey.settingsLLMEndpointCtx.text, ep.contextTokens))
+                Text(ep.contextLine())
                     .font(.callout).foregroundStyle(.secondary)
             }
         }
