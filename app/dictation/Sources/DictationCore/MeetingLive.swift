@@ -130,6 +130,14 @@ public enum LivePolling {
         failures >= failuresBeforeBackoff ? backoffInterval : interval
     }
 
+    /// The meeting whose captions the window reads: the chosen one while it is recording, else the recording in the
+    /// list, because its row shows the last line. nil when the window is not visible or nothing is recording.
+    public static func target(visible: Bool, selected: MeetingInfo?, meetings: [MeetingInfo]) -> String? {
+        guard visible else { return nil }
+        if let selected, selected.status == .recording { return selected.id }
+        return meetings.first { $0.status == .recording }?.id
+    }
+
     public static func needed(visible: Bool, selected: MeetingInfo?) -> Bool {
         guard visible, let selected else { return false }
         return selected.status == .recording

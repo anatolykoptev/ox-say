@@ -450,10 +450,12 @@ final class MainWindowSource {
     // MARK: live captions
 
     /// Starts or stops the live poll to match the window: only while it is visible, on the Meetings page, with a
-    /// meeting that is being recorded chosen. Called after every refresh pass and every route change.
+    /// meeting being recorded (the chosen one, else the one in the list). Called after every refresh pass and every route change.
     private func syncLive() {
         let selected = model.selectedMeeting.flatMap { id in model.data.meetings.first { $0.id == id } }
-        guard model.section == .meetings, LivePolling.needed(visible: visible, selected: selected), let id = selected?.id else {
+        // The recording is read even while another meeting is open: its row in the list shows the last line.
+        guard model.section == .meetings,
+              let id = LivePolling.target(visible: visible, selected: selected, meetings: model.data.meetings) else {
             stopLive()
             return
         }
@@ -551,9 +553,11 @@ final class MainWindowSource {
         let notes = host.daemonStatus()?.notes
         model.data.meetingSettings = pickedFolder.map {
             MeetingSettingsModel.folderPicked($0, defaults: host.defaults, daemonRetention: daemon?.retention,
+                                              daemonLiveCaptions: daemon?.liveCaptions, liveCaptionsDefault: daemon?.liveCaptionsDefault,
                                               notesWriter: NotesWriterState.of(notes), fullName: NSFullUserName())
         } ?? MeetingSettingsModel.load(
-            defaults: host.defaults, daemonRetention: daemon?.retention, notesWriter: NotesWriterState.of(notes),
+            defaults: host.defaults, daemonRetention: daemon?.retention, daemonLiveCaptions: daemon?.liveCaptions,
+            liveCaptionsDefault: daemon?.liveCaptionsDefault, notesWriter: NotesWriterState.of(notes),
             fullName: NSFullUserName())
     }
 
@@ -824,9 +828,10 @@ final class MainWindowSource {
             switch change {
             case .enabled: host.meetingsEnabledChanged()
             case .callMode: host.meetings()?.settingsChanged()
-            case .retention, .mode, .name: break
+            case .retention, .liveCaptions, .mode, .name: break
             }
             if case .retention = change { model.data.meetingSettings.retentionVerified = true }
+            if case .liveCaptions = change { model.data.meetingSettings.liveCaptionsVerified = true }
             // A name is typed letter by letter: only a change that alters other parts of the page reads it all again.
             if change.needsRefresh { refresh() }
         }

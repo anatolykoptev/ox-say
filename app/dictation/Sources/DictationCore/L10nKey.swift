@@ -402,6 +402,12 @@ public enum L10nKey: String, CaseIterable {
     case playPosition = "play.position"
     case meetingsTitleCall = "meetings.title.call"
     case settingsKeepUnchecked = "settings.keep.unchecked"
+    // #611/#612: live captions switch in Settings, and the recording plate's button.
+    case settingsLiveCaptions = "settings.live_captions"
+    case settingsLiveCaptionsFooter = "settings.live_captions.footer"
+    case settingsLiveCaptionsDefaultOn = "settings.live_captions.default_on"
+    case settingsLiveCaptionsDefaultOff = "settings.live_captions.default_off"
+    case badgeOpenLive = "badge.open_live"
     case noticeMeetingCopyStale = "notice.meeting.copy_stale"
     // Speak Selection: the voice engine stopped a take that did not end.
     case noticeSpeechRunaway = "notice.speech_runaway"

@@ -376,6 +376,11 @@
 "meeting.error.off" = "Заметки о встречах выключены. Включите их в Настройках.";
 "meetings.title.call" = "Звонок в %@";
 "settings.keep.unchecked" = "Не удалось сверить со службой. Показан ваш последний выбор.";
+"settings.live_captions" = "Субтитры во время встречи";
+"settings.live_captions.footer" = "Показывают, что говорят, пока идёт запись. На Маках с процессором Intel по умолчанию выключены, потому что нагружают процессор.";
+"settings.live_captions.default_on" = "На этом Маке по умолчанию включены.";
+"settings.live_captions.default_off" = "На этом Маке по умолчанию выключены.";
+"badge.open_live" = "Открыть субтитры";
 "notice.meeting.copy_stale" = "Название изменено, но копия в папке заметок не обновилась.";
 "search.placeholder" = "Поиск по встречам";
 "search.searching" = "Ищу…";

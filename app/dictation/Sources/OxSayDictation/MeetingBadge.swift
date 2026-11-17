@@ -41,6 +41,8 @@ final class MeetingBadge {
     /// The Automation badge's "Not now": no Apple Event until the browser lets the microphone go.
     var onBrowserNotNow: (() -> Void)?
     var onCopyConsent: (() -> Void)?
+    /// The recording plate's live-captions button: the window opens on the meeting being recorded.
+    var onOpenLive: (() -> Void)?
     /// The plate is up and the window server says it is not on screen, and every self-heal failed (#517): the owner
     /// tells the user another way.
     var onNotVisible: (() -> Void)?
@@ -322,7 +324,9 @@ final class MeetingBadge {
             views = [dot, label, iconButton("chevron.down", L10nKey.badgeExpand.text) { [weak self] in self?.setCollapsed(false) }]
             consentButton = nil
         } else {
-            views = [dot, label, meBar, themBar, button(L10nKey.badgeStop.text) { [weak self] in self?.onStop?() }]
+            views = [dot, label, meBar, themBar,
+                     iconButton("text.bubble", L10nKey.badgeOpenLive.text) { [weak self] in self?.onOpenLive?() },
+                     button(L10nKey.badgeStop.text) { [weak self] in self?.onStop?() }]
             if recordingAuto { views.append(button(L10nKey.badgeDontRecord.text) { [weak self] in self?.onDontRecord?() }) }
             let consent = button(L10nKey.badgeCopyConsent.text) { [weak self] in self?.onCopyConsent?() }
             consent.isHidden = !MeetingBadgeModel.showsConsentHint(elapsed: elapsed)

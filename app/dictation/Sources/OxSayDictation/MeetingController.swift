@@ -19,6 +19,8 @@ struct MeetingHost {
     var daemonStatus: @MainActor () -> DaemonStatus?
     /// An update is being installed: a recording started now would be ended by the relaunch.
     var updateInstalling: @MainActor () -> Bool
+    /// Opens the main window on a route (brought forward if it exists, made if not).
+    var openRoute: @MainActor (MainRoute) -> Void
 }
 
 /// What the app holds of the meeting feature.
@@ -88,6 +90,12 @@ final class MeetingController: NSObject, MeetingFeature {
     private var promptHolder: String?
     private var sleepObserver: NSObjectProtocol?
 
+    /// The plate's live button: the window on the meeting being recorded. The recording may have stopped since the plate was
+    /// drawn; `PlateClick` then points at the list.
+    private func openLive() {
+        host.openRoute(PlateClick.route(recordingID: current?.info.id))
+    }
+
     var isRecording: Bool { current != nil }
     var recordingElapsed: TimeInterval? { current == nil ? nil : recorder.elapsed }
 
@@ -111,6 +119,7 @@ final class MeetingController: NSObject, MeetingFeature {
         recorder.onMicrophoneRecovered = { [weak self] in self?.host.notify(L10nKey.noticeMeetingMicRecovered.text) }
         recorder.onTapScope = { [weak self] scope in self?.tapScopeChanged(scope) }
         badge.onStop = { [weak self] in self?.stop() }
+        badge.onOpenLive = { [weak self] in self?.openLive() }
         badge.onDontRecord = { [weak self] in self?.dontRecordThisOne() }
         badge.onRecord = { [weak self] in self?.recordFromPrompt() }
         badge.onConfirmRecord = { [weak self] in self?.answerRecordQuestion(.record) }
