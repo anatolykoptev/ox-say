@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.36](https://github.com/anatolykoptev/ox-say/compare/v0.1.35...v0.1.36) (2026-11-17)
+
+
+### Added
+
+* **engine:** ox-aec — WebRTC AEC3 echo canceller for meeting audio ([#628](https://github.com/anatolykoptev/ox-say/issues/628)) ([84eb11e](https://github.com/anatolykoptev/ox-say/commit/84eb11e736dc3dc341449b0f4e41cd65421639a6))
+* **meeting:** aec stage cancels the speakers' echo in the mic channel ([#632](https://github.com/anatolykoptev/ox-say/issues/632)) ([fe51a37](https://github.com/anatolykoptev/ox-say/commit/fe51a3740d311df01cbbd83da77509e84f7b92b0))
+* **meeting:** ship ox-aec in every install and turn echo cancellation on by default ([#634](https://github.com/anatolykoptev/ox-say/issues/634)) ([a6d55ac](https://github.com/anatolykoptev/ox-say/commit/a6d55acd613008cdd899220e6544c31a2dccf8a6))
+
 ## [0.1.35](https://github.com/anatolykoptev/ox-say/compare/v0.1.34...v0.1.35) (2026-11-16)
 
 
