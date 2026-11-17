@@ -15,6 +15,18 @@ final class MeetingModelsTests: XCTestCase {
         XCTAssertTrue(m.settled)
     }
 
+    /// The echo canceller's two warnings reach the app as their own flags, and a meeting without them reads neither.
+    func testTheEchoCancellerWarningsAreSeparateFlags() throws {
+        let failed = try XCTUnwrap(MeetingInfo.decode(Data(#"{"id":"x","status":"done","warnings":["aec_failed"]}"#.utf8)))
+        XCTAssertTrue(failed.aecFailed)
+        XCTAssertFalse(failed.aecMissing)
+        let missing = try XCTUnwrap(MeetingInfo.decode(Data(#"{"id":"x","status":"done","warnings":["aec_missing"]}"#.utf8)))
+        XCTAssertTrue(missing.aecMissing)
+        XCTAssertFalse(missing.aecFailed)
+        let clean = try XCTUnwrap(MeetingInfo.decode(Data(#"{"id":"x","status":"done","warnings":["no_system_audio"]}"#.utf8)))
+        XCTAssertFalse(clean.aecMissing || clean.aecFailed)
+    }
+
     func testAMissingIDIsNotAMeeting() {
         XCTAssertNil(MeetingInfo.decode(Data(#"{"status":"done"}"#.utf8)))
         XCTAssertNil(MeetingInfo.decode(Data(#"{"id":"x"}"#.utf8)), "no status at all is still not a meeting")

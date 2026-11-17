@@ -656,6 +656,12 @@ func (d *Daemon) initMeetings() {
 		// The far side's voices (Task 20): ox-diar when this Mac can run it, one label and a reason when not.
 		Diarize:      d.diarizer,
 		DiarizeReady: d.diarReady,
+		// The mic channel's echo canceller (phase 2b): ox-aec on the meeting
+		// dir when meeting_aec is on; the stage decides which file the "me"
+		// side is transcribed from.
+		AEC: func(ctx context.Context, dir string) (*meeting.AECReport, error) {
+			return meeting.RunAECBin(ctx, d.Cfg.AECBin, dir)
+		},
 		// Without unified memory the recognizer runs on the CPU, far slower than
 		// real time, and one call holds it for dictation too: short pieces.
 		PieceSeconds: d.pieceSeconds(),

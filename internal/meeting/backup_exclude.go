@@ -23,10 +23,11 @@ const backupExcludeAttr = "com.apple.metadata:com_apple_backup_excludeItem"
 var excludeBackup = excludeFromBackup
 
 // MakeWorkDir makes a meeting's scratch directory (0700) and marks it excluded from backup. work/ holds clips of the
-// meeting's audio and the diarizer's answer (voiceprints) for the length of a run; retention deletes it with the audio,
-// so a backup must not keep a copy. Only audio is excluded (the files of retiredNames): the transcript, notes and
-// manifest are kept for good and stay in the user's own backups. A failed mark is logged, never an error: a meeting
-// that cannot be processed is a worse outcome than a backed-up scratch directory.
+// meeting's audio, the diarizer's answer (voiceprints) and each aec run's directory for the length of a run; retention
+// deletes it with the audio, so a backup must not keep a copy. The mark lands where the file is made — the channel
+// files are marked by the app, work/ here, the aec output at publish — and only audio and audio-derived files carry
+// it: the transcript, notes and manifest are kept for good and stay in the user's own backups. A failed mark is
+// logged, never an error: a meeting that cannot be processed is a worse outcome than a backed-up scratch directory.
 func MakeWorkDir(meetingDir string) (string, error) {
 	work := filepath.Join(meetingDir, WorkDir)
 	if err := os.MkdirAll(work, 0o700); err != nil {

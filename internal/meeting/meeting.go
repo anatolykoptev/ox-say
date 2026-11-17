@@ -42,9 +42,14 @@ type Labels struct {
 
 // File names inside a meeting directory.
 const (
-	ManifestFile   = "meeting.json"
-	MePCM          = "me.pcm"
-	ThemPCM        = "them.pcm"
+	ManifestFile = "meeting.json"
+	MePCM        = "me.pcm"
+	ThemPCM      = "them.pcm"
+	// MeAECPCM is the mic channel after echo cancellation (the aec stage's
+	// output); AECJSON is the canceller's report. Both are written by ox-aec,
+	// beside the audio they were made from.
+	MeAECPCM       = "me.aec.pcm"
+	AECJSON        = "aec.json"
 	TranscriptJSON = "transcript.json"
 	TranscriptMD   = "transcript.md"
 	// RawTranscriptJSON is the turns as merged before the echo gate ran,
@@ -76,6 +81,12 @@ const (
 	// WarnDiarUnavailable: this Mac cannot tell voices apart (an old macOS, an unsupported CPU, no engine or models);
 	// one far-side label stands and Manifest.DiarReason says why. Not a failure: nothing was attempted.
 	WarnDiarUnavailable = "diarization_unavailable"
+	// WarnAECMissing: meeting_aec is on but the ox-aec binary is not on this
+	// Mac; the "me" channel was transcribed with the far side's echo in it.
+	WarnAECMissing = "aec_missing"
+	// WarnAECFailed: ox-aec ran but its output could not be trusted (a failed
+	// exit, an unreadable report, a diverged filter); the raw channel stands.
+	WarnAECFailed = "aec_failed"
 )
 
 // WaitSTTModel is Manifest.WaitingFor while the recognizer's model file is

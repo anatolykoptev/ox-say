@@ -121,6 +121,8 @@ public enum L10nKey: String, CaseIterable {
     case meetingLabelOther = "meeting.label.other"
     case noticeMeetingReady = "notice.meeting.ready"
     case noticeMeetingNoSystemAudio = "notice.meeting.no_system_audio"
+    case noticeMeetingAECMissing = "notice.meeting.aec_missing"
+    case noticeMeetingAECFailed = "notice.meeting.aec_failed"
     case noticeMeetingNotesPending = "notice.meeting.notes_pending"
     case noticeMeetingFailed = "notice.meeting.failed"
     case noticeMeetingStartFailed = "notice.meeting.start_failed"

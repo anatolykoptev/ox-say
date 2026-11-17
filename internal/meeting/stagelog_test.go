@@ -112,6 +112,7 @@ func TestStageLogCoversEveryStageInOrder(t *testing.T) {
 		got = append(got, step{r.attrs["stage"], r.attrs["event"]})
 	}
 	want := []step{
+		{"aec", "start"}, {"aec", "end"},
 		{"transcribe", "start"}, {"transcribe", "end"},
 		{"echo", "start"}, {"echo", "end"},
 		{"diarize", "start"}, {"diarize", "end"},
@@ -135,7 +136,7 @@ func TestStageLogCoversEveryStageInOrder(t *testing.T) {
 		t.Fatalf("summary total_ms = %q: %v", sums[0].attrs["total_ms"], err)
 	}
 	var sum int64
-	for _, stage := range []string{"transcribe", "echo", "diarize", "voices", "notes"} {
+	for _, stage := range []string{"aec", "transcribe", "echo", "diarize", "voices", "notes"} {
 		v, ok := sums[0].attrs[stage+"_ms"]
 		if !ok {
 			t.Fatalf("summary lacks %s_ms (attrs: %v)", stage, sums[0].attrs)

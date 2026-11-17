@@ -127,6 +127,8 @@ struct MeetingDetailView: View {
             }
             if info.audioDeleted { Notice(symbol: "clock.arrow.circlepath", text: L10nKey.meetingAudioDeleted.text) }
             if info.heardNoSystemAudio { Notice(symbol: "exclamationmark.triangle.fill", text: L10nKey.noticeMeetingNoSystemAudio.text, tint: .orange) }
+            if info.aecMissing { Notice(symbol: "exclamationmark.triangle.fill", text: L10nKey.noticeMeetingAECMissing.text, tint: .orange) }
+            if info.aecFailed { Notice(symbol: "exclamationmark.triangle.fill", text: L10nKey.noticeMeetingAECFailed.text, tint: .orange) }
         }
         .padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 12)
     }

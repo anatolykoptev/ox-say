@@ -711,6 +711,8 @@ final class MeetingController: NSObject, MeetingFeature {
     private func finished(id: String, status: MeetingInfo) async {
         guard let info = try? await host.client.meeting(id: id, withTexts: true) else { return }
         if info.heardNoSystemAudio { host.notify(L10nKey.noticeMeetingNoSystemAudio.text) }
+        if info.aecMissing { host.notify(L10nKey.noticeMeetingAECMissing.text) }
+        if info.aecFailed { host.notify(L10nKey.noticeMeetingAECFailed.text) }
         switch info.status {
         case .failed:
             host.notify(MeetingFailureNotice.announcement(for: info) ?? L10nKey.meetingFailedGeneric.text)
