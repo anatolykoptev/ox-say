@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -51,6 +52,8 @@ func aecStub(t *testing.T, mode string) string {
 		body = "head -c \"$(wc -c < \"$cap\")\" /dev/zero > \"$out\"\nprintf '%s\\n' '" + report + "' > \"$rep\"\n"
 	case "noout":
 		body = "head -c 100 \"$cap\" > \"$out\"\nprintf '%s\\n' '" + report + "' > \"$rep\"\n"
+	case "tmpfail": // a run killed mid-write: the engine's temp names, then death
+		body = "printf x > \"$out.tmp\"\nprintf x > \"$rep.tmp\"\nexit 1\n"
 	default:
 		t.Fatalf("aecStub: unknown mode %q", mode)
 	}
@@ -398,6 +401,287 @@ func TestRunAECBinClearsStaleOutputs(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			t.Errorf("stale %s survived a failed run", name)
 		}
+	}
+}
+
+// An empty channel file has nothing to cancel — the stage skips as no_audio, exactly like a missing one: no
+// warning, and the binary is never spawned.
+// Mutation: internal/meeting/aec.go channelsPresent, delete `|| st.Size() == 0` -> RED (the engine runs on an
+// empty capture and me.aec.pcm lands in the meeting directory).
+func TestAECEmptyChannelGetsNoAudio(t *testing.T) {
+	for _, name := range []string{MePCM, ThemPCM} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			aecOn(t, f)
+			f.r.AEC = aecRunner(aecStub(t, "ok"))
+			id := f.start(t, 30, 30, 5000, false)
+			dir, _ := f.r.Store.Dir(id)
+			if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			file, warns, err := f.r.aecStage(context.Background(), id, dir, newStageLog(f.r.Log, id, f.r.Now))
+			if err != nil || file != MePCM || len(warns) != 0 {
+				t.Fatalf("aecStage = %q %v %v, want me.pcm, no warning", file, warns, err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, MeAECPCM)); err == nil {
+				t.Fatal("the binary ran on an empty channel")
+			}
+			if last := f.r.LastAEC(); last == nil || last.Result != stageSkipped || last.Reason != aecReasonNoAudio {
+				t.Fatalf("LastAEC = %+v, want skipped/no_audio", last)
+			}
+		})
+	}
+}
+
+// aecGateStub writes an ox-aec fake for the collision test: it drops its report, touches the signal file,
+// then holds until the wait file exists before writing its output — so a second run can land in between.
+// marker is one letter; it lands in the report's "mark" field and as the output's every byte, so a mixed
+// pair is two files that disagree.
+func aecGateStub(t *testing.T, marker string, signal, wait string) string {
+	t.Helper()
+	dir := t.TempDir()
+	report := `{"frames":1,"lag_ms":[],"lag_measured":[],"stats":[],"render_active":0.5,` +
+		`"diverged":false,"alignment":"measured","mark":"` + marker + `"}`
+	body := "printf '%s\\n' '" + report + "' > \"$rep\"\n"
+	if signal != "" {
+		body += "touch '" + signal + "'\n"
+	}
+	if wait != "" {
+		body += "while [ ! -f '" + wait + "' ]; do sleep 0.05; done\n"
+	}
+	// marker as an octal byte for tr: the capture is the 5000 tone (writePCM), so every sample maps.
+	oct := fmt.Sprintf("%03o", marker[0])
+	body += "tr '\\210\\023' '\\" + oct + "\\" + oct + "' < \"$cap\" > \"$out\"\n"
+	script := `#!/bin/sh
+LC_ALL=C
+export LC_ALL
+cap= out= rep=
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--capture) cap="$2"; shift 2 ;;
+		--render) shift 2 ;;
+		--out) out="$2"; shift 2 ;;
+		--report) rep="$2"; shift 2 ;;
+		*) shift ;;
+	esac
+done
+` + body
+	bin := filepath.Join(dir, "ox-aec")
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// waitFile holds until path exists or the deadline passes.
+func waitFile(t *testing.T, path string) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", path)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// Two runs on one meeting, a slow one and a fast one: whichever pair ends up published, me.aec.pcm and
+// aec.json come from the SAME run — the report gates the publish, and the publish is one locked step. The
+// stubs mark report ("mark" field) and output (every byte) with their letter; a mixed pair fails.
+// Mutation: internal/meeting/aec.go RunAECBin, point --out and --report at dir (drop the run directory and
+// the publish step) -> RED (the slow run's late output overwrites half of the fast run's pair).
+func TestAECRunPublishesAMatchedPair(t *testing.T) {
+	dir := t.TempDir()
+	writePCM(t, dir, MePCM, 1, 5000)
+	writePCM(t, dir, ThemPCM, 1, 5000)
+	gates := t.TempDir()
+	repDone := filepath.Join(gates, "a-rep-done")
+	aGo := filepath.Join(gates, "a-go")
+	binA := aecGateStub(t, "A", repDone, aGo) // writes rep A, signals, waits for a-go, writes out A
+	binB := aecGateStub(t, "B", "", repDone)  // waits for A's report, writes rep B + out B
+	aDone := make(chan error, 1)
+	go func() {
+		_, err := RunAECBin(context.Background(), binA, dir)
+		aDone <- err
+	}()
+	waitFile(t, repDone)
+	if _, err := RunAECBin(context.Background(), binB, dir); err != nil {
+		t.Fatalf("the fast run: %v", err)
+	}
+	if err := os.WriteFile(aGo, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-aDone; err != nil {
+		t.Fatalf("the slow run: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, AECJSON))
+	if err != nil {
+		t.Fatalf("no published report: %v", err)
+	}
+	out, err := os.ReadFile(filepath.Join(dir, MeAECPCM))
+	if err != nil {
+		t.Fatalf("no published output: %v", err)
+	}
+	var repMark, outMark string
+	if strings.Contains(string(raw), `"mark":"A"`) {
+		repMark = "A"
+	} else if strings.Contains(string(raw), `"mark":"B"`) {
+		repMark = "B"
+	}
+	if len(out) > 0 {
+		outMark = string(out[0])
+	}
+	if repMark == "" || repMark != outMark {
+		t.Fatalf("published report is run %q's, published audio is run %q's: the pair is mixed", repMark, outMark)
+	}
+}
+
+// What a daemon killed mid-run leaves: the engine's <out>.tmp files inside its run dir, nothing beside the
+// recording. The stage's next pass removes the leftover — the runner takes one meeting at a time, so any
+// aec-<id> dir present is a dead run's. The temp names come from the engine's own rule (ox-aec.cpp renames
+// <out>.tmp and <report>.tmp), derived here from aecFiles so the account cannot drift.
+// Mutation: internal/meeting/aec.go aecStage, delete `sweepAECRunDirs(dir, r.Log)` -> RED (the stale run
+// directory survives the stage).
+func TestAECRunLeftoversAreSwept(t *testing.T) {
+	f := newFixture(t)
+	aecOn(t, f)
+	f.r.AEC = aecRunner(aecStub(t, "ok"))
+	id := f.start(t, 30, 30, 5000, false)
+	dir, _ := f.r.Store.Dir(id)
+	stale := filepath.Join(dir, WorkDir, aecRunPrefix+"1")
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range aecFiles {
+		writeFile(t, filepath.Join(stale, name+".tmp"), "partial")
+	}
+	file, _, err := f.r.aecStage(context.Background(), id, dir, newStageLog(f.r.Log, id, f.r.Now))
+	if err != nil || file != MeAECPCM {
+		t.Fatalf("aecStage = %q %v, want me.aec.pcm", file, err)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Error("the stale run directory survived the stage")
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, WorkDir, aecRunPrefix+"*")); len(left) != 0 {
+		t.Errorf("run directories left behind: %v", left)
+	}
+	if tops, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(tops) != 0 {
+		t.Errorf("engine temp files at the meeting level: %v", tops)
+	}
+}
+
+// An engine that writes its temp names and dies: the run dir goes with it, nothing lands beside the
+// recording, and the meeting falls back to the raw channel.
+// Mutation: internal/meeting/aec.go RunAECBin, delete the `defer` that removes rundir -> RED (the dead run's
+// directory survives with its temp files).
+func TestAECInterruptedRunLeavesNoAudioCopy(t *testing.T) {
+	f := newFixture(t)
+	aecOn(t, f)
+	f.r.AEC = aecRunner(aecStub(t, "tmpfail"))
+	id := f.start(t, 30, 30, 5000, false)
+	dir, _ := f.r.Store.Dir(id)
+	file, warns, err := f.r.aecStage(context.Background(), id, dir, newStageLog(f.r.Log, id, f.r.Now))
+	if err != nil || file != MePCM || !slices.Contains(warns, WarnAECFailed) {
+		t.Fatalf("aecStage = %q %v %v, want me.pcm with aec_failed", file, warns, err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, WorkDir, aecRunPrefix+"*")); len(left) != 0 {
+		t.Errorf("the dead run's directory survived: %v", left)
+	}
+	if tops, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(tops) != 0 {
+		t.Errorf("engine temp files at the meeting level: %v", tops)
+	}
+	for _, name := range aecFiles {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			t.Errorf("%s published by a run that died mid-write", name)
+		}
+	}
+}
+
+// A run directory the daemon could not clean (killed mid-write) and the published artifacts both go with
+// the audio at retention: work/ is retired whole and the aec names are on retiredNames.
+// Mutation: internal/meeting/retention.go retiredNames, delete `WorkDir` -> RED (the run dir's temps survive).
+func TestAECRunLeftoversGoWithTheAudio(t *testing.T) {
+	f := newFixture(t)
+	aecOn(t, f)
+	f.r.AEC = aecRunner(aecStub(t, "ok"))
+	id := f.start(t, 30, 30, 5000, false)
+	if err := f.r.Process(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := f.r.Store.Dir(id)
+	stale := filepath.Join(dir, WorkDir, aecRunPrefix+"1")
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var temps []string
+	for _, name := range aecFiles {
+		tmp := filepath.Join(stale, name+".tmp")
+		writeFile(t, tmp, "partial")
+		temps = append(temps, tmp)
+	}
+	f.now = f.now.Add(400 * 24 * time.Hour)
+	if n := f.r.SweepRetention(); n != 1 {
+		t.Fatalf("swept %d meetings, want 1", n)
+	}
+	for _, p := range temps {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s survived the sweep", p)
+		}
+	}
+	for _, name := range []string{MePCM, ThemPCM, MeAECPCM, AECJSON} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			t.Errorf("%s survived the sweep", name)
+		}
+	}
+}
+
+// A later run with the setting off still leaves no audio copy behind: the stage sweeps stale run dirs even
+// when the canceller itself never runs, and a finished transcription removes work/ whole.
+func TestAECOffRunLeavesNoAudioCopy(t *testing.T) {
+	f := newFixture(t) // meeting_aec never turned on
+	id := f.start(t, 30, 30, 5000, false)
+	dir, _ := f.r.Store.Dir(id)
+	stale := filepath.Join(dir, WorkDir, aecRunPrefix+"1")
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range aecFiles {
+		writeFile(t, filepath.Join(stale, name+".tmp"), "partial")
+	}
+	if err := f.r.Process(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, WorkDir, aecRunPrefix+"*")); len(left) != 0 {
+		t.Errorf("run directories left behind: %v", left)
+	}
+	if tops, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(tops) != 0 {
+		t.Errorf("engine temp files at the meeting level: %v", tops)
+	}
+	for _, name := range aecFiles {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			t.Errorf("%s exists after a run with the setting off", name)
+		}
+	}
+}
+
+// The published aec output leaves the backup the way the recorded channels and work/ do: retention deletes
+// it on a schedule and Time Machine must not keep a copy.
+// Mutation: internal/meeting/aec.go publishAEC, delete the `excludeBackup(out)` call -> RED (the published
+// file is not among the marked paths).
+func TestAECPublishedAudioIsExcludedFromBackup(t *testing.T) {
+	marked := recordExcluded(t)
+	f := newFixture(t)
+	aecOn(t, f)
+	f.r.AEC = aecRunner(aecStub(t, "ok"))
+	id := f.start(t, 30, 30, 5000, false)
+	if err := f.r.Process(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := f.r.Store.Dir(id)
+	if want := filepath.Join(dir, MeAECPCM); !slices.Contains(*marked, want) {
+		t.Fatalf("marked %v, want the published %s among them", *marked, want)
 	}
 }
 

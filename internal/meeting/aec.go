@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/anatolykoptev/ox-say/internal/oneshot"
@@ -43,6 +45,42 @@ const (
 	niceLevel = "15"
 )
 
+// aecRunPrefix names a per-run scratch directory inside work/: work/aec-<id>/.
+// ox-aec writes its output, its report and the <name>.tmp files it renames
+// them from only there, so an interrupted run leaves nothing beside the
+// recording, and the run dir is backup-excluded and swept with work/.
+const aecRunPrefix = "aec-"
+
+// aecRunIDRadix encodes the run id in the directory name: base36 keeps
+// work/aec-<id>/ short.
+const aecRunIDRadix = 36
+
+// aecRunSeq hands out the run ids: strictly increasing within the process and,
+// because an id never goes below the wall clock, larger than any id a previous
+// daemon run used. A stale run dir therefore always carries a smaller id.
+var aecRunSeq atomic.Int64
+
+// aecFileLocks serializes the clear and the publish of the two artifacts per
+// meeting directory: two runs that overlap (a re-queued run behind an orphaned
+// engine) each install a matched me.aec.pcm/aec.json pair, never one file from
+// each run.
+var aecFileLocks keyedLocks
+
+// nextAECRunID returns a run id larger than every id handed out before and
+// larger than the wall-clock moment a run dir existing now was named at.
+func nextAECRunID() int64 {
+	for {
+		last := aecRunSeq.Load()
+		id := time.Now().UnixNano()
+		if id <= last {
+			id = last + 1
+		}
+		if aecRunSeq.CompareAndSwap(last, id) {
+			return id
+		}
+	}
+}
+
 const aecWaitDelay = 3 * time.Second // how long a killed ox-aec has to exit before SIGKILL
 
 // AECReport is ox-aec's report file (AECJSON), the fields the stage reads:
@@ -69,26 +107,43 @@ func AECBinReady(bin string) bool {
 }
 
 // RunAECBin runs ox-aec on one meeting directory: capture me.pcm, render
-// them.pcm, output me.aec.pcm, report aec.json — the file names it is bound
-// to produce. It never writes me.pcm. ErrAECMissing when the binary is not
-// there or not executable; the child's own error otherwise; a report the run
-// did not leave readable is an error of its own. The daemon wires it as
-// Deps.AEC with Cfg.AECBin; tests wire it with a stub script.
+// them.pcm. The engine writes me.aec.pcm and aec.json — and the <name>.tmp
+// files it renames them from — inside a fresh per-run directory under work/,
+// which is backup-excluded and swept with the audio, so an interrupted run
+// leaves nothing beside the recording. Only when the report reads clean does
+// the run publish the pair into the meeting directory: an atomic rename under
+// the directory's lock, and the published audio is marked excluded from backup
+// like the raw channels are. It never writes me.pcm. ErrAECMissing when the
+// binary is not there or not executable; the child's own error otherwise; a
+// report the run did not leave readable is an error of its own. The daemon
+// wires it as Deps.AEC with Cfg.AECBin; tests wire it with a stub script.
 func RunAECBin(ctx context.Context, bin, dir string) (*AECReport, error) {
 	if !AECBinReady(bin) {
 		return nil, ErrAECMissing
 	}
-	// An earlier run's output must never pass for this run's: clear both before the child starts.
-	for _, name := range []string{MeAECPCM, AECJSON} {
-		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, err
+	work, err := MakeWorkDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	rundir, err := aecRunDir(work)
+	if err != nil {
+		return nil, err
+	}
+	// Ours alone; what stays in it is unreachable, and the stage sweep takes
+	// whatever a failure leaves.
+	defer func() {
+		if err := os.RemoveAll(rundir); err != nil {
+			slog.Warn("meeting: cannot remove the aec run directory", slog.String("dir", rundir), slog.Any("error", err))
 		}
+	}()
+	if err := clearAECPublished(dir); err != nil {
+		return nil, err
 	}
 	args := []string{
 		"--capture", filepath.Join(dir, MePCM),
 		"--render", filepath.Join(dir, ThemPCM),
-		"--out", filepath.Join(dir, MeAECPCM),
-		"--report", filepath.Join(dir, AECJSON),
+		"--out", filepath.Join(rundir, MeAECPCM),
+		"--report", filepath.Join(rundir, AECJSON),
 	}
 	if _, err := os.Stat(niceBin); err == nil {
 		bin, args = niceBin, append([]string{"-n", niceLevel, bin}, args...)
@@ -96,7 +151,55 @@ func RunAECBin(ctx context.Context, bin, dir string) (*AECReport, error) {
 	if _, err := oneshot.Run(ctx, bin, args, oneshot.Options{WaitDelay: aecWaitDelay}); err != nil {
 		return nil, err
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, AECJSON))
+	rep, err := readAECReport(filepath.Join(rundir, AECJSON))
+	if err != nil {
+		return nil, err
+	}
+	if aecPublishable(rep, rundir, dir) {
+		if err := publishAEC(dir, rundir); err != nil {
+			return nil, err
+		}
+	}
+	return rep, nil
+}
+
+// aecRunDir makes the run's scratch directory inside work/. The id is unique
+// to this run, so a directory that still holds the name can only be a dead
+// process's leftover — its writer has no publisher left to reach the meeting
+// — and it goes and the mkdir is retried once.
+func aecRunDir(work string) (string, error) {
+	rundir := filepath.Join(work, aecRunPrefix+strconv.FormatInt(nextAECRunID(), aecRunIDRadix))
+	if err := os.Mkdir(rundir, 0o700); err == nil {
+		return rundir, nil
+	} else if !errors.Is(err, os.ErrExist) {
+		return "", err
+	}
+	if err := os.RemoveAll(rundir); err != nil {
+		return "", err
+	}
+	if err := os.Mkdir(rundir, 0o700); err != nil {
+		return "", err
+	}
+	return rundir, nil
+}
+
+// clearAECPublished removes the published pair before a run: an earlier run's
+// output must never pass for this run's. Under the publish lock so a
+// concurrent publisher's pair is not taken apart mid-swap.
+func clearAECPublished(dir string) error {
+	unlock := aecFileLocks.lock(dir)
+	defer unlock()
+	for _, name := range []string{MeAECPCM, AECJSON} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// readAECReport reads the report a finished run left inside its run directory.
+func readAECReport(path string) (*AECReport, error) {
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -105,6 +208,58 @@ func RunAECBin(ctx context.Context, bin, dir string) (*AECReport, error) {
 		return nil, fmt.Errorf("meeting: %s: %w", AECJSON, err)
 	}
 	return &rep, nil
+}
+
+// aecPublishable is the publish gate: the report parsed, the engine neither
+// skipped nor diverged, and the output is whole. Anything less stays inside
+// the run dir — the meeting dir only ever holds a blessed pair.
+func aecPublishable(rep *AECReport, rundir, dir string) bool {
+	return rep.Skipped == "" && !rep.Diverged &&
+		aecOutputWhole(filepath.Join(rundir, MeAECPCM), filepath.Join(dir, MePCM))
+}
+
+// publishAEC moves the blessed pair into the meeting directory as one step
+// under the directory's lock: the output first, then the report; a report
+// that will not move takes the output back out, so the pair a reader sees
+// always comes from one run. The published audio is then marked excluded
+// from backup, like the raw channels and work/ are: retention deletes it on
+// a schedule and a backup must not keep a copy. A failed mark is logged,
+// never an error — the same rule MakeWorkDir follows.
+func publishAEC(dir, rundir string) error {
+	unlock := aecFileLocks.lock(dir)
+	defer unlock()
+	out := filepath.Join(dir, MeAECPCM)
+	if err := os.Rename(filepath.Join(rundir, MeAECPCM), out); err != nil {
+		return err
+	}
+	if err := os.Rename(filepath.Join(rundir, AECJSON), filepath.Join(dir, AECJSON)); err != nil {
+		if rerr := os.Remove(out); rerr != nil {
+			slog.Warn("meeting: aec output left published without its report", slog.String("file", out), slog.Any("error", rerr))
+		}
+		return err
+	}
+	if err := excludeBackup(out); err != nil {
+		slog.Warn("meeting: could not exclude the aec output from backup", slog.String("file", out), slog.Any("error", err))
+	}
+	return nil
+}
+
+// sweepAECRunDirs removes every per-run directory the engine left inside
+// work/. The runner takes one meeting at a time and the stage runs once in
+// it, so when the aec stage starts on a meeting no run of its own can still
+// be live in this process: every aec-<id> here belongs to a run whose daemon
+// died, and an orphaned engine still writing into one can only lose its
+// files — its output has no publisher left to reach the meeting.
+func sweepAECRunDirs(dir string, log *slog.Logger) {
+	stale, err := filepath.Glob(filepath.Join(dir, WorkDir, aecRunPrefix+"*"))
+	if err != nil {
+		return // the pattern is fixed; a glob error cannot happen
+	}
+	for _, d := range stale {
+		if err := os.RemoveAll(d); err != nil {
+			log.Warn("meeting: cannot remove a stale aec run directory", slog.String("dir", d), slog.Any("error", err))
+		}
+	}
 }
 
 // AECRun is the /status "last aec" value: how the last stage ended and the
@@ -144,6 +299,7 @@ type aecVerdict struct {
 func (r *Runner) aecStage(ctx context.Context, id, dir string, sl *stageLog) (file string, warns []string, err error) {
 	done := sl.begin(stageAEC)
 	at := r.Now()
+	sweepAECRunDirs(dir, r.Log)
 	v, err := r.aecVerdict(ctx, dir, sl)
 	if err != nil {
 		v = aecVerdict{result: stageFailed, reason: errClass(err)}
@@ -208,11 +364,12 @@ func reportVerdict(rep *AECReport, dir string) aecVerdict {
 	return v
 }
 
-// channelsPresent is whether both channel files are on disk: the canceller
-// needs the mic and the far side, and retention removes them together.
+// channelsPresent is whether both channel files are on disk and hold bytes:
+// the canceller needs the mic and the far side, retention removes them
+// together, and an empty channel is no audio, the same as a missing one.
 func channelsPresent(dir string) bool {
 	for _, name := range []string{MePCM, ThemPCM} {
-		if st, err := os.Stat(filepath.Join(dir, name)); err != nil || !st.Mode().IsRegular() {
+		if st, err := os.Stat(filepath.Join(dir, name)); err != nil || !st.Mode().IsRegular() || st.Size() == 0 {
 			return false
 		}
 	}
@@ -259,16 +416,22 @@ func aecAttrs(rep *AECReport) (attrs []slog.Attr, run AECRun) {
 	return attrs, run
 }
 
-// aecOutputOK trusts me.aec.pcm only when it is all there: a regular file as
-// long as the capture it was made from. A short or missing output means the
-// timeline the transcript assumes is broken, so the stage calls it failed.
+// aecOutputOK trusts the published me.aec.pcm only when it is all there.
 func aecOutputOK(dir string) bool {
-	out, err := os.Stat(filepath.Join(dir, MeAECPCM))
-	if err != nil || !out.Mode().IsRegular() || out.Size() == 0 {
+	return aecOutputWhole(filepath.Join(dir, MeAECPCM), filepath.Join(dir, MePCM))
+}
+
+// aecOutputWhole trusts the canceller's output only when it is all there: a
+// regular file as long as the capture it was made from. A short or missing
+// output means the timeline the transcript assumes is broken, so the stage
+// calls it failed — and the run does not publish it.
+func aecOutputWhole(out, capture string) bool {
+	st, err := os.Stat(out)
+	if err != nil || !st.Mode().IsRegular() || st.Size() == 0 {
 		return false
 	}
-	in, err := os.Stat(filepath.Join(dir, MePCM))
-	return err != nil || in.Size() == out.Size()
+	in, err := os.Stat(capture)
+	return err != nil || in.Size() == st.Size()
 }
 
 // heardAnything is whether a recorded channel file holds sound anywhere: the "no audio" warning's own test, run on

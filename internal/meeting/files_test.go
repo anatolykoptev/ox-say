@@ -99,6 +99,14 @@ func TestEveryMeetingFileIsAccountedFor(t *testing.T) {
 	if !slices.Contains(workFiles, DiarizationJSON) {
 		t.Errorf("the diarizer's answer must be on workFiles")
 	}
+	// The engine's temp names — each aec file plus ".tmp", ox-aec's write-then-rename rule — are no package
+	// constant and need no list entry: they only ever exist inside work/aec-<id>/, and work/ goes whole. The
+	// sweep tests above and TestAECRunLeftoversGoWithTheAudio write the derived names and see them removed.
+	for _, name := range aecFiles {
+		if _, ok := consts[name+".tmp"]; ok {
+			t.Errorf("a constant names the engine temp %q: it belongs inside work/aec-<id>/, not on a list", name+".tmp")
+		}
+	}
 }
 
 // The keep list is a promise too: a sweep takes the audio and the work files and nothing else. Every file of every
@@ -130,6 +138,18 @@ func TestASweepTakesTheAudioAndTheWorkFilesAndKeepsTheRest(t *testing.T) {
 	}
 	piece := filepath.Join(dir, WorkDir, "them-0-30.json") // a piece cache: not a named work file, goes with work/ (#256)
 	writeFile(t, piece, "cached")
+	// A run dir the daemon could not clean, with the engine's temps inside it: not named files either, they
+	// go with work/. The temp names are derived from aecFiles by the engine's own <out>.tmp rule, so they
+	// cannot drift from the code's.
+	rundir := filepath.Join(dir, WorkDir, aecRunPrefix+"1")
+	if err := os.MkdirAll(rundir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var temps []string
+	for _, name := range aecFiles {
+		temps = append(temps, filepath.Join(rundir, name+".tmp"))
+		writeFile(t, temps[len(temps)-1], "partial")
+	}
 	kept := map[string]string{}
 	for _, name := range keptFiles {
 		if name == ManifestFile {
@@ -163,6 +183,11 @@ func TestASweepTakesTheAudioAndTheWorkFilesAndKeepsTheRest(t *testing.T) {
 	}
 	if _, err := os.Stat(piece); err == nil {
 		t.Errorf("the piece cache survived the sweep")
+	}
+	for _, p := range temps {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s survived the sweep", p)
+		}
 	}
 	for name, want := range kept {
 		if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(got) != want {
