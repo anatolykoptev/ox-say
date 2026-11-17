@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.37](https://github.com/anatolykoptev/ox-say/compare/v0.1.36...v0.1.37) (2026-11-17)
+
+
+### Added
+
+* **glossary:** let agents file pairs over MCP with glossary_add ([#635](https://github.com/anatolykoptev/ox-say/issues/635)) ([24398eb](https://github.com/anatolykoptev/ox-say/commit/24398eb89dcd2bbc3a6ac4f4687841f205c5fc35))
+
+
+### Fixed
+
+* **app:** drop the Unicode-string override from synthetic ⌘V/⌘C ([#637](https://github.com/anatolykoptev/ox-say/issues/637)) ([#639](https://github.com/anatolykoptev/ox-say/issues/639)) ([fb3fc1c](https://github.com/anatolykoptev/ox-say/commit/fb3fc1c1b1108508ce32ee2fd8a7e2e9d2617cbd))
+
 ## [0.1.36](https://github.com/anatolykoptev/ox-say/compare/v0.1.35...v0.1.36) (2026-11-17)
 
 
