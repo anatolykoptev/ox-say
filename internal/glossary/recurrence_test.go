@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 )
 
 func vettedCandidate(heard, meant string) Pair {
@@ -75,11 +76,15 @@ func TestRecordDictation(t *testing.T) {
 		t.Fatalf("pair = %+v", ps[0])
 	}
 	// now active: a further call changes nothing and does not rewrite the file
-	before, _ := os.ReadFile(path)
+	// Mutation: recurrence.go RecordDictation, delete the `if rec.Sightings == 0 { return }` -> RED (the mtime moves).
+	past := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(path, past, past); err != nil {
+		t.Fatal(err)
+	}
 	rec, err = s.RecordDictation(map[string][]string{ID("zorbex"): {"ffffffff"}})
-	after, _ := os.ReadFile(path)
-	if err != nil || rec.Sightings != 0 || string(before) != string(after) {
-		t.Fatalf("rec = %+v, %v", rec, err)
+	st, serr := os.Stat(path)
+	if err != nil || serr != nil || rec.Sightings != 0 || !st.ModTime().Equal(past) {
+		t.Fatalf("rec = %+v, %v; stat %v, %v: the file was rewritten for nothing", rec, err, st, serr)
 	}
 }
 

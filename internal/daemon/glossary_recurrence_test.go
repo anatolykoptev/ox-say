@@ -140,8 +140,8 @@ func wantCounts(t *testing.T, p glossary.Pair, sightings, fromDictation int, sta
 // A vetted candidate's heard form in a new dictation sentence is one sighting from dictation; the same
 // sentence dictated again adds nothing; a second distinct sentence reaches needed (2) and the pair turns
 // active; the dictation after that gets the correction.
-// Mutation: sessions.go sttSessionOp, delete the d.noteDictation call -> RED (no sighting).
-// Mutation: glossary/store.go RecordDictation, drop the slices.Contains(p.Sightings, h) test -> RED (the
+// Mutation: glossary_recurrence.go finishRewrite, delete the d.noteDictation(raw) call -> RED (no sighting).
+// Mutation: glossary/recurrence.go addDictation, drop slices.Contains(p.Sightings, h) -> RED (the
 // repeated sentence counts again).
 func TestDictationRecurrenceCountsAndActivates(t *testing.T) {
 	r := newDictRig(t)
@@ -175,8 +175,8 @@ func TestDictationRecurrenceCountsEachSentence(t *testing.T) {
 }
 
 // A pair with no verdict, or whose heard form is an ordinary word, never gains a passive sighting.
-// Mutation: glossary/recurrence.go NewRecurrence, drop the p.Vetted condition -> RED (the ordinary-word pair
-// gains a sighting).
+// Mutation: glossary/recurrence.go NewRecurrence and RecordDictation, drop the Vetted conditions (both: the
+// store re-checks the verdict) -> RED (the unvetted pair gains sightings and activates).
 func TestDictationRecurrenceNeedsAVettedPair(t *testing.T) {
 	r := newDictRig(t)
 	r.candidate(t, recHeard, recMeant, false)
@@ -225,9 +225,9 @@ func TestDictationRecurrenceRestartsAfterAnEdit(t *testing.T) {
 
 // A meeting transcript and a file transcription that say the heard form are not dictation. A dictation of
 // the same form at the end proves the pair could have counted.
-// Mutation: glossary_http.go corrector, call d.noteDictation on every corrected text -> RED (the meeting
+// Mutation: meetings.go initMeetings, call d.noteDictationText(s) in the Correct fixer -> RED (the meeting
 // leg gains a sighting).
-// Mutation: transcribe.go handleTranscribe, call d.noteDictation(res) before correctResult -> RED (the file
+// Mutation: transcribe.go handleTranscribe, call d.noteDictationText(res.Text) before correctResult -> RED (the file
 // leg gains a sighting).
 func TestDictationRecurrenceIgnoresMeetingsAndFiles(t *testing.T) {
 	r := newDictRig(t)
@@ -311,8 +311,8 @@ func TestDictationRecurrenceKeepsNoSentence(t *testing.T) {
 	}
 }
 
-// A dictation with no candidate's form in it writes nothing: the file keeps its bytes and its mtime.
-// Mutation: store.go RecordDictation, save unconditionally -> RED (the mtime moves).
+// (The store-level mutation for this lives in glossary.TestRecordDictation.)
+// Mutation: glossary/recurrence.go RecordDictation, save unconditionally -> RED (the mtime moves).
 func TestDictationRecurrenceWritesNothingWithoutAMatch(t *testing.T) {
 	r := newDictRig(t)
 	r.candidate(t, recHeard, recMeant, true)
@@ -341,7 +341,7 @@ func TestDictationRecurrenceWritesNothingWithoutAMatch(t *testing.T) {
 
 // The recognizer's raw output is what counts: an active pair that rewrites the words around the heard form
 // does not hide it.
-// Mutation: sessions.go sttSessionOp, call d.noteDictation(out) on the corrected body instead of the raw
+// Mutation: glossary_recurrence.go finishRewrite, call d.noteDictation(out) on the corrected body instead of the raw
 // one -> RED (the active pair "zorbex quill" turns the form into "Zq" before it is counted).
 func TestDictationRecurrenceCountsTheRawOutput(t *testing.T) {
 	r := newDictRig(t)
