@@ -4,6 +4,7 @@ package meeting
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -56,5 +57,23 @@ func TestARealWorkDirIsExcludedAndTheRestOfTheMeetingIsNot(t *testing.T) {
 		if has(p) {
 			t.Errorf("%s is excluded from backup: the transcript and notes under it must stay in the user's backup", name)
 		}
+	}
+}
+
+// The real attribute on the file Time Machine would hold after retention deletes it: a finished aec run's
+// published me.aec.pcm carries the mark. aec.json, the report a user may want to keep, does not need it.
+// Mutation: internal/meeting/aec.go publishAEC, delete the `excludeBackup(out)` call -> RED (attribute not
+// found on the published output).
+func TestAECPublishedOutputCarriesTheRealAttribute(t *testing.T) {
+	f := newFixture(t)
+	aecOn(t, f)
+	f.r.AEC = aecRunner(aecStub(t, "ok"))
+	id := f.start(t, 30, 30, 5000, false)
+	if err := f.r.Process(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := f.r.Store.Dir(id)
+	if _, err := unix.Getxattr(filepath.Join(dir, MeAECPCM), backupExcludeAttr, make([]byte, 128)); err != nil {
+		t.Fatalf("published aec output not marked excluded from backup: %v", err)
 	}
 }
