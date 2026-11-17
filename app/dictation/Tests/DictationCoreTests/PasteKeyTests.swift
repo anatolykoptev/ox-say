@@ -22,40 +22,44 @@ final class PasteKeyTests: XCTestCase {
         XCTAssertEqual(PasteKey.commandV(lookup: { _ in nil }), PasteKey.ansiV)
     }
 
-    /// The Unicode string the synthetic ⌘V / ⌘C events carry: the letter the key is chosen to type under ⌘.
-    func testTheEventsCarryTheLetterTheirKeyTypesUnderCommand() {
-        XCTAssertEqual(PasteKey.commandVUnits, [0x76])
-        XCTAssertEqual(PasteKey.commandCUnits, [0x63])
-    }
-
-    /// #58: the synthetic ⌘V / ⌘C, built by the factory the app posts from and read back without posting anything.
-    /// Under "Dvorak - QWERTY Command" the event built for the chosen key code carries the plain table's letter ("k" for
-    /// the QWERTY V position) unless the letter is set outright; an app matching key equivalents on the string would
-    /// miss the paste. Key codes: QWERTY, the Dvorak position of the letter, and one that is never that letter.
-    /// Mutation (call site): PasteKey.commandEvents, delete the `event.keyboardSetUnicodeString(` line -> RED
-    /// (the unicode string of the 47/38 events is the layout's own); `.maskCommand` -> `[]` -> RED (flags).
-    func testTheSyntheticCommandKeysCarryTheirLetterAndOnlyCommand() throws {
-        let cases: [(PasteKey.CommandLetter, [UInt16], [CGKeyCode])] = [
-            (.v, Array("v".utf16), [9, 47, 38]),
-            (.c, Array("c".utf16), [8, 34, 38]),
+    /// #637: the synthetic ⌘V / ⌘C, built by the factory the app posts from and read back without posting anything.
+    /// The events set no Unicode string of their own — an explicit "v"/"c" made Chromium's web content drop the
+    /// keystroke — so each is diffed against a CGEvent built without an override for the same key code; the check
+    /// holds on any layout. Under "Dvorak - QWERTY Command" the string the system fills is the plain table's letter
+    /// for the chosen key ("k" on the QWERTY V position), not the letter the key types with ⌘; no app or test is
+    /// known to match key equivalents on it. Key codes: QWERTY, the Dvorak position of the letter, and one that is
+    /// never that letter.
+    /// Mutation (call site): PasteKey.commandEvents, put back `event.keyboardSetUnicodeString(` -> RED
+    /// (the strings the system fills for 47/38/34 are not "v"/"c"); `.maskCommand` -> `[]` -> RED (flags).
+    func testTheSyntheticCommandKeysCarryNoExplicitString() throws {
+        let cases: [(PasteKey.CommandLetter, [CGKeyCode])] = [
+            (.v, [9, 47, 38]),
+            (.c, [8, 34, 38]),
         ]
-        for (letter, expected, codes) in cases {
+        for (letter, codes) in cases {
             for code in codes {
                 let events = try XCTUnwrap(PasteKey.commandEvents(letter, keyCode: code, source: nil), "no event for \(letter) on \(code)")
                 for (name, event, type) in [("down", events.down, CGEventType.keyDown), ("up", events.up, .keyUp)] {
                     let label = "\(letter) key \(code) \(name)"
                     XCTAssertEqual(event.type, type, label)
                     XCTAssertEqual(event.getIntegerValueField(.keyboardEventKeycode), Int64(code), label)
-                    var length = 0
-                    var buffer = [UniChar](repeating: 0, count: 8)
-                    event.keyboardGetUnicodeString(maxStringLength: 8, actualStringLength: &length, unicodeString: &buffer)
-                    XCTAssertEqual(Array(buffer.prefix(length)), expected, "\(label): the letter")
-                    XCTAssertTrue(event.flags.contains(.maskCommand), "\(label): Command")
-                    let others: CGEventFlags = [.maskShift, .maskControl, .maskAlternate, .maskSecondaryFn]
-                    XCTAssertTrue(event.flags.intersection(others).isEmpty, "\(label): only Command, got \(event.flags.rawValue)")
+                    let reference = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: code,
+                                                        keyDown: type == .keyDown), label)
+                    reference.flags = .maskCommand
+                    XCTAssertEqual(unicodeString(event), unicodeString(reference),
+                                   "\(label): the string the system fills in")
+                    XCTAssertEqual(event.flags, .maskCommand, label)
                 }
             }
         }
+    }
+
+    /// The Unicode string an event carries, as the system filled it or an explicit call set it.
+    private func unicodeString(_ event: CGEvent) -> [UniChar] {
+        var length = 0
+        var buffer = [UniChar](repeating: 0, count: 8)
+        event.keyboardGetUnicodeString(maxStringLength: 8, actualStringLength: &length, unicodeString: &buffer)
+        return Array(buffer.prefix(length))
     }
 
     private func appSource(_ file: String) -> String {
