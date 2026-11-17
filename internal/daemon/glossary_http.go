@@ -270,7 +270,7 @@ func (d *Daemon) invalidateGlossary() {
 func (d *Daemon) glossaryPairs() []glossary.Pair {
 	pairs, _ := d.glossaryPairsGen()
 	// a fresh slice: pairs is the cache's own backing array, shared by every concurrent caller
-	return slices.Concat(pairs, d.packFixPairs())
+	return slices.Concat(pairs, d.packFixPairs(pairs))
 }
 
 // glossaryPairsGen is glossaryPairs plus a generation that moves on every

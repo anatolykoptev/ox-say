@@ -3,12 +3,17 @@ package daemon
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"fmt"
+	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/glossary"
+	"github.com/anatolykoptev/ox-say/internal/meeting"
 	"github.com/anatolykoptev/ox-say/internal/stt"
+	"github.com/anatolykoptev/ox-say/internal/testutil"
 )
 
 func putPacks(t *testing.T, mux http.Handler, body string) int {
@@ -34,7 +39,7 @@ func TestCodeVocabularySettingRoundTrip(t *testing.T) {
 	if got := settingsOf(t, mux).CodeVocabulary; strings.Join(got, ",") != "python,rust" {
 		t.Fatalf("GET = %v, want [python rust]", got)
 	}
-	if st := d.Status().CodeVocabulary; strings.Join(st.Packs, ",") != "python,rust" || st.BoostCap != stt.LegacyTerms {
+	if st := d.Status().CodeVocabulary; strings.Join(st.Packs, ",") != "python,rust" || st.BoostCap != glossary.MaxBoostTerms {
 		t.Fatalf("status = %+v", st)
 	}
 	if code := putPacks(t, mux, `{"retention_days":7}`); code != http.StatusOK || len(settingsOf(t, mux).CodeVocabulary) != 2 {
@@ -81,79 +86,6 @@ func TestPackToggleRebuildsBoostGlossaryFirst(t *testing.T) {
 	}
 }
 
-// The wire an engine gets: the legacy 4 KB / 200-term wire until ox-stt reports the large header; glossary terms
-// first either way, so a cap drops pack terms and never a glossary one.
-// Mutation: boost.go sttBoost, always `Wide: true` -> RED (the legacy header exceeds 4 KB).
-func TestWireIsLegacyUntilTheEngineReportsTheLargeHeader(t *testing.T) {
-	dd, _ := boostDaemon(t, map[string]string{"оксей": "OxSay", "дэвин": "Devin"})
-	m := http.NewServeMux()
-	dd.Routes(m)
-	if code := putPacks(t, m, `{"code_vocabulary":["python","go","rust"]}`); code != http.StatusOK {
-		t.Fatalf("PUT = %d", code)
-	}
-	b := dd.sttBoost()
-	if b.Wide {
-		t.Fatal("an engine that never reported max_terms_header must get the legacy wire")
-	}
-	legacy := b.Header()
-	if len(legacy) == 0 || len(legacy) > stt.LegacyHeaderBytes {
-		t.Fatalf("legacy header = %d bytes, want 1..%d", len(legacy), stt.LegacyHeaderBytes)
-	}
-	_, terms := decodeWire(t, legacy)
-	if len(terms) > stt.LegacyTerms || !strings.HasPrefix(terms[0], "Devin\t") || !strings.HasPrefix(terms[1], "OxSay\t") {
-		t.Fatalf("legacy wire: %d terms, the glossary (newest first) must lead: %q %q", len(terms), terms[0], terms[1])
-	}
-	dd.sttWide.Store(true)
-	wide := dd.sttBoost()
-	if !wide.Wide || len(wide.Header()) <= stt.LegacyHeaderBytes {
-		t.Fatalf("a wide engine must get more than the legacy header: %d bytes", len(wide.Header()))
-	}
-	if st := dd.Status().CodeVocabulary; !st.WideWire || st.BoostCap != stt.MaxTerms || st.BoostTerms <= len(terms) {
-		t.Fatalf("status = %+v", st)
-	}
-}
-
-func fakeHealth(t *testing.T, body string, code int) string {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(code)
-		_, _ = w.Write([]byte(body))
-	}))
-	t.Cleanup(srv.Close)
-	return srv.URL
-}
-
-// The capability probe: only a /health that reports max_terms_header >= the large header makes the wire wide;
-// an old engine (no field), garbage, an error status or a dead port all keep it legacy, and none fails the start.
-// Mutation: codevocab.go probeSTTCaps, `wide = true` unconditionally -> RED on the old-engine case.
-func TestProbeSTTCaps(t *testing.T) {
-	d, _ := meetingFixture(t, nil)
-	t.Cleanup(d.Shutdown)
-	for _, tc := range []struct {
-		name, body string
-		code       int
-		want       bool
-	}{
-		{"new engine", `{"status":"ok","max_terms_header":16384}`, 200, true},
-		{"old engine", `{"status":"ok"}`, 200, false},
-		{"smaller than the large header", `{"status":"ok","max_terms_header":4096}`, 200, false},
-		{"garbage", `<html>`, 200, false},
-		{"error status", `{"max_terms_header":16384}`, 500, false},
-	} {
-		d.sttWide.Store(!tc.want) // the probe must overwrite whatever an earlier engine said
-		if err := d.probeSTTCaps(context.Background(), fakeHealth(t, tc.body, tc.code)); err != nil {
-			t.Fatalf("%s: the probe must never fail the engine start: %v", tc.name, err)
-		}
-		if d.sttWide.Load() != tc.want {
-			t.Errorf("%s: wide = %v, want %v", tc.name, d.sttWide.Load(), tc.want)
-		}
-	}
-	d.sttWide.Store(true)
-	if err := d.probeSTTCaps(context.Background(), "http://127.0.0.1:1"); err != nil || d.sttWide.Load() {
-		t.Errorf("a dead engine: err %v wide %v, want nil and legacy", err, d.sttWide.Load())
-	}
-}
-
 // The post-pass with the packs on: safe heard forms rewrite, a fused identifier joins on its exact spoken form,
 // and no ordinary word or phrase is ever rewritten. With the packs off nothing changes.
 // Mutation: codevocab.go RewritePairs, drop the `fused(a, t.Written)` guard -> RED (the unsafe single words
@@ -170,14 +102,15 @@ func TestPackPostPass(t *testing.T) {
 	if code := putPacks(t, mux, `{"code_vocabulary":["python","go","rust"]}`); code != http.StatusOK {
 		t.Fatalf("PUT = %d", code)
 	}
-	if out, want := fix()(in), "pass kwargs to the pie test, the TypeError and the goroutine in the dataclass"; out != want {
+	if out, want := fix()(in), "pass kwargs to the pie test, the TypeError and the go routine in the dataclass"; out != want {
 		t.Fatalf("packs on: %q, want %q", out, want)
 	}
 	for _, prose := range []string{
 		"the chords of the song", "a trip to Tokyo", "the salary and the celery", "a bull and a gill",
 		"it is rough", "the tray and the knit", "Jason is optional", "a union and a generator", "a box",
 		"a sync point", "all pointer types", "this error is fine", "a unit test", "the class method",
-		"the context manager", "air group", "это обычная речь про соль и сахар",
+		"the context manager", "air group", "это обычная речь про соль и сахар", "Can you trace back the payment?",
+		"That was a beautiful soup.", "Please go routine by routine.", "Мне нравится beautiful soup.",
 	} {
 		if out := fix()(prose); out != prose {
 			t.Errorf("ordinary prose %q rewritten to %q", prose, out)
@@ -199,4 +132,138 @@ func TestGlossaryPairBeatsPackPair(t *testing.T) {
 	if out, _ := glossary.Apply("Quargs", d.glossaryPairs()); out != "KWARGS-OWNER" {
 		t.Fatalf("got %q, the owner's glossary pair must win over the pack", out)
 	}
+}
+
+// Packs off is main: the decoder lines are exactly the owner's lines and the post-pass pairs are exactly the owner's
+// pairs, in order. The packs only ever ADD after the owner.
+// Mutation: boost.go withPackTerms, drop the `len(packs) == 0` early return AND append unconditionally -> RED.
+func TestPacksOffIsMain(t *testing.T) {
+	d, _ := boostDaemon(t, map[string]string{"оксей": "OxSay", "дэвин": "Devin", "томл": "TOML"})
+	owner, _ := d.glossaryPairsGen()
+	if got, want := d.sttBoost().Terms, d.boostTermsFor(owner); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("packs off: boost lines %q differ from the owner-only derivation %q", got, want)
+	}
+	if got := d.glossaryPairs(); len(got) != len(owner) {
+		t.Fatalf("packs off: %d post-pass pairs, the owner has %d", len(got), len(owner))
+	}
+	for i, p := range d.glossaryPairs() {
+		if !reflect.DeepEqual(p, owner[i]) {
+			t.Fatalf("pair %d differs from the owner's", i)
+		}
+	}
+}
+
+// Owner lines are untouchable: with packs on they are a byte-identical prefix of the list, a pack never joins an
+// owner's group (the owner's TOML keeps its own aliases), and a pack line naming an owner's written form is dropped.
+// Mutation: boost.go sttBoost/deriveBoost, derive from owner+pack pairs together (the old merge) -> RED.
+func TestOwnerLinesAreAPrefixAndPacksNeverJoinThem(t *testing.T) {
+	d, _ := boostDaemon(t, map[string]string{"оксей": "OxSay", "томл": "TOML", "дэвин": "Devin"})
+	mux := http.NewServeMux()
+	d.Routes(mux)
+	off := append([]string{}, d.sttBoost().Terms...)
+	if code := putPacks(t, mux, `{"code_vocabulary":["python","go","rust"]}`); code != http.StatusOK {
+		t.Fatalf("PUT = %d", code)
+	}
+	on := d.sttBoost().Terms
+	if len(on) <= len(off) {
+		t.Fatalf("packs added nothing: %d vs %d", len(on), len(off))
+	}
+	for i, l := range off {
+		if on[i] != l {
+			t.Fatalf("owner line %d changed: %q -> %q", i, l, on[i])
+		}
+	}
+	for _, l := range on[len(off):] {
+		if strings.HasPrefix(l, "TOML\t") || strings.HasPrefix(l, "OxSay\t") {
+			t.Fatalf("a pack line %q repeats an owner's written form", l)
+		}
+	}
+}
+
+// With an owner-sized glossary (~95 pairs, ~1.7 KB of term lines) and every pack on, no owner line is trimmed by
+// the wire budget and pack lines fill what is left.
+// Mutation: stt boost.go Fit, ranging over the list tail-first -> RED in internal/stt; here, the owner lines are first.
+func TestOwnerGlossaryFitsBeforeThePacks(t *testing.T) {
+	pairs := map[string]string{}
+	for i := 0; i < 95; i++ {
+		pairs[fmt.Sprintf("оксей%02d", i)] = fmt.Sprintf("Name%02d", i)
+	}
+	d, _ := boostDaemon(t, pairs)
+	mux := http.NewServeMux()
+	d.Routes(mux)
+	owner := len(d.sttBoost().Terms)
+	if code := putPacks(t, mux, `{"code_vocabulary":["python","go","rust"]}`); code != http.StatusOK {
+		t.Fatalf("PUT = %d", code)
+	}
+	b := d.sttBoost()
+	fit := b.Fit(stt.MaxWireJSON)
+	if fit < owner {
+		t.Fatalf("the wire fits %d lines, the owner has %d: an owner term is trimmed", fit, owner)
+	}
+	if fit == owner || len(b.JSON(stt.MaxWireJSON)) > stt.MaxWireJSON {
+		t.Fatalf("no pack line fits after %d owner lines (fit %d)", owner, fit)
+	}
+}
+
+// An owner pair beats a pack pair in the post-pass even when the pack phrase is longer.
+// Mutation: glossary_http.go glossaryPairs, `d.packFixPairs(pairs)` -> `d.packFixPairs(nil)` -> RED.
+func TestOwnerPairBeatsLongerPackPair(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+	approvedPair(t, d, "dunder", "Dunder")
+	if code := putPacks(t, mux, `{"code_vocabulary":["python"]}`); code != http.StatusOK {
+		t.Fatalf("PUT = %d", code)
+	}
+	if out := d.corrector()("call dunder init now"); out != "call Dunder init now" {
+		t.Fatalf("got %q, the owner's pair must win over the longer pack pair", out)
+	}
+}
+
+// A daemon started with packs already saved boosts them on the FIRST decode, with no settings PUT: the boost list was
+// first derived before the settings store existed, and the key now includes the packs.
+// Mutation: service.go, drop the `d.refreshBoost()` after initMeetings, and boost.go key without packs -> RED.
+func TestSavedPacksBoostAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d1 := newTestDaemonSTT(t, dir, func(c *config.Config) { c.STTBoostAlpha = 2 }, nil, nil)
+	mux := http.NewServeMux()
+	d1.Routes(mux)
+	if code := putPacks(t, mux, `{"code_vocabulary":["python"]}`); code != http.StatusOK {
+		t.Fatalf("PUT = %d", code)
+	}
+	d1.Shutdown()
+	d2 := newTestDaemonSTT(t, dir, func(c *config.Config) { c.STTBoostAlpha = 2 }, nil, nil)
+	log := sttSetupServer(t, d2, dir)
+	sttVADModel(t, d2, dir)
+	src := testutil.WriteTinyWAV(t, t.TempDir(), "in.wav")
+	if _, err := d2.Transcribe(context.Background(), TranscribeInput{AudioPath: src}); err != nil {
+		t.Fatal(err)
+	}
+	_, terms := decodeWire(t, lastField(t, sttLogLines(t, log), "terms "))
+	if !strings.Contains(strings.Join(terms, "|"), "kwargs\t") {
+		t.Fatalf("saved packs were not boosted on the first decode: %d terms", len(terms))
+	}
+}
+
+// The boost cache key includes the enabled packs: a settings change that does not go through the PUT handler (a
+// settings file edited, a store that was not ready at start) is still seen by the next request.
+// Mutation: boost.go sttBoost, `d.tbCurKey = d.tbGlKey + "|" + strings.Join(packs, ",")` -> `d.tbCurKey = d.tbGlKey`
+// -> RED (the pack never reaches the list).
+func TestPackChangeWithoutRefreshIsSeen(t *testing.T) {
+	d, _ := boostDaemon(t, map[string]string{"оксей": "OxSay"})
+	if err := d.Meet.Store.UpdateSettings(func(cur meeting.Settings, _ error) (meeting.Settings, error) {
+		cur.CodeVocabulary = []string{"python"}
+		return cur, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		for _, l := range d.sttBoost().Terms {
+			if strings.HasPrefix(l, "kwargs\t") {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("a pack enabled behind the handler's back never reached the boost list")
 }

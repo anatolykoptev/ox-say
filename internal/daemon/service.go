@@ -24,6 +24,7 @@ import (
 	"github.com/anatolykoptev/ox-say/internal/engine"
 	"github.com/anatolykoptev/ox-say/internal/glossary"
 	"github.com/anatolykoptev/ox-say/internal/meeting"
+	"github.com/anatolykoptev/ox-say/internal/stt"
 	"github.com/anatolykoptev/ox-say/internal/transcripts"
 	"github.com/anatolykoptev/ox-say/internal/voices"
 )
@@ -87,6 +88,7 @@ type Daemon struct {
 	tbHave     bool
 	tbKey      string // content key of tbTerms
 	tbSeenGen  uint64 // the glGen tbCurKey was computed for
+	tbGlKey    string // boostKey of the glossary pairs at tbSeenGen
 	tbCurKey   string // content key of the current glossary
 	tbKeyOK    bool
 	tbTerms    []string
@@ -94,10 +96,7 @@ type Daemon struct {
 	tbVMu      sync.Mutex
 	tbVerdicts map[string]bool // form -> ordinary word, so a derivation reloads no dictionary for a form it has judged
 	tbDerives  atomic.Int64
-	// sttWide is true while the running ox-stt reported max_terms_header >= the large header (GET /health).
-	// False — the default, and after any probe failure — means the legacy 4 KB / 200-term wire.
-	sttWide  atomic.Bool
-	tbChecks atomic.Int64
+	tbChecks   atomic.Int64
 	// ownerToken is the bearer the owner-only glossary routes check, loaded
 	// or created at start from $OX_SAY_HOME/owner.token (mode 0600). Empty
 	// fails closed: nothing approves or rejects.
@@ -340,8 +339,6 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox, 
 			Logger:         logger,
 			// GPU or CPU per the memory model; see STTServeArgs.
 			Args: func(port int) []string { return STTServeArgs(cfg, port) },
-			// Verify never fails the start: it only learns which boost wire the engine speaks.
-			Verify: d.probeSTTCaps,
 		}
 		if tuneSTT != nil {
 			tuneSTT(&sc)
@@ -410,6 +407,11 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox, 
 	}
 	d.initGlossary()
 	d.initMeetings()
+	// initGlossary derived the boost list before the settings store existed: with packs saved, derive again now,
+	// so the first decode after a restart is boosted without waiting for a settings change.
+	if len(d.codePacks()) > 0 {
+		d.refreshBoost()
+	}
 	d.initTranscripts()
 	if d.VoxSup != nil {
 		d.voxQoS = &qosGate{
@@ -849,9 +851,6 @@ type codeVocabStatus struct {
 	BoostCap int `json:"boost_cap"`
 	// BoostWireBytes is the JSON byte budget all delivery paths trim to.
 	BoostWireBytes int `json:"boost_wire_bytes"`
-	// WideWire is true when the running ox-stt accepts the large boost header; false means the 4 KB / 200-term
-	// legacy wire (engine older than the daemon, or not probed yet).
-	WideWire bool `json:"wide_wire"`
 }
 
 var version = "dev"
@@ -919,9 +918,8 @@ func (d *Daemon) Status() statusSummary {
 			Packs:          enabled,
 			PacksAvailable: codevocab.Names,
 			BoostTerms:     d.boostTermsLen(),
-			BoostCap:       d.boostTermCap(),
-			BoostWireBytes: d.boostWireBytes(),
-			WideWire:       d.sttWide.Load(),
+			BoostCap:       glossary.MaxBoostTerms,
+			BoostWireBytes: stt.MaxWireJSON,
 		},
 	}
 }

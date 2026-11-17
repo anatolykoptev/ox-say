@@ -1,15 +1,10 @@
 package daemon
 
 import (
-	"context"
-	"encoding/json"
-	"io"
-	"log/slog"
-	"net/http"
+	"strings"
 
 	"github.com/anatolykoptev/ox-say/internal/codevocab"
 	"github.com/anatolykoptev/ox-say/internal/glossary"
-	"github.com/anatolykoptev/ox-say/internal/stt"
 )
 
 // codePacks is the enabled code packs from the daemon settings — the
@@ -23,53 +18,40 @@ func (d *Daemon) codePacks() []string {
 	return codevocab.Enabled(d.Meet.Store.Settings().CodeVocabulary)
 }
 
-// packBoostPairs is the enabled packs' contribution to the decoder boost
-// list: one term anchor per written form and one alias pair per safe heard
-// form. Unsafe heard forms («chords», «Tokyo») never reach the wire — a wire
-// alias is a deterministic rewrite on the engine side, which is what the
-// unsafe flag exists to prevent.
-func (d *Daemon) packBoostPairs() []glossary.Pair {
-	return codevocab.BoostPairs(d.codePacks())
+// withPackTerms appends the enabled packs' term lines AFTER every owner line. The owner's lines are never touched:
+// a pack never joins an owner's group, never lengthens an owner line, and a pack line that names an owner's written
+// or spoken form is dropped whole. The wire trims from the tail, so a cap drops pack lines first; the packs are
+// ordered by their measured value (terms that were wrong first). With no packs the owner list is returned as is.
+func (d *Daemon) withPackTerms(owner []string, packs []string) []string {
+	if len(packs) == 0 {
+		return owner
+	}
+	taken := map[string]bool{}
+	for _, l := range owner {
+		for i, f := range strings.Split(l, "\t") {
+			if i != 1 { // field 1 is the weight
+				taken[glossary.Key(f)] = true
+			}
+		}
+	}
+	out := append([]string{}, owner...)
+	for _, l := range d.boostTermsFor(codevocab.BoostPairs(packs)) {
+		clash := false
+		for i, f := range strings.Split(l, "\t") {
+			if i != 1 && taken[glossary.Key(f)] {
+				clash = true
+			}
+		}
+		if !clash && len(out) < glossary.MaxBoostTerms {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
-// packFixPairs is the enabled packs' contribution to the post-pass: every
-// safe heard form rewrites to the written form, plus the unsafe heard forms
-// that are fused-identifier spoken forms («type error» -> TypeError).
-func (d *Daemon) packFixPairs() []glossary.Pair {
-	return codevocab.RewritePairs(d.codePacks())
+// packFixPairs is the enabled packs' contribution to the post-pass: the safe heard forms and the allow-listed
+// fused identifiers, minus every pair that shares a word with an owner pair — the owner's pair always wins, a
+// longer overlapping pack phrase included.
+func (d *Daemon) packFixPairs(owner []glossary.Pair) []glossary.Pair {
+	return codevocab.DropOwned(codevocab.RewritePairs(d.codePacks()), owner)
 }
-
-// probeSTTCaps is the ox-stt supervisor's Verify hook: once /health answers, read max_terms_header. An engine
-// that does not report it (older than this daemon) keeps the legacy 4 KB wire — sending it the large header
-// would make it refuse the header and decode with no boost at all. A failed probe is the same as no field; it
-// never fails the engine start.
-func (d *Daemon) probeSTTCaps(ctx context.Context, baseURL string) error {
-	wide := false
-	defer func() { d.sttWide.Store(wide) }()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/health", nil)
-	if err != nil {
-		return nil
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var h struct {
-		MaxTermsHeader int `json:"max_terms_header"`
-	}
-	if resp.StatusCode == http.StatusOK && json.NewDecoder(io.LimitReader(resp.Body, healthBodyLimit)).Decode(&h) == nil {
-		wide = h.MaxTermsHeader >= stt.MaxHeaderBytes
-	}
-	d.log.Info("stt boost wire", slog.Bool("wide", wide), slog.Int("max_terms_header", h.MaxTermsHeader))
-	return nil
-}
-
-// healthBodyLimit bounds the /health body read; the answer is a few dozen bytes.
-const healthBodyLimit = 4 << 10
-
-// boostWireBytes is the JSON budget the current engine gets.
-func (d *Daemon) boostWireBytes() int { return stt.Boost{Wide: d.sttWide.Load()}.Budget() }
-
-// boostTermCap is the term-line cap the current engine gets.
-func (d *Daemon) boostTermCap() int { return stt.Boost{Wide: d.sttWide.Load()}.TermCap() }

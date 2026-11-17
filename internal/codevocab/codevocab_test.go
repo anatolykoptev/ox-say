@@ -1,11 +1,13 @@
 package codevocab
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/anatolykoptev/ox-say/internal/glossary"
+	"github.com/anatolykoptev/ox-say/internal/wordlists"
 )
 
 func TestPacksLoad(t *testing.T) {
@@ -150,7 +152,6 @@ func TestRewritePairsFused(t *testing.T) {
 		"monkey patch":          "monkeypatch",
 		"wait group":            "WaitGroup",
 		"not implemented error": "NotImplementedError",
-		"beautiful soup":        "BeautifulSoup",
 		"doc string":            "docstring",
 		"stop iteration":        "StopIteration",
 		"attribute error":       "AttributeError",
@@ -168,7 +169,7 @@ func TestRewritePairsFused(t *testing.T) {
 		"chords", "tokyo", "salary", "celery", "bull", "gill", "rough", "tray", "chords", "knit",
 		"jason", "union", "optional", "generator", "box", "weight group", "get attribute", "my pie",
 		"pie test", "lru cache", "walrus operator", "strake on f test", "uv corn", "c d", "impulse",
-		"arc", "option", "pin", "result", "none", "isn't it", "select", "itertools", "a sync", "unit test", "class method", "this error", "air group",
+		"arc", "option", "pin", "result", "none", "isn't it", "select", "itertools", "a sync", "go routine", "beautiful soup", "trace back", "hash map", "hash set", "sub agent", "ice instance", "under eq", "macro rules", "flippy", "tommel", "unit test", "class method", "this error", "air group",
 	} {
 		if _, bad := got[glossary.Key(never)]; bad {
 			t.Errorf("unsafe alias %q must never become a rewrite pair", never)
@@ -183,7 +184,7 @@ func TestFusedEdges(t *testing.T) {
 		want            bool
 	}{
 		{"type error", "TypeError", true},
-		{"go routine", "goroutine", true},
+		{"go routine", "goroutine", true},             // the predicate fits; the allow-list (joinable) is what keeps it out
 		{"walrus operator", "walrus operator", false}, // the written form is a phrase, not a fusion
 		{"wait group", "WaitGroup", true},
 		{"weight group", "WaitGroup", false}, // different letters
@@ -229,6 +230,125 @@ func TestWrittenBoostable(t *testing.T) {
 			if utf8.RuneCountInString(term.Written) < 3 && len(term.Safe) == 0 {
 				t.Logf("%s %s: too short to boost and no safe aliases — dead entry", name, term.Written)
 			}
+		}
+	}
+}
+
+// TestPackAliasesPassTheRule derives the aliases from the embedded JSON itself (not from a list written here) and
+// requires every safe alias to carry a token that is not an ordinary dictionary word. A prose alias added to a pack
+// later fails here, and the loader drops it besides.
+// Mutation: codevocab.go AliasOK `!ck.Common(t)` -> `true` is RED here and in TestAliasRuleRejectsProse.
+func TestPackAliasesPassTheRule(t *testing.T) {
+	ck := wordlists.New()
+	files, err := packFiles.ReadDir("packs")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no embedded packs: %v", err)
+	}
+	n := 0
+	for _, f := range files {
+		raw, _ := packFiles.ReadFile("packs/" + f.Name())
+		var p packJSON
+		if err := json.Unmarshal(raw, &p); err != nil {
+			t.Fatalf("%s: %v", f.Name(), err)
+		}
+		for _, term := range p.Terms {
+			for _, a := range term.Safe {
+				n++
+				if !AliasOK(ck, a) {
+					t.Errorf("%s %s: safe alias %q is made only of ordinary words", p.Name, term.Written, a)
+				}
+			}
+		}
+	}
+	if n < 50 {
+		t.Fatalf("only %d safe aliases were checked", n)
+	}
+	// and what the loader hands out is exactly the vetted set
+	for name, ts := range PackTerms() {
+		for _, term := range ts {
+			for _, a := range term.Safe {
+				if !AliasOK(ck, a) {
+					t.Errorf("loaded %s %s: %q", name, term.Written, a)
+				}
+			}
+		}
+	}
+}
+
+func TestAliasRuleRejectsProse(t *testing.T) {
+	ck := wordlists.New()
+	for _, prose := range []string{"trace back", "ice instance", "beautiful soup", "under", "hash map", "dun domain", "go routine"} {
+		if AliasOK(ck, prose) {
+			t.Errorf("%q is prose and must not pass", prose)
+		}
+	}
+	for _, code := range []string{"Quargs", "dunder init", "re dot match", "sync dot once", "itar tools", "DunderInit"} {
+		if !AliasOK(ck, code) {
+			t.Errorf("%q is code-shaped and must pass", code)
+		}
+	}
+}
+
+// With every pack on, ordinary prose goes through the REAL post-pass untouched: the cases a reviewer reproduced
+// (trace back, beautiful soup, go routine by routine, a Russian sentence carrying beautiful soup) and the neighbours of
+// every dropped alias and join.
+// Mutation: codevocab.go joinable gains "traceback"-style entries, or RewritePairs `joinable[t.Written] &&` removed -> RED.
+func TestProseIsNeverRewritten(t *testing.T) {
+	pairs := RewritePairs([]string{"python", "go", "rust"})
+	for _, prose := range []string{
+		"Can you trace back the payment?", "That was a beautiful soup.", "Please go routine by routine.",
+		"Мне нравится beautiful soup.", "That's a lovely hash map of the city", "the sub agent reports to me",
+		"under EQ conditions", "the macro rules of the house", "a unit test and a class method", "this error is fine",
+		"the key error rate is low", // "key error" is a join only inside the allow-list; see below
+	} {
+		out, _ := glossary.Apply(prose, pairs)
+		if prose == "the key error rate is low" {
+			continue // a documented join: key error -> KeyError
+		}
+		if out != prose {
+			t.Errorf("prose %q rewritten to %q", prose, out)
+		}
+	}
+	// the allow-listed joins still work
+	for in, want := range map[string]string{"a type error here": "a TypeError here", "the data class": "the dataclass", "async IO": "asyncio"} {
+		if out, _ := glossary.Apply(in, pairs); out != want {
+			t.Errorf("%q -> %q, want %q", in, out, want)
+		}
+	}
+}
+
+// An owner pair beats a pack pair that overlaps it, a longer pack phrase included.
+// Mutation: DropOwned returning `pack` unchanged -> RED ("beautiful soup" outbids the owner's "beautiful").
+func TestOwnerPairBeatsOverlappingPackPair(t *testing.T) {
+	owner := []glossary.Pair{{Heard: "beautiful", Meant: "Lovely", Status: glossary.Active}}
+	pack := []glossary.Pair{{Heard: "beautiful soup", Meant: "BeautifulSoup", Status: glossary.Active}, {Heard: "Quargs", Meant: "kwargs", Status: glossary.Active}}
+	all := append(append([]glossary.Pair{}, owner...), DropOwned(pack, owner)...)
+	if out, _ := glossary.Apply("a beautiful soup", all); out != "a Lovely soup" {
+		t.Errorf("got %q, want the owner's rewrite", out)
+	}
+	if out, _ := glossary.Apply("Quargs", all); out != "kwargs" {
+		t.Errorf("an unrelated pack pair must survive, got %q", out)
+	}
+}
+
+// Packs rank by measured value: terms the eval heard wrong lead, so a byte cap keeps them.
+func TestBoostPairsOrderedByValue(t *testing.T) {
+	pairs := BoostPairs([]string{"python", "go", "rust"})
+	byWritten := map[string]int{}
+	for _, ts := range PackTerms() {
+		for _, term := range ts {
+			byWritten[term.Written] = term.valueOf()
+		}
+	}
+	last := 0
+	for _, p := range pairs {
+		if p.Heard != "" {
+			continue
+		}
+		if v := byWritten[p.Meant]; v < last {
+			t.Fatalf("%s (value %d) follows a value-%d term", p.Meant, v, last)
+		} else {
+			last = v
 		}
 	}
 }

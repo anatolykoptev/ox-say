@@ -18,11 +18,16 @@ package codevocab
 import (
 	"embed"
 	"encoding/json"
+	"runtime/debug"
+	"sort"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/anatolykoptev/ox-say/internal/glossary"
+	"github.com/anatolykoptev/ox-say/internal/wordlists"
 )
 
 //go:embed packs/*.json
@@ -46,15 +51,77 @@ type Term struct {
 	Written string   `json:"written"`
 	Safe    []string `json:"safe,omitempty"`
 	Unsafe  []string `json:"unsafe,omitempty"`
+	// Value ranks the entry for the shared boost budget: 1 = the eval heard it wrong, 2 = partly right, 3 (or
+	// unset) = not measured as a problem. A cap keeps the lower numbers.
+	Value int `json:"value,omitempty"`
 }
+
+// valueOf is Value with the unset default.
+func (t Term) valueOf() int {
+	if t.Value < 1 || t.Value > defaultValue {
+		return defaultValue
+	}
+	return t.Value
+}
+
+const defaultValue = 3
 
 type packJSON struct {
 	Name  string `json:"name"`
 	Terms []Term `json:"terms"`
 }
 
-// packs is the parsed data, read once.
-var packs = loadPacks()
+// packs is the parsed data, read once on first use: a daemon with every pack off never loads it, nor the
+// dictionaries the alias check needs.
+var (
+	packsOnce sync.Once
+	packsData map[string][]Term
+)
+
+func packs() map[string][]Term {
+	packsOnce.Do(func() {
+		packsData = loadPacks()
+		ck := wordlists.New()
+		for n, ts := range packsData {
+			for i := range ts {
+				ts[i].Safe = filterAliases(ck, ts[i].Safe)
+			}
+			packsData[n] = ts
+		}
+		if ck.Err() == nil {
+			debug.FreeOSMemory()
+		}
+	})
+	return packsData
+}
+
+// filterAliases keeps the safe aliases that pass AliasOK. A dictionary that cannot load keeps none: an alias that
+// could not be vetted is never a rewrite.
+func filterAliases(ck *wordlists.Checker, in []string) []string {
+	var out []string
+	for _, a := range in {
+		if AliasOK(ck, a) && ck.Err() == nil {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// AliasOK is the rule a safe alias must meet to be a rewrite: it contains at least one token that is not an ordinary
+// word of the English or Russian dictionary (a token with a digit counts as not ordinary). An alias made only of
+// ordinary words — "ice instance", "trace back", "under", "dun domain" — is prose, and prose is never rewritten.
+// Names (a person's or a product's) are not caught by a dictionary: those aliases are kept out of the data by hand,
+// and TestPackAliasesPassTheRule keeps ordinary-word ones out.
+func AliasOK(ck *wordlists.Checker, alias string) bool {
+	toks := strings.FieldsFunc(alias, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	for i, t := range toks {
+		// "sync dot once", "re dot match": a spoken dot between two words is how code is dictated, not prose
+		if (i > 0 && i < len(toks)-1 && strings.EqualFold(t, "dot")) || !ck.Common(t) {
+			return true
+		}
+	}
+	return false
+}
 
 func loadPacks() map[string][]Term {
 	out := map[string][]Term{}
@@ -110,9 +177,12 @@ func terms(enabled []string) []Term {
 	}
 	var out []Term
 	for _, n := range enabled {
-		out = append(out, packs[n]...)
+		out = append(out, packs()[n]...)
 	}
-	return append(out, packs[reviewPack]...)
+	out = append(out, packs()[reviewPack]...)
+	// by measured value, terms that were heard wrong first; stable, so a pack keeps its own order within a rank
+	sort.SliceStable(out, func(i, j int) bool { return out[i].valueOf() < out[j].valueOf() })
+	return out
 }
 
 // BoostPairs is the decoder-boost view of the enabled packs as glossary
@@ -153,7 +223,7 @@ func RewritePairs(enabled []string) []glossary.Pair {
 			pairs = append(pairs, glossary.Pair{Heard: a, Meant: t.Written, Status: glossary.Active})
 		}
 		for _, a := range t.Unsafe {
-			if fused(a, t.Written) {
+			if joinable[t.Written] && fused(a, t.Written) {
 				pairs = append(pairs, glossary.Pair{Heard: a, Meant: t.Written, Status: glossary.Active})
 			}
 		}
@@ -188,8 +258,43 @@ func fused(spoken, written string) bool {
 // article or an initial, and joining around it would rewrite ordinary prose.
 const minFusedWord = 2
 
+// joinable is the allow-list of fused identifiers that may be joined from their spoken words: code-only compounds
+// that are not ordinary English once joined — the CamelCase exception names and a few library words. Nothing else
+// joins, however well the letters fit: "trace back", "beautiful soup", "hash map", "sub agent" are phrases people
+// say, and "go routine" is also "go routine by routine".
+var joinable = map[string]bool{
+	"TypeError": true, "KeyError": true, "ValueError": true, "IndexError": true, "AttributeError": true,
+	"NotImplementedError": true, "StopIteration": true, "dataclass": true, "docstring": true, "asyncio": true,
+	"monkeypatch": true, "WaitGroup": true,
+}
+
+// DropOwned removes every pack pair that shares a word with an owner pair's heard or meant form: where the owner
+// has said anything about a word, the pack says nothing, so an owner pair beats a pack pair even when the pack
+// phrase is longer ("beautiful" -> Lovely against "beautiful soup" -> BeautifulSoup).
+func DropOwned(pack, owner []glossary.Pair) []glossary.Pair {
+	owned := map[string]bool{}
+	for _, o := range owner {
+		for _, f := range []string{o.Heard, o.Meant} {
+			for _, w := range strings.Fields(glossary.Key(f)) {
+				owned[w] = true
+			}
+		}
+	}
+	out := make([]glossary.Pair, 0, len(pack))
+	for _, p := range pack {
+		hit := false
+		for _, w := range strings.Fields(glossary.Key(p.Heard)) {
+			hit = hit || owned[w]
+		}
+		if !hit {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // TermCount reports how many entries the enabled set carries — for /status.
 func TermCount(enabled []string) int { return len(terms(enabled)) }
 
 // PackTerms exposes the parsed packs for the data tests.
-func PackTerms() map[string][]Term { return packs }
+func PackTerms() map[string][]Term { return packs() }

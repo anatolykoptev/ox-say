@@ -130,18 +130,18 @@ On Apple Silicon (unified memory) a cleanup takes no GPU lease and shares the GP
 `code_vocabulary` (in `GET`/`PUT /v1/meetings/settings`, shown in `GET /status` as `code_vocabulary`) turns on built-in
 vocabulary packs for dictating about code: `python`, `go`, `rust`. A shared review set (idempotent, traceback, TOML, nit,
 LGTM, ...) rides with any enabled pack. Packs are JSON files embedded in the daemon (`internal/codevocab/packs`); an entry
-is a written form plus the spoken forms measured on Parakeet. Changing the setting rebuilds the boost list at once, with
-no restart.
+is a written form, the spoken forms measured on Parakeet, and a `value` rank (1 = the recogniser heard it wrong, 2 = partly
+right). Changing the setting rebuilds the boost list at once, with no restart; packs saved before a restart are boosted from
+the first decode.
 
-- **Decoder boost.** An enabled pack's written forms and its `safe` spoken forms join the glossary's decoder boost list, with
-  the same wire format and the same ordinary-word filter. A spoken form that is an ordinary word is not boosted.
-- **Post-pass.** `safe` forms (`Quargs` -> `kwargs`, `dunder init` -> `__init__`) are rewritten like active glossary pairs,
-  case-insensitively and on whole words. An ordinary word or phrase is never rewritten (`chords`, `Tokyo`, `salary`, `a sync`);
-  the one exception is a fused identifier spoken as its exact words, two or more words of two letters or more that join into the
-  written form (`type error` -> `TypeError`, `data class` -> `dataclass`, `go routine` -> `goroutine`). The owner's glossary
-  pair wins over a pack pair for the same spoken form.
-- **Cap and priority.** The glossary's terms come first and the packs fill the rest, so a cap drops pack terms, never glossary
-  ones. `ox-stt` reports `max_terms_header` on `GET /health`; with it the wire carries up to 512 terms in a 16 KB header, without it
-  (an `ox-stt` older than the daemon) the daemon keeps the old 4 KB / 200-term wire, because an old engine refuses an oversize
-  header and decodes with no boost at all. `GET /status` `code_vocabulary` says which wire is in use (`wide_wire`), the term
-  count, and the cap.
+- **Packs off is the previous behaviour**: the decoder lines and the post-pass pairs are exactly the owner's.
+- **Decoder boost.** An enabled pack's written forms and its `safe` spoken forms are appended AFTER every owner line, in value
+  order, with the same wire format and ordinary-word filter. A pack never joins an owner's group, never lengthens an owner
+  line, and a pack line that names an owner's written or spoken form is dropped. The wire budget is unchanged (3072 B of JSON,
+  200 terms) and trims from the tail, so pack lines go first.
+- **Post-pass.** A `safe` heard form must contain at least one token that is not an ordinary English or Russian dictionary
+  word (a spoken "dot" between two words also counts); this is checked when the packs load. It is rewritten like an active
+  glossary pair. Ordinary words and phrases are never rewritten (`chords`, `Tokyo`, `trace back`, `beautiful soup`, `go routine`).
+  The only joins are an explicit allow-list of code-only compounds: `type error`, `key error`, `value error`, `index error`,
+  `attribute error`, `not implemented error`, `stop iteration`, `data class`, `doc string`, `async IO`, `monkey patch`,
+  `wait group`. Any pack pair that shares a word with an owner pair is dropped: the owner's pair always wins.
