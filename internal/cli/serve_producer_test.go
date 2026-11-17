@@ -18,7 +18,7 @@ import (
 
 // `ox-say serve` starts the voiceover producer before serving and stops it
 // after: a producer whose start was never called answers 503 to a create.
-// The serve path is the production cmdServe with go-mcpserver's Serve replaced
+// The serve path is the production cmdServe with go-mcpserver's Run replaced
 // by a stub that asks the daemon's own routes.
 // Mutation: internal/cli/cli.go cmdServe - delete `d.StartProducer()` -> RED (503 while serving).
 // Mutation: internal/cli/cli.go cmdServe - delete `d.StopProducer()` -> RED (still answers after).
@@ -31,8 +31,8 @@ func TestServeStartsAndStopsTheProducer(t *testing.T) {
 	t.Setenv("OX_SAY_ENGINE_PORT", strconv.Itoa(ports[1]))
 	t.Setenv("OX_SAY_STT_PORT", strconv.Itoa(ports[2]))
 
-	oldNew, oldServe := newDaemon, serve
-	defer func() { newDaemon, serve = oldNew, oldServe }()
+	oldNew, oldRun := newDaemon, runMCP
+	defer func() { newDaemon, runMCP = oldNew, oldRun }()
 	var d *daemon.Daemon
 	newDaemon = func(cfg *config.Config, l *slog.Logger) (*daemon.Daemon, error) {
 		var err error
@@ -48,7 +48,7 @@ func TestServeStartsAndStopsTheProducer(t *testing.T) {
 	}
 	var mux *http.ServeMux
 	whileServing := 0
-	serve = func(_ *mcp.Implementation, cfg mcpserver.Config, _ func(*mcp.Server)) error {
+	runMCP = func(_ *mcp.Server, cfg mcpserver.Config) error {
 		mux = http.NewServeMux()
 		cfg.Routes(mux)
 		whileServing = create(mux)

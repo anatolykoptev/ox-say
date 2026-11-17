@@ -188,7 +188,8 @@ func (s *Store) Active() ([]Pair, error) {
 
 // Add is AddChecked for a caller that has no dictionary: the pair is not vetted, so it never borrows evidence.
 func (s *Store) Add(heard, meant, context string) (Pair, error) {
-	return s.AddChecked(heard, meant, context, false)
+	p, _, err := s.AddChecked(heard, meant, context, false)
+	return p, err
 }
 
 // AddChecked files a pair or counts another sighting of it. context is the sentence
@@ -196,28 +197,32 @@ func (s *Store) Add(heard, meant, context string) (Pair, error) {
 // is kept. A pair with no context is filed but never activates on its own.
 // vetted says the caller consulted the dictionary and the heard form is a single word that is not ordinary words
 // of its language (wordlists.Common); the caller computes it, the store never loads a dictionary. It is sticky.
-func (s *Store) AddChecked(heard, meant, context string, vetted bool) (Pair, error) {
+// The bool reports whether the call created the pair; a re-filing of the same
+// heard form adds a sighting to the pair that was already there (Seen is no
+// proof of that: an owner edit resets it on a pair that is not active).
+func (s *Store) AddChecked(heard, meant, context string, vetted bool) (Pair, bool, error) {
 	heard, meant, context = strings.TrimSpace(heard), strings.TrimSpace(meant), strings.TrimSpace(context)
 	if err := validate(heard, meant); err != nil {
-		return Pair{}, err
+		return Pair{}, false, err
 	}
 	if context != "" && !containsSeq(words(context), words(heard)) {
-		return Pair{}, fmt.Errorf("%w: the sentence does not contain %q", ErrInvalid, heard)
+		return Pair{}, false, fmt.Errorf("%w: the sentence does not contain %q", ErrInvalid, heard)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pairs, err := s.load()
 	if err != nil {
-		return Pair{}, err
+		return Pair{}, false, err
 	}
 	id := ID(heard)
 	i := slices.IndexFunc(pairs, func(p Pair) bool { return p.ID == id })
+	created := i < 0
 	switch {
-	case i < 0:
+	case created:
 		pairs = append(pairs, Pair{ID: id, Heard: heard, Meant: meant, Status: Candidate, Added: s.Now().UTC()})
 		i = len(pairs) - 1
 	case pairs[i].Meant != meant:
-		return Pair{}, fmt.Errorf("%w: %q → %q", ErrConflict, pairs[i].Heard, pairs[i].Meant)
+		return Pair{}, false, fmt.Errorf("%w: %q → %q", ErrConflict, pairs[i].Heard, pairs[i].Meant)
 	}
 	p := &pairs[i]
 	p.Seen++
@@ -229,9 +234,9 @@ func (s *Store) AddChecked(heard, meant, context string, vetted bool) (Pair, err
 	}
 	promote(pairs, meant)
 	if err := s.save(pairs); err != nil {
-		return Pair{}, err
+		return Pair{}, false, err
 	}
-	return *p, nil
+	return *p, created, nil
 }
 
 func (s *Store) setStatus(id string, st Status) (Pair, error) {

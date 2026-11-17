@@ -47,7 +47,9 @@ Transcript routes (a file transcribed and kept by the daemon; the app's Transcri
 | `GET /v1/transcripts/<id>?format=` | `text`, `srt`, `vtt`, `json` (default) or `ox_json` |
 | `DELETE /v1/transcripts/<id>` | Delete one (`204`) |
 
-Glossary routes (the heard → meant pairs applied to recognised text):
+Glossary routes (the heard → meant pairs applied to recognised text). `POST /v1/glossary` is also the
+`glossary_add` MCP tool — the same code path and answers an agent can act on (`filed` / `sighting` /
+`conflict` / `invalid`); see [MCP](mcp.md):
 
 | Route | Description |
 |-------|-------------|

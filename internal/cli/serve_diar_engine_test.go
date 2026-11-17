@@ -37,10 +37,10 @@ func TestServeStartsQuietlyWithARetiredDiarEngineSetting(t *testing.T) {
 	os.Stderr = logFile
 	defer func() { os.Stderr = realStderr }()
 
-	oldNew, oldServe := newDaemon, serve
-	defer func() { newDaemon, serve = oldNew, oldServe }()
+	oldNew, oldRun := newDaemon, runMCP
+	defer func() { newDaemon, runMCP = oldNew, oldRun }()
 	newDaemon = func(cfg *config.Config, l *slog.Logger) (*daemon.Daemon, error) { return daemon.New(cfg, l) }
-	serve = func(_ *mcp.Implementation, cfg mcpserver.Config, _ func(*mcp.Server)) error {
+	runMCP = func(_ *mcp.Server, cfg mcpserver.Config) error {
 		cfg.OnShutdown()
 		return nil
 	}

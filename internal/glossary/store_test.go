@@ -10,7 +10,8 @@ import (
 
 // addV files a pair as the daemon does for a single word the dictionary does not know as ordinary: vetted.
 func addV(s *Store, heard, meant, ctx string) (Pair, error) {
-	return s.AddChecked(heard, meant, ctx, true)
+	p, _, err := s.AddChecked(heard, meant, ctx, true)
+	return p, err
 }
 
 func newTestStore(t *testing.T) *Store {
@@ -164,7 +165,7 @@ func TestOnlyAVettedSingleWordBorrowsEvidence(t *testing.T) {
 		{"у квантекс", "позвони у квантекс вечером", true},
 		{"спроси", "спроси у команды", false},
 	} {
-		p, err := s.AddChecked(c.heard, "Quantex", c.ctx, c.vetted)
+		p, _, err := s.AddChecked(c.heard, "Quantex", c.ctx, c.vetted)
 		if err != nil || p.Status != Candidate {
 			t.Errorf("AddChecked(%q) = %+v, %v; want a candidate", c.heard, p, err)
 		}
@@ -172,10 +173,10 @@ func TestOnlyAVettedSingleWordBorrowsEvidence(t *testing.T) {
 	if p, _ := addV(s, "кантекс", "Quantex", "закрой кантекс вечером"); p.Status != Active {
 		t.Errorf("a vetted new single-word spelling = %+v; want active on the meant's evidence", p)
 	}
-	if p, _ := s.AddChecked("давайте", "Quantex", "давайте закончим сегодня", false); p.Status != Active {
+	if p, _, _ := s.AddChecked("давайте", "Quantex", "давайте закончим сегодня", false); p.Status != Active {
 		t.Errorf("an ordinary word on its own two sentences = %+v; want active", p)
 	}
-	if p, _ := s.AddChecked("у квантекс", "Quantex", "открой у квантекс отчет", true); p.Status != Active {
+	if p, _, _ := s.AddChecked("у квантекс", "Quantex", "открой у квантекс отчет", true); p.Status != Active {
 		t.Errorf("a phrase on its own two sentences = %+v; want active", p)
 	}
 	// a pair with no verdict never borrows, whoever files the next spelling: a store file written before the
