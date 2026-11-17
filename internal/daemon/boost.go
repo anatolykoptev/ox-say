@@ -13,17 +13,19 @@ import (
 	"github.com/anatolykoptev/ox-say/internal/wordlists"
 )
 
-// sttBoost is the decoder boost list for ONE request: the active glossary pairs as ox-stt term lines
-// (glossary.BoostTerms) with the configured strength (OX_SAY_STT_BOOST_ALPHA, 0 = off). The list is derived
-// from the glossary file only — there is no second store and no file copy — and cached per CONTENT of the
-// active (meant, heard) set, so a sighting of an existing pair (which rewrites the file and moves the pair
-// generation) does not derive again. It never blocks a request: while a new list is being derived, the request
-// goes out with the previous one, or with none before the first; the daemon derives once at start.
+// sttBoost is the decoder boost list for ONE request: the active glossary pairs plus the enabled code packs'
+// boost pairs as ox-stt term lines (glossary.BoostTerms) with the configured strength
+// (OX_SAY_STT_BOOST_ALPHA, 0 = off). The list is derived from the glossary file and the embedded packs only —
+// there is no second store and no file copy — and cached per CONTENT of the active (meant, heard) set, so a
+// sighting of an existing pair (which rewrites the file) does not derive again. Pack pairs carry synthetic
+// Added far in the past, so glossary groups always sort first and a cap drops pack terms. It never blocks a
+// request: while a new list is being derived, the request goes out with the previous one, or with none before
+// the first; the daemon derives once at start.
 func (d *Daemon) sttBoost() stt.Boost {
 	if d.Cfg.STTBoostAlpha <= 0 || d.Glossary == nil {
 		return stt.Boost{}
 	}
-	pairs, gen := d.glossaryPairsGen()
+	pairs, gen := d.boostPairsGen()
 	d.tbMu.Lock()
 	defer d.tbMu.Unlock()
 	if !d.tbKeyOK || d.tbSeenGen != gen {
@@ -33,17 +35,34 @@ func (d *Daemon) sttBoost() stt.Boost {
 		d.tbBuilding = true
 		go d.deriveBoost(pairs, d.tbCurKey)
 	}
-	return stt.Boost{Alpha: d.Cfg.STTBoostAlpha, Terms: d.tbTerms}
+	return stt.Boost{Alpha: d.Cfg.STTBoostAlpha, Terms: d.tbTerms, Wide: d.sttWide.Load()}
 }
 
-// refreshBoost derives the list for the current glossary now, on the caller's goroutine (tests, the eval).
-func (d *Daemon) refreshBoost() {
+// boostPairsGen is the boost list's input — the active glossary pairs, then the enabled packs' boost pairs —
+// plus the glossary file's generation. Pack pairs are re-read per call (the settings may have been toggled),
+// so the pair CONTENT carries the enabled set into boostKey; the generation only short-circuits re-hashing a
+// file that did not change, and a pack toggle through the settings route rebuilds via refreshBoost.
+func (d *Daemon) boostPairsGen() ([]glossary.Pair, uint64) {
 	pairs, gen := d.glossaryPairsGen()
+	return slices.Concat(pairs, d.packBoostPairs()), gen
+}
+
+// refreshBoost derives the list for the current glossary and packs now, on the caller's goroutine (the
+// settings change handler, tests, the eval).
+func (d *Daemon) refreshBoost() {
+	pairs, gen := d.boostPairsGen()
 	d.tbMu.Lock()
 	key := boostKey(pairs)
 	d.tbSeenGen, d.tbCurKey, d.tbKeyOK = gen, key, true
 	d.tbMu.Unlock()
 	d.deriveBoost(pairs, key)
+}
+
+// boostTermsLen is the current derived list's size for /status (0 before the first derive).
+func (d *Daemon) boostTermsLen() int {
+	d.tbMu.Lock()
+	defer d.tbMu.Unlock()
+	return len(d.tbTerms)
 }
 
 // boostKey identifies what the boost list depends on: every active pair's meant and heard form. A sighting
@@ -64,7 +83,7 @@ func (d *Daemon) deriveBoost(pairs []glossary.Pair, key string) {
 	terms := d.boostTermsFor(pairs)
 	// Only the leading terms that fit the wire budget ever reach ox-stt; say how many did not (a count: the
 	// terms are the user's glossary text).
-	if n := (stt.Boost{Alpha: d.Cfg.STTBoostAlpha, Terms: terms}).Dropped(); n > 0 {
+	if n := (stt.Boost{Alpha: d.Cfg.STTBoostAlpha, Terms: terms, Wide: d.sttWide.Load()}).Dropped(); n > 0 {
 		d.log.Warn("stt boost: the list is over the wire budget; the oldest terms are not boosted", slog.Int("dropped", n), slog.Int("terms", len(terms)))
 	}
 	d.tbMu.Lock()

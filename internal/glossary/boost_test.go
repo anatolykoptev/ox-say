@@ -70,15 +70,15 @@ func TestBoostTermsFilters(t *testing.T) {
 
 func TestBoostTermsCapAndOrder(t *testing.T) {
 	var ps []Pair
-	for i := 0; i < 250; i++ {
+	for i := 0; i < MaxBoostTerms+50; i++ {
 		ps = append(ps, activePair(fmt.Sprintf("форма%03d", i), fmt.Sprintf("Name%03d", i), i)) // larger i = older
 	}
 	got := BoostTerms(ps, nil)
 	if len(got) != MaxBoostTerms {
 		t.Fatalf("terms = %d, want the cap %d", len(got), MaxBoostTerms)
 	}
-	if !strings.HasPrefix(got[0], "Name000\t") || !strings.HasPrefix(got[199], "Name199\t") {
-		t.Fatalf("the most recent must come first and the oldest be cut: first %q last %q", got[0], got[199])
+	if !strings.HasPrefix(got[0], "Name000\t") || !strings.HasPrefix(got[MaxBoostTerms-1], fmt.Sprintf("Name%03d\t", MaxBoostTerms-1)) {
+		t.Fatalf("the most recent must come first and the oldest be cut: first %q last %q", got[0], got[MaxBoostTerms-1])
 	}
 	// aliases are capped too
 	var many []Pair
@@ -158,16 +158,16 @@ func TestBoostTermsMeantCannotInjectFields(t *testing.T) {
 	}
 }
 
-// Limits pinned at their exact edge, so a one-off change of either is seen: the 200th term is kept and the
-// 201st dropped; a 3-character meant and a 3-character heard form are kept, 2-character ones dropped.
-// Mutations: boost.go:11 MaxBoostTerms 200 -> 201, and boost.go:43 / boost.go:88 minBoostChars compare.
+// Limits pinned at their exact edge, so a one-off change of either is seen: the last term at the cap is kept and the
+// next dropped; a 3-character meant and a 3-character heard form are kept, 2-character ones dropped.
+// Mutations: boost.go:11 MaxBoostTerms 512 -> 513, and boost.go:43 / boost.go:88 minBoostChars compare.
 func TestBoostTermsLimitsAtTheEdge(t *testing.T) {
 	var ps []Pair
-	for i := 0; i < 201; i++ {
+	for i := 0; i < MaxBoostTerms+1; i++ {
 		ps = append(ps, activePair(fmt.Sprintf("форма%03d", i), fmt.Sprintf("Name%03d", i), i))
 	}
-	if got := BoostTerms(ps, nil); len(got) != 200 || !strings.HasPrefix(got[199], "Name199\t") {
-		t.Fatalf("terms = %d, want exactly 200 with Name199 last", len(got))
+	if got := BoostTerms(ps, nil); len(got) != MaxBoostTerms || !strings.HasPrefix(got[MaxBoostTerms-1], fmt.Sprintf("Name%03d\t", MaxBoostTerms-1)) {
+		t.Fatalf("terms = %d, want exactly %d with the last kept at the cap", len(got), MaxBoostTerms)
 	}
 	got := BoostTerms([]Pair{
 		activePair("abc", "Xyz", 1), // 3 and 3: both kept
