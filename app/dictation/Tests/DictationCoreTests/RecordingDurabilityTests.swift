@@ -124,21 +124,41 @@ final class RecordingDurabilityTests: XCTestCase {
         w.finish(atNanos: 1_000 + 10_000_000)
     }
 
-    /// The timer calls the action repeatedly at the interval, and stops when told.
-    /// Mutation: PeriodicFlush.start, `repeating: interval` -> `repeating: .infinity` -> RED (one tick only).
+    /// The timer calls the action repeatedly at the interval, a second start adds no second timer, and stop means stop.
+    /// It waits for the ticks on an expectation instead of a fixed sleep, so a loaded runner can be slow without failing it (#636).
+    /// Mutation: PeriodicFlush.start, `repeating: interval` -> `repeating: .infinity` -> RED (one tick only, the wait times out).
+    /// Mutation: PeriodicFlush.start, a second start() that keeps the first timer alive beside the new one -> RED (4th tick at ~104 ms).
+    /// Merely deleting the `guard timer == nil` line is NOT observable: the displaced timer is released and libdispatch cancels it.
     func testThePeriodicFlushTicksRepeatedlyAndStops() {
+        let interval = 0.05
         let ticks = NSLock()
         var n = 0
-        let flush = PeriodicFlush(interval: 0.05, action: { ticks.withLock { n += 1 } })
+        var fourthAt: UInt64 = 0
+        let four = expectation(description: "four ticks")
+        four.expectedFulfillmentCount = 4
+        four.assertForOverFulfill = false
+        let flush = PeriodicFlush(interval: interval, action: {
+            let now = DispatchTime.now().uptimeNanoseconds
+            ticks.withLock {
+                n += 1
+                if n == 4 { fourthAt = now }
+            }
+            four.fulfill()
+        })
         XCTAssertFalse(flush.isRunning)
+        let t0 = DispatchTime.now().uptimeNanoseconds // before start(), so the elapsed time can only be over-measured
         flush.start()
         flush.start() // a second start must not add a second timer
         XCTAssertTrue(flush.isRunning)
-        Thread.sleep(forTimeInterval: 0.42)
+        wait(for: [four], timeout: 5)
         flush.stop()
         let atStop = ticks.withLock { n }
-        XCTAssertGreaterThanOrEqual(atStop, 4, "ticked about every 50 ms for 420 ms")
-        XCTAssertLessThanOrEqual(atStop, 10, "a second timer would double it")
+        XCTAssertGreaterThanOrEqual(atStop, 4, "ticked repeatedly, not once")
+        // A single timer has its k-th tick no earlier than start + k * interval (a timer fires late under load, never early),
+        // so the 4th tick is >= 200 ms after start(). Two timers started together reach the 4th tick after 2 intervals (~100 ms).
+        // 180 ms separates them; only a too-EARLY 4th tick fails here, slowness never does.
+        let elapsedMs = Double(ticks.withLock { fourthAt } &- t0) / 1_000_000
+        XCTAssertGreaterThanOrEqual(elapsedMs, 180, "a second timer would reach 4 ticks in about half the time")
         Thread.sleep(forTimeInterval: 0.2)
         XCTAssertEqual(ticks.withLock { n }, atStop, "stopped means stopped")
         XCTAssertFalse(flush.isRunning)
