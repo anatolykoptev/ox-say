@@ -140,7 +140,7 @@ func notesServerArgs(cfg *config.Config, port int, modelPath string) []string {
 // child gets the same argv but its own key, so rotating it cannot break a
 // resident engine still serving its first key.
 func notesServerArgsKey(cfg *config.Config, port int, modelPath, keyFile string) []string {
-	return notesArgs(cfg, port, modelPath, notesGPULayers(cfg), 0, keyFile)
+	return notesArgs(cfg, port, modelPath, meeting.NotesContextTokens(), notesGPULayers(cfg), 0, keyFile)
 }
 
 // notesPlanArgs is the argv the spawn-time fit decided: the plan's model
@@ -155,20 +155,27 @@ func notesPlanArgs(cfg *config.Config, port int, p notesPlan) []string {
 // gets the same fitted argv but its own key, so rotating it cannot break a
 // resident engine still serving its first key.
 func notesPlanArgsKey(cfg *config.Config, port int, p notesPlan, keyFile string) []string {
-	if p.fitMiB > 0 {
-		return notesArgs(cfg, port, p.model, "", p.fitMiB, keyFile)
+	ctx := p.ctx
+	if ctx <= 0 {
+		ctx = meeting.NotesContextTokens()
 	}
-	return notesArgs(cfg, port, p.model, notesGPULayers(cfg), 0, keyFile)
+	if p.fitMiB > 0 {
+		return notesArgs(cfg, port, p.model, ctx, "", p.fitMiB, keyFile)
+	}
+	return notesArgs(cfg, port, p.model, ctx, notesGPULayers(cfg), 0, keyFile)
 }
 
-// notesArgs builds the child argv. ngl is the -ngl value verbatim: "99" for
-// full offload, "0" for CPU decode, or "" to leave it unset for the fitter
-// (fitMiB > 0 then names its --fit-target). Never a verbosity flag: at
-// debug level llama-server logs request bodies and every prompt token, which
-// would put the meeting transcript into notes.log.
-func notesArgs(cfg *config.Config, port int, modelPath, ngl string, fitMiB int, keyFile string) []string {
+// notesArgs builds the child argv. ctx is the -c value: the meeting-notes
+// context normally, the larger llm_endpoint_ctx while the endpoint is on
+// (notesSpawnPlan clamps it to what the model and the room allow). ngl is
+// the -ngl value verbatim: "99" for full offload, "0" for CPU decode, or ""
+// to leave it unset for the fitter (fitMiB > 0 then names its --fit-target).
+// Never a verbosity flag: at debug level llama-server logs request bodies
+// and every prompt token, which would put the meeting transcript into
+// notes.log.
+func notesArgs(cfg *config.Config, port int, modelPath string, ctx int, ngl string, fitMiB int, keyFile string) []string {
 	args := []string{
-		"-m", modelPath, "-c", strconv.Itoa(meeting.NotesContextTokens()),
+		"-m", modelPath, "-c", strconv.Itoa(ctx),
 		"-ctk", "q8_0", "-ctv", "q8_0",
 		"--host", voxLoopbackHost, "--port", strconv.Itoa(port),
 		"-fa", "on", "--jinja", "--no-ui", "-np", "1", "--cache-ram", "0",
@@ -453,7 +460,15 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 	}
 	callCtx, cancel := context.WithTimeout(ctx, notesCallTimeout)
 	defer cancel()
+	// The child decodes one request at a time (-np 1): the daemon's request
+	// slot serializes this call against an endpoint request in flight, which
+	// then holds the slot for its whole stream — a long agent request can
+	// delay this call by the request's own remaining time.
+	if err := c.d.takeNotesSlot(ctx); err != nil {
+		return "", err
+	}
 	out, err := meeting.HTTPChat{BaseURL: base, Key: c.d.notesKey}.Complete(callCtx, r)
+	<-c.d.notesReqSlot
 	if err == nil || ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded) || callCtx.Err() != context.DeadlineExceeded {
 		return out, err
 	}
@@ -592,11 +607,15 @@ func (d *Daemon) notesStaleChild(ctx context.Context) error {
 	sp := d.fit.spawn
 	d.fit.mu.Unlock()
 	if sp.set {
-		if sp.resPath == res.Path {
+		if sp.resPath == res.Path && sp.want == d.notesCtxWant(res) {
 			return nil
 		}
 	} else if running == res.Path || (res.Path == "" && running == d.Cfg.NotesModel) {
-		return nil // an engine not planned by notesSpawnPlan: its own -m is the record
+		// An engine not planned by notesSpawnPlan: its own -m and -c are the
+		// record — a context ask that moved under it recycles it too.
+		if c := notesFlagValue(args, "-c"); c == "" || c == strconv.Itoa(d.notesCtxWant(res)) {
+			return nil
+		}
 	}
 	d.log.Info("notes model changed under the resident engine; recycling it")
 	if err := d.LLMSup.Stop(ctx); err != nil {

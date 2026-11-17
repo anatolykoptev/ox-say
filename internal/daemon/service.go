@@ -98,6 +98,15 @@ type Daemon struct {
 	// or created at start from $OX_SAY_HOME/owner.token (mode 0600). Empty
 	// fails closed: nothing approves or rejects.
 	ownerToken string
+	// llmKey is the per-install bearer of the OpenAI-compatible endpoint,
+	// loaded or created at start from run/llm-endpoint.key (mode 0600).
+	// Empty fails closed: no request authenticates (llmendpoint.go).
+	llmKey string
+	// notesReqSlot is the daemon's stand-in for the notes child's single
+	// decode slot (-np 1): a meeting's notes call holds it for its HTTP
+	// call, an endpoint request for the whole proxied stream, so one
+	// request at a time reaches the model whichever side asked.
+	notesReqSlot chan struct{}
 	// meetCancel and meetDone stop and await StartMeetings' goroutines.
 	meetCancel context.CancelFunc
 	meetDone   chan struct{}
@@ -403,6 +412,8 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox, 
 		}
 	}
 	d.initGlossary()
+	d.llmKey = llmEndpointKey(cfg.RunDir(), logger)
+	d.notesReqSlot = make(chan struct{}, 1)
 	d.initMeetings()
 	d.initTranscripts()
 	if d.VoxSup != nil {
@@ -800,6 +811,9 @@ type statusSummary struct {
 	// words and as a code, the runtime state and the model download's
 	// progress.
 	Notes notesStatus `json:"notes"`
+	// LLMEndpoint is the OpenAI-compatible surface for other local apps:
+	// on/off, its URL and the context the notes child runs with.
+	LLMEndpoint llmStatus `json:"llm_endpoint"`
 	// VoiceClean is the voice-cleanup engine: available, or the reason in plain words and as a code, and the lazy
 	// model download.
 	VoiceClean cleanStatus `json:"voice_clean"`
@@ -842,13 +856,14 @@ func (d *Daemon) Status() statusSummary {
 	}
 	busy := d.busy()
 	return statusSummary{
-		Engine:     d.Sup.Status(),
-		STTServer:  sttServer,
-		VoxCPM2:    d.voxStatus(),
-		Notes:      d.notesStatus(),
-		VoiceClean: d.cleanStatus(),
-		AEC:        d.aecStatus(),
-		Voices:     list,
+		Engine:      d.Sup.Status(),
+		STTServer:   sttServer,
+		VoxCPM2:     d.voxStatus(),
+		Notes:       d.notesStatus(),
+		LLMEndpoint: d.llmStatus(),
+		VoiceClean:  d.cleanStatus(),
+		AEC:         d.aecStatus(),
+		Voices:      list,
 		Config: map[string]any{
 			"addr":              d.Cfg.Addr,
 			"engine_port":       d.Cfg.EnginePort,

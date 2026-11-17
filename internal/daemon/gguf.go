@@ -57,12 +57,69 @@ var (
 )
 
 // ggufMeta is what a GGUF file tells the check: the header version, the two
-// general.* strings worth reporting, and the file's size.
+// general.* strings worth reporting, the file's size, and the numeric
+// metadata the notes-context fit needs (Nums for scalars, NumLists for the
+// per-layer arrays hybrid models write), each keyed by the metadata name
+// with its "<arch>." or "general." prefix stripped.
 type ggufMeta struct {
 	Version      uint32
 	Name         string
 	Architecture string
 	Bytes        int64
+	Nums         map[string]int64
+	NumLists     map[string][]int64
+}
+
+// ggufWantedNums is the metadata a notes-context fit reads: the model's own
+// context ceiling and the K/V layout per attention layer. Keyed by the name
+// after the architecture prefix.
+var ggufWantedNums = map[string]bool{
+	"context_length":          true,
+	"block_count":             true,
+	"attention.head_count_kv": true,
+	"attention.key_length":    true,
+	"attention.value_length":  true,
+}
+
+// ggufQ8Scale is q8_0's storage: 34 bytes per 32 elements (llama.cpp's
+// block_q8_0 of half scale + 32 int8). The KV estimate multiplies the
+// element count by 34/32.
+const ggufQ8Scale = 34
+
+// kvPerToken estimates the model's q8_0 KV bytes per token: the K+V element
+// count summed over the attention layers, times 34/32. key_length and
+// value_length are the GGUF's per-layer totals (n_embd_k_gqa / n_embd_v_gqa);
+// a per-layer array counts the layers that actually attend — a hybrid's
+// linear layers carry no KV. 0 when the metadata cannot say: the estimate
+// is never guessed, the fit just keeps the ask and lets llama.cpp's fitter
+// and the OOM ladder decide.
+func (m ggufMeta) kvPerToken() int64 {
+	var dims int64
+	if kl := m.NumLists["attention.key_length"]; len(kl) > 0 {
+		vl := m.NumLists["attention.value_length"]
+		for i, k := range kl {
+			dims += k
+			if i < len(vl) {
+				dims += vl[i]
+			}
+		}
+	} else {
+		k, v := m.Nums["attention.key_length"], m.Nums["attention.value_length"]
+		if k <= 0 || v <= 0 {
+			return 0
+		}
+		layers := m.Nums["block_count"]
+		if hl := m.NumLists["attention.head_count_kv"]; len(hl) > 0 {
+			layers = 0
+			for _, h := range hl {
+				if h > 0 {
+					layers++
+				}
+			}
+		}
+		dims = (k + v) * layers
+	}
+	return dims * ggufQ8Scale / 32
 }
 
 // ggufReadMeta reads the header and metadata of the GGUF at path. A file whose
@@ -125,6 +182,16 @@ func ggufReadMeta(path string) (ggufMeta, error) {
 				m.Name = ggufMetaString(s)
 			} else {
 				m.Architecture = ggufMetaString(s)
+			}
+			continue
+		}
+		name := key
+		if i := strings.IndexByte(key, '.'); i >= 0 {
+			name = key[i+1:]
+		}
+		if ggufWantedNums[name] {
+			if err := m.captureNum(r, name, typ); err != nil {
+				return m, err
 			}
 			continue
 		}
@@ -214,6 +281,102 @@ func ggufString(r *bufio.Reader, max uint64) (string, error) {
 		return "", ggufErr(err)
 	}
 	return sb.String(), nil
+}
+
+// captureNum reads a whitelisted numeric value into Nums or NumLists; a key
+// of the right name but a non-numeric type is skipped like any other.
+func (m *ggufMeta) captureNum(r *bufio.Reader, name string, typ uint32) error {
+	if typ == ggufTypeArray {
+		elemType, err := ggufU32(r)
+		if err != nil {
+			return ggufErr(err)
+		}
+		count, err := ggufU64(r)
+		if err != nil {
+			return ggufErr(err)
+		}
+		if count > ggufMaxArrayElems {
+			return fmt.Errorf("%w: an array of %d elements", errGGUFFormat, count)
+		}
+		if elemType == ggufTypeString {
+			for i := uint64(0); i < count; i++ {
+				if _, err := ggufString(r, ggufMaxStringLen); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		size, ok := ggufFixedSize(elemType)
+		if !ok {
+			return fmt.Errorf("%w: array element type %d", errGGUFFormat, elemType)
+		}
+		if elemType == ggufTypeFloat32 || elemType == ggufTypeFloat64 {
+			return ggufSkip(r, count*uint64(size))
+		}
+		vals := make([]int64, 0, min(count, uint64(ggufMaxLayerElems)))
+		for i := uint64(0); i < count; i++ {
+			v, err := ggufReadInt(r, elemType)
+			if err != nil {
+				return ggufErr(err)
+			}
+			if i < ggufMaxLayerElems {
+				vals = append(vals, v)
+			}
+		}
+		if m.NumLists == nil {
+			m.NumLists = map[string][]int64{}
+		}
+		m.NumLists[name] = vals
+		return nil
+	}
+	size, ok := ggufFixedSize(typ)
+	if !ok {
+		return fmt.Errorf("%w: value type %d", errGGUFFormat, typ)
+	}
+	if typ == ggufTypeFloat32 || typ == ggufTypeFloat64 {
+		return ggufSkip(r, uint64(size))
+	}
+	v, err := ggufReadInt(r, typ)
+	if err != nil {
+		return ggufErr(err)
+	}
+	if m.Nums == nil {
+		m.Nums = map[string]int64{}
+	}
+	m.Nums[name] = v
+	return nil
+}
+
+// ggufMaxLayerElems bounds the per-layer arrays kept whole: a model's layer
+// count is two digits, the cap sits far above.
+const ggufMaxLayerElems = 8192
+
+// ggufReadInt reads one integer scalar of the given wire type.
+func ggufReadInt(r *bufio.Reader, typ uint32) (int64, error) {
+	b := make([]byte, 8)
+	n, _ := ggufFixedSize(typ)
+	if _, err := io.ReadFull(r, b[:n]); err != nil {
+		return 0, err
+	}
+	switch typ {
+	case ggufTypeUint8, ggufTypeBool:
+		return int64(b[0]), nil
+	case ggufTypeInt8:
+		return int64(int8(b[0])), nil
+	case ggufTypeUint16:
+		return int64(binary.LittleEndian.Uint16(b)), nil
+	case ggufTypeInt16:
+		return int64(int16(binary.LittleEndian.Uint16(b))), nil
+	case ggufTypeUint32:
+		return int64(binary.LittleEndian.Uint32(b)), nil
+	case ggufTypeInt32:
+		return int64(int32(binary.LittleEndian.Uint32(b))), nil
+	case ggufTypeUint64:
+		return int64(binary.LittleEndian.Uint64(b)), nil
+	case ggufTypeInt64:
+		return int64(binary.LittleEndian.Uint64(b)), nil
+	}
+	return 0, fmt.Errorf("%w: value type %d", errGGUFFormat, typ)
 }
 
 // ggufSkipValue consumes one metadata value of the given wire type.

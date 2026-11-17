@@ -163,6 +163,13 @@
 //	                            also sleeps HANG_MS — a wedged server, not a
 //	                            slow one (the first n answers let the start's
 //	                            health wait succeed)
+//	OXSAY_FAKE_LLM_CHUNK_MS     ms between SSE chunks of a "stream":true
+//	                            completion (default 40); each chunk flushes
+//	OXSAY_FAKE_LLM_REQLOG       append-only file: "chat stream=<bool>
+//	                            body=<raw request body>" on arrival, then
+//	                            "chat-done" or "chat-cancelled" (the request
+//	                            context ended mid-stream — the client hung
+//	                            up and the upstream request died with it)
 package testutil
 
 import (
@@ -439,8 +446,17 @@ func runFakeLLM(args []string) int {
 		}
 		inflight.Add(1)
 		defer inflight.Add(-1)
+		body, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		_ = json.Unmarshal(body, &parsed)
+		stream, _ := parsed["stream"].(bool)
+		llmReqLog("chat stream=" + strconv.FormatBool(stream) + " body=" + string(body))
 		if hang > 0 {
 			time.Sleep(hang) // a slow or hung server: the caller's deadline ends first
+		}
+		if stream {
+			fakeLLMStream(w, r, reply)
+			return
 		}
 		finish := "stop"
 		if os.Getenv("OXSAY_FAKE_LLM_TRUNCATED") == "1" {
@@ -454,6 +470,7 @@ func runFakeLLM(args []string) int {
 		})
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(raw)
+		llmReqLog("chat-done")
 	})
 	ln, err := fakeListener(port)
 	if err != nil {
@@ -462,6 +479,61 @@ func runFakeLLM(args []string) int {
 	}
 	_ = http.Serve(ln, mux)
 	return 0
+}
+
+// llmReqLog appends one line to OXSAY_FAKE_LLM_REQLOG, like sttLog.
+func llmReqLog(line string) {
+	p := os.Getenv("OXSAY_FAKE_LLM_REQLOG")
+	if p == "" {
+		return
+	}
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintln(f, line)
+	_ = f.Close()
+}
+
+// fakeLLMStream answers a "stream":true completion the way llama-server's SSE
+// does: three delta chunks paced OXSAY_FAKE_LLM_CHUNK_MS apart, each flushed,
+// then [DONE]. A client that hangs up mid-stream ends the request context and
+// the "chat-cancelled" line is the evidence the cancellation reached the
+// child.
+func fakeLLMStream(w http.ResponseWriter, r *http.Request, reply string) {
+	pace := envMS("OXSAY_FAKE_LLM_CHUNK_MS")
+	if pace <= 0 {
+		pace = 40 * time.Millisecond
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	fl, _ := w.(http.Flusher)
+	for i, word := range strings.Fields(reply) {
+		if i >= 3 {
+			break
+		}
+		chunk, _ := json.Marshal(map[string]any{
+			"choices": []map[string]any{{"delta": map[string]string{"content": word + " "}}},
+		})
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", chunk); err != nil {
+			llmReqLog("chat-cancelled")
+			return
+		}
+		if fl != nil {
+			fl.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+			llmReqLog("chat-cancelled")
+			return
+		case <-time.After(pace):
+		}
+	}
+	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	if fl != nil {
+		fl.Flush()
+	}
+	llmReqLog("chat-done")
 }
 
 // runFakeSTTServe is the fake resident ox-stt: it records its argv as a

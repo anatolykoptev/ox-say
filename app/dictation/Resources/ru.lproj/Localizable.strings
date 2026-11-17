@@ -278,6 +278,15 @@
 "menu.meeting.install_failed.checksum" = "Не скачалось: файл повреждён";
 "menu.meeting.install_failed.server" = "Не скачалось: сервер недоступен";
 "menu.meeting.install_failed.other" = "Не удалось скачать модель";
+"settings.llm_endpoint" = "Доступ к модели для других приложений";
+"settings.llm_endpoint.footer" = "Другие приложения на этом Mac используют ту же модель, что и конспекты встреч, через OpenAI-совместимый endpoint только на этом Mac.";
+"settings.llm_endpoint.url" = "Endpoint";
+"settings.llm_endpoint.key" = "Ключ";
+"settings.llm_endpoint.copy_endpoint" = "Скопировать endpoint";
+"settings.llm_endpoint.copy_key" = "Скопировать ключ";
+"settings.llm_endpoint.regen" = "Новый ключ";
+"settings.llm_endpoint.ctx" = "Контекст: %d токенов. Модель общая с конспектами встреч, поэтому длинный запрос может их задержать.";
+"settings.llm_endpoint.key_new" = "Сгенерирован новый ключ. Обновите его в приложениях, которые используют старый.";
 "settings.permissions" = "Разрешения";
 "settings.permissions.footer" = "«Исправить» открывает нужную страницу в Системных настройках. Включите там OxSay.";
 "permission.mic" = "Микрофон";

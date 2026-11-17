@@ -108,7 +108,7 @@ final class ICloudSyncTests: XCTestCase {
         let d = UserDefaults(suiteName: "i532-\(UUID().uuidString)")!
         let answers = ["/i532/icloud": true, "/i532/local": false]
         let load = {
-            MeetingSettingsModel.load(defaults: d, daemonRetention: nil, notesWriter: .ready,
+            MeetingSettingsModel.load(defaults: d, daemon: nil, notesWriter: .ready,
                                       fullName: "x", home: self.home, probe: { url in answers[url.path] })
         }
         MeetingSettings.setFolder(URL(fileURLWithPath: "/i532/icloud", isDirectory: true), d)
@@ -126,7 +126,7 @@ final class ICloudSyncTests: XCTestCase {
         let answers = ["/i532/icloud": true, "/i532/local": false, "/i532/icloud-too": true]
         func pick(_ path: String) -> MeetingSettingsValues {
             MeetingSettingsModel.folderPicked(URL(fileURLWithPath: path, isDirectory: true), defaults: d,
-                                              daemonRetention: nil, notesWriter: .ready, fullName: "x",
+                                              daemon: nil, notesWriter: .ready, fullName: "x",
                                               home: home, probe: { url in answers[url.path] })
         }
         var v = pick("/i532/icloud")

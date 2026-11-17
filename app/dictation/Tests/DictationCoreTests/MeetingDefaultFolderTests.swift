@@ -97,7 +97,7 @@ final class MeetingDefaultFolderTests: XCTestCase {
     /// Mutation: MeetingSettingsModel.load, `probe: probe` removed from the `MeetingSettings.folder` call -> RED
     /// (the real probe answers for a path that does not exist: not synced, so the default stays in Documents).
     func testTheSettingsModelShowsTheLocalDefaultWithoutAWarning() {
-        let v = MeetingSettingsModel.load(defaults: defaults(), daemonRetention: nil, notesWriter: .ready,
+        let v = MeetingSettingsModel.load(defaults: defaults(), daemon: nil, notesWriter: .ready,
                                           fullName: "x", home: home, probe: syncedDocuments)
         XCTAssertEqual(v.folderPath, local)
         XCTAssertFalse(v.folderSyncsICloud)

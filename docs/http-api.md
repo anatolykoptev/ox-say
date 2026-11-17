@@ -32,7 +32,7 @@ Meeting routes (see [Meetings](meetings.md); the app uses them, and so can an ag
 | `GET /v1/meetings/<id>/speakers`, `PATCH …/speakers` | The other side's voices; name, merge and split them in one request |
 | `POST /v1/meetings/<id>/voices` | Tell the voices apart again after the voice engine failed |
 | `DELETE /v1/meetings/<id>` | Delete a meeting that nothing is working on |
-| `GET /v1/meetings/settings`, `PUT …/settings` | `retention_days`: how long audio is kept — 0 (forever), 7, 30 or 90; `live_captions`: live captions while recording (the answer carries the effective value and `live_captions_default`: on for Apple Silicon, off for Intel); `meeting_aec`: `on`/`off` — run `ox-aec` echo cancellation on the mic channel before transcription (on by default; a settings file written before the key existed reads as on, `"off"` is the explicit opt-out). A PUT changes the fields it carries and keeps the rest |
+| `GET /v1/meetings/settings`, `PUT …/settings` | `retention_days`: how long audio is kept — 0 (forever), 7, 30 or 90; `live_captions`: live captions while recording (the answer carries the effective value and `live_captions_default`: on for Apple Silicon, off for Intel); `meeting_aec`: `on`/`off` — run `ox-aec` echo cancellation on the mic channel before transcription (on by default; a settings file written before the key existed reads as on, `"off"` is the explicit opt-out); `llm_endpoint`: `on`/`off` — the OpenAI-compatible model endpoint for other apps (off when the key was never written, so it fails closed); `llm_endpoint_ctx`: the context the notes child runs with while the endpoint is on (0/unset = 131072, never below the notes context, clamped to the largest multiple of 4096 that fits memory); the answer also carries `llm_endpoint_url` and `llm_endpoint_key` for the Settings pane — both are response-only, a PUT ignores them. A PUT changes the fields it carries and keeps the rest |
 | `GET /v1/meetings/notes-model` | The notes model in use: resolved `model` (catalog id or `custom`), `source` (`env`, `saved`, `automatic`), `path`, `installed`, and `choices` — one row per catalog model with `installed` and `supported`, and `upstream` on the uncensored row while it is not installed (`available`, `gone`, `unknown`: a background HEAD of its download URL, 404/410 and 401/403 read as `gone`, everything else as `unknown`) |
 | `PUT /v1/meetings/notes-model` | `{"id":"<catalog id>"}` or `{"path":"/abs/file.gguf"}` — choose the notes model. `400`: unknown id, relative path, neither field, or an own file that fails the trial load. `409`: the model is busy (a download, or a meeting queued, running or recording). On success the choice is saved, a resident notes engine is stopped and the next notes run loads the new file — no restart |
 | `POST /v1/meetings/notes-model/validate` | Try an own notes model without choosing it: `{"path":"/abs/file.gguf"}` → `200` with `{"ok":true,"name","architecture","bytes"}` — the file's own GGUF `general.name`/`general.architecture` — or `{"ok":false,"reason"}`. The check is the one `PUT {"path"}` runs: a v2/v3 GGUF that fits 70% of this Mac's memory, then `ox-llm` really loading it on a private port, answering `/health` and one short completion |
@@ -84,6 +84,35 @@ Model routes (list the models this Mac can run, and install or remove the option
 |-------|-------------|
 | `GET /v1/models` | `{"models":[…]}` for `qwen3-tts`, `voxcpm2`, `parakeet`, `whisper`, `notes`, `notes:qwen3.5-9b`, `notes:qwen3.5-4b`, `notes:qwen3.8-27b-uncensored` (and `notes:custom` while your own file is the notes model); each row has `id`, `kind` (`speech`, `transcribe`, `notes`), `name`, `bytes`, `installed`, `default` (the daemon's own default for its kind — `notes:qwen3.5-9b` for notes), `optional` (may be installed and removed; false for `qwen3-tts`, `parakeet` and `notes:custom`), `removable` (true only when `DELETE` would succeed: optional, installed, the installer's file name, a plain file in `<home>/models`), `installing` (the notes download is running), `supported` and, when it is false, `reason_code` and `reason`; the `notes:qwen3.8-27b-uncensored` row also carries `upstream` while its file is not installed (`available`, `gone`, `unknown` — whether the download URL still answers; `gone` is only 404/410 or a gated 401/403, a network error or 5xx is `unknown`, and the field is omitted once the file is on disk). The plain `notes` row is the model notes would run on now — the resolved one — kept for clients written before the catalog. `supported` means this Mac can run the model; it does not mean ready now (a model that is not downloaded yet is still supported; `/status` `available` is the ready-now word). `bytes` is the size on disk when installed. For a model that is not installed it is the expected size: exact for every `notes…` row (the catalog's pinned bytes, the same figures `scripts/fetch-models.sh` downloads), approximate for `voxcpm2` (3.0 GB) and `whisper` (1.6 GB), and 0 where unknown (`qwen3-tts`, `parakeet`). One stat per file: cheap enough to call whenever a window opens |
 | `DELETE /v1/models/<id>` | Remove an optional model (`voxcpm2`, `whisper`, `notes`, `notes:<catalog id>`) and stop its engine first; `204`. `400`: a required model, `notes:custom`, a file that is not the one the installer writes (`OX_SAY_*_MODEL` pointing at your own file, a symlink, a folder), or a model outside `<home>/models` (managed outside OxSay; `GET` shows `removable: false`). `404`: unknown id or not installed. `409`: in use (a speech, design or produce job for `voxcpm2`; a transcription for `whisper`; a download, a queued, running or recording meeting for `notes` and `notes:<id>`; an engine still serving or starting). Deleting `notes` removes the file the resolution names; deleting `notes:<id>` removes that catalog file (and stops the notes engine when it is the resolved one). `notes` and `notes:<id>` are restored by `POST /v1/meetings/notes-model/install`; `voxcpm2` and `whisper` by `scripts/fetch-models.sh` |
+
+Model endpoint for other apps — the notes model, shared over an OpenAI-compatible
+surface, off by default (`llm_endpoint` in the meeting settings). While off, both
+routes answer 404 as if they did not exist. Every request needs
+`Authorization: Bearer <key>` with the per-install key the daemon writes at
+`<run dir>/llm-endpoint.key` (0600, generated on first use; the file is the source
+of truth — the daemon must authenticate with the app not running, so there is no
+Keychain copy). It is a third credential: not `owner.token`, not the MCP auth, and
+not the notes child's own per-spawn key; the comparison is constant-time. A
+request that would wait for dictation, a meeting recording or a running notes job
+gets a bounded 503 with `Retry-After` — voice work is never preempted. A request
+that starts the notes engine cold may wait for the model to load, up to the normal
+startup timeout. Only the model is served: OxSay tools, meetings, glossary and MCP
+are not reachable through these routes, and request/response bodies are never
+logged. `GET /v1/models` dispatches on the header: a request carrying
+`Authorization` is answered as below; one without it keeps the internal catalog
+above.
+
+| Route | Description |
+|-------|-------------|
+| `GET /v1/models` (with `Authorization`) | `{"object":"list","data":[{"id","object":"model","created","owned_by":"ox-say"}]}` — exactly one model, `id` the selected notes model's catalog id (`custom` for an own GGUF). `401` on a missing or wrong key |
+| `POST /v1/chat/completions` | The JSON body is proxied to the notes engine unchanged — `tools`, `tool_choice`, `chat_template_kwargs`, `reasoning_effort` and sampling fields all reach llama-server — and the answer is streamed back as it arrives (SSE or a plain response), never buffered whole; a client disconnect cancels the upstream request. `401` no/wrong key; `400` a body over 64 MiB or unreadable; `502` the engine unreachable; `503` + `Retry-After: 30` when voice work or another request holds the model |
+
+Key management (the app Settings pane calls these; they sit on the same
+unauthenticated loopback surface as the rest of the meeting settings):
+
+| Route | Description |
+|-------|-------------|
+| `POST /v1/meetings/llm-endpoint/key` | Generate and store a fresh endpoint bearer, answer `{"llm_endpoint_key":"<64 hex>"}` once. The old key stops working the moment the file is replaced |
 
 Streaming transcription sessions — incremental decoding on the resident
 `ox-stt --serve` (requires the VAD model; unavailable when it is absent or

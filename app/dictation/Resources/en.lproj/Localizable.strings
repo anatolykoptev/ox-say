@@ -284,6 +284,15 @@
 "menu.meeting.install_failed.checksum" = "Notes download failed: damaged file";
 "menu.meeting.install_failed.server" = "Notes download failed: server unavailable";
 "menu.meeting.install_failed.other" = "Notes download failed";
+"settings.llm_endpoint" = "Model access for other apps";
+"settings.llm_endpoint.footer" = "Other apps on this Mac use the same model as meeting notes, over an OpenAI-compatible endpoint on this Mac only.";
+"settings.llm_endpoint.url" = "Endpoint";
+"settings.llm_endpoint.key" = "Key";
+"settings.llm_endpoint.copy_endpoint" = "Copy endpoint";
+"settings.llm_endpoint.copy_key" = "Copy key";
+"settings.llm_endpoint.regen" = "New key";
+"settings.llm_endpoint.ctx" = "Context: %d tokens. The model is shared with meeting notes, so a long request can delay them.";
+"settings.llm_endpoint.key_new" = "A new key was generated. Update the apps that use the old one.";
 "settings.permissions" = "Permissions";
 "settings.permissions.footer" = "Fix opens the right page in System Settings. Switch OxSay on there.";
 "permission.mic" = "Microphone";

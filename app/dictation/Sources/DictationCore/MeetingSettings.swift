@@ -21,20 +21,40 @@ public enum MeetingRetention: Int, CaseIterable, Equatable {
     }
 }
 
-/// The settings the daemon keeps for meetings (`GET /v1/meetings/settings`): today only how long audio stays.
+/// The settings the daemon keeps for meetings (`GET /v1/meetings/settings`): how long audio stays, and the
+/// OpenAI-compatible endpoint other local apps reach the notes model through (`llm_endpoint`, off until the user
+/// turns it on). The endpoint's key is the per-install bearer external clients send; the daemon generates it, and
+/// the field is empty while a daemon that cannot show it answers.
 public struct MeetingDaemonSettings: Equatable {
     public var retentionDays: Int
+    public var llmEndpointOn: Bool
+    /// The context the notes child actually runs with under the endpoint (tokens; 0 when the daemon did not say).
+    public var llmEndpointCtx: Int
+    public var llmEndpointURL: String
+    public var llmEndpointKey: String
 
-    public init(retentionDays: Int) { self.retentionDays = retentionDays }
+    public init(retentionDays: Int, llmEndpointOn: Bool = false, llmEndpointCtx: Int = 0,
+                llmEndpointURL: String = "", llmEndpointKey: String = "") {
+        self.retentionDays = retentionDays
+        self.llmEndpointOn = llmEndpointOn
+        self.llmEndpointCtx = llmEndpointCtx
+        self.llmEndpointURL = llmEndpointURL
+        self.llmEndpointKey = llmEndpointKey
+    }
 
     public var retention: MeetingRetention { MeetingRetention(rawValue: retentionDays) ?? .month }
 
     /// nil for an answer without a period, or with one that is not a choice: a guess could show "30 days" over a
-    /// "never" the user picked.
+    /// "never" the user picked. The endpoint fields are optional on top: an older daemon's answer still decodes.
     public static func decode(_ data: Data) -> MeetingDaemonSettings? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let days = obj["retention_days"] as? Int, MeetingRetention(rawValue: days) != nil else { return nil }
-        return MeetingDaemonSettings(retentionDays: days)
+        return MeetingDaemonSettings(
+            retentionDays: days,
+            llmEndpointOn: obj["llm_endpoint"] as? String == "on",
+            llmEndpointCtx: obj["llm_endpoint_ctx"] as? Int ?? 0,
+            llmEndpointURL: obj["llm_endpoint_url"] as? String ?? "",
+            llmEndpointKey: obj["llm_endpoint_key"] as? String ?? "")
     }
 }
 

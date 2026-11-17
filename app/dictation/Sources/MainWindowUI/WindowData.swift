@@ -207,6 +207,10 @@ public struct MainWindowActions {
     public var chooseNotesFolder: () -> Void = {}
     public var openNotesFolder: () -> Void = {}
     public var downloadNotesWriter: () -> Void = {}
+    /// A one-shot clipboard write (the endpoint URL, the key): only on the user's click.
+    public var copyText: (String) -> Void = { _ in }
+    /// A fresh per-install bearer for the LLM endpoint; the old one stops working at once.
+    public var regenerateLLMKey: () -> Void = {}
     public var checkForUpdates: () -> Void = {}
     public var setSound: (SoundWhileDictating) -> Void = { _ in }
     public var setHotkeyMode: (HotkeyMode) -> Void = { _ in }

@@ -8,7 +8,8 @@ final class MeetingSettingsModelTests: XCTestCase {
     private let home = URL(fileURLWithPath: "/Users/test", isDirectory: true)
 
     private func values(_ d: UserDefaults, daemon: MeetingRetention? = nil) -> MeetingSettingsValues {
-        MeetingSettingsModel.load(defaults: d, daemonRetention: daemon, notesWriter: .ready, fullName: "Alex Morgan", home: home)
+        MeetingSettingsModel.load(defaults: d, daemon: daemon.map { MeetingDaemonSettings(retentionDays: $0.rawValue) },
+                                  notesWriter: .ready, fullName: "Alex Morgan", home: home)
     }
 
     private func client(_ answer: String = "{}", status: Int = 200, record: ((URLRequest) -> Void)? = nil) -> StudioClient {

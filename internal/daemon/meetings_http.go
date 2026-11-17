@@ -393,18 +393,35 @@ type meetingSettingsAnswer struct {
 	LiveCaptions        bool   `json:"live_captions"`
 	LiveCaptionsDefault bool   `json:"live_captions_default"`
 	AEC                 string `json:"meeting_aec"`
+	// LLMEndpoint is the effective llm_endpoint choice, "on" or "off" (a
+	// setting never made reads as off). LLMEndpointCtx is the context the
+	// notes child runs with under it — the fitted figure, not just the ask —
+	// and LLMEndpointURL/Key the loopback base and the per-install bearer,
+	// for the Settings pane's copy buttons.
+	LLMEndpoint    string `json:"llm_endpoint"`
+	LLMEndpointCtx int    `json:"llm_endpoint_ctx"`
+	LLMEndpointURL string `json:"llm_endpoint_url"`
+	LLMEndpointKey string `json:"llm_endpoint_key"`
 }
 
 func (d *Daemon) settingsAnswer() meetingSettingsAnswer {
-	aec := meeting.AECOff
-	if d.Meet.Store.Settings().AECEnabled() {
+	st := d.Meet.Store.Settings()
+	aec, ep := meeting.AECOff, meeting.LLMEndpointOff
+	if st.AECEnabled() {
 		aec = meeting.AECOn
 	}
+	if st.LLMEndpointEnabled() {
+		ep = meeting.LLMEndpointOn
+	}
 	return meetingSettingsAnswer{
-		RetentionDays:       d.Meet.Store.Settings().RetentionDays,
+		RetentionDays:       st.RetentionDays,
 		LiveCaptions:        d.liveEnabled(),
 		LiveCaptionsDefault: d.liveDefault(),
 		AEC:                 aec,
+		LLMEndpoint:         ep,
+		LLMEndpointCtx:      d.notesCtxEffective(),
+		LLMEndpointURL:      d.llmEndpointURL(),
+		LLMEndpointKey:      d.llmKey,
 	}
 }
 
@@ -416,22 +433,34 @@ func (d *Daemon) handleMeetingSettings(w http.ResponseWriter, _ *http.Request) {
 // must not read as 0, which is "never delete", and an absent live_captions must not read as "off".
 func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		RetentionDays *int    `json:"retention_days"`
-		LiveCaptions  *bool   `json:"live_captions"`
-		AEC           *string `json:"meeting_aec"`
+		RetentionDays  *int    `json:"retention_days"`
+		LiveCaptions   *bool   `json:"live_captions"`
+		AEC            *string `json:"meeting_aec"`
+		LLMEndpoint    *string `json:"llm_endpoint"`
+		LLMEndpointCtx *int    `json:"llm_endpoint_ctx"`
 		// What GET answers beside the settings: a client that sends the answer back is not refused. Read, never stored.
-		LiveCaptionsDefault *bool `json:"live_captions_default"`
+		LiveCaptionsDefault *bool   `json:"live_captions_default"`
+		LLMEndpointURL      *string `json:"llm_endpoint_url"`
+		LLMEndpointKey      *string `json:"llm_endpoint_key"`
 	}
 	if err := decodeStrict(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if in.RetentionDays == nil && in.LiveCaptions == nil && in.AEC == nil {
-		writeErr(w, http.StatusBadRequest, "retention_days, live_captions or meeting_aec is required")
+	if in.RetentionDays == nil && in.LiveCaptions == nil && in.AEC == nil && in.LLMEndpoint == nil && in.LLMEndpointCtx == nil {
+		writeErr(w, http.StatusBadRequest, "retention_days, live_captions, meeting_aec, llm_endpoint or llm_endpoint_ctx is required")
 		return
 	}
 	if in.AEC != nil && *in.AEC != meeting.AECOn && *in.AEC != meeting.AECOff {
 		writeErr(w, http.StatusBadRequest, "meeting_aec must be \"on\" or \"off\"")
+		return
+	}
+	if in.LLMEndpoint != nil && *in.LLMEndpoint != meeting.LLMEndpointOn && *in.LLMEndpoint != meeting.LLMEndpointOff {
+		writeErr(w, http.StatusBadRequest, "llm_endpoint must be \"on\" or \"off\"")
+		return
+	}
+	if in.LLMEndpointCtx != nil && *in.LLMEndpointCtx < 0 {
+		writeErr(w, http.StatusBadRequest, "llm_endpoint_ctx must not be negative")
 		return
 	}
 	// One read-modify-write (UpdateSettings): the base is the file as stored, not Settings(), which shows the default
@@ -454,6 +483,12 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 		}
 		if in.AEC != nil {
 			cur.AEC = *in.AEC
+		}
+		if in.LLMEndpoint != nil {
+			cur.LLMEndpoint = *in.LLMEndpoint
+		}
+		if in.LLMEndpointCtx != nil {
+			cur.LLMEndpointCtx = *in.LLMEndpointCtx
 		}
 		return cur, nil
 	})

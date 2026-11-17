@@ -321,6 +321,11 @@ final class MainWindowSource {
             NotesFolder.open(self.host.defaults)
         }
         a.downloadNotesWriter = { [weak self] in self?.downloadNotesWriter() }
+        a.copyText = { text in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        }
+        a.regenerateLLMKey = { [weak self] in self?.regenerateLLMKey() }
         a.checkForUpdates = { [weak self] in self?.host.checkForUpdates() }
         a.setSound = { [weak self] mode in
             guard let self else { return }
@@ -550,10 +555,10 @@ final class MainWindowSource {
         let daemon = try? await host.client.meetingDaemonSettings()
         let notes = host.daemonStatus()?.notes
         model.data.meetingSettings = pickedFolder.map {
-            MeetingSettingsModel.folderPicked($0, defaults: host.defaults, daemonRetention: daemon?.retention,
+            MeetingSettingsModel.folderPicked($0, defaults: host.defaults, daemon: daemon,
                                               notesWriter: NotesWriterState.of(notes), fullName: NSFullUserName())
         } ?? MeetingSettingsModel.load(
-            defaults: host.defaults, daemonRetention: daemon?.retention, notesWriter: NotesWriterState.of(notes),
+            defaults: host.defaults, daemon: daemon, notesWriter: NotesWriterState.of(notes),
             fullName: NSFullUserName())
     }
 
@@ -808,6 +813,19 @@ final class MainWindowSource {
         }
     }
 
+    /// A fresh endpoint bearer: the daemon writes it, the page reads it back through the settings reload.
+    private func regenerateLLMKey() {
+        Task { @MainActor in
+            do {
+                let key = try await host.client.regenerateLLMEndpointKey()
+                model.data.meetingSettings.llmEndpoint.key = key
+                model.data.notice = L10nKey.settingsLLMEndpointKeyNew.text
+            } catch {
+                model.data.notice = MeetingErrorText.sentence(error, action: .settings)
+            }
+        }
+    }
+
     // MARK: settings
 
     /// Saves one edit where it lives. A save that did not go through is said, and the page shows the stored value again.
@@ -824,9 +842,10 @@ final class MainWindowSource {
             switch change {
             case .enabled: host.meetingsEnabledChanged()
             case .callMode: host.meetings()?.settingsChanged()
-            case .retention, .mode, .name: break
+            case .retention, .mode, .name, .llmEndpoint: break
             }
             if case .retention = change { model.data.meetingSettings.retentionVerified = true }
+            if case .llmEndpoint(let on) = change { model.data.meetingSettings.llmEndpoint.on = on }
             // A name is typed letter by letter: only a change that alters other parts of the page reads it all again.
             if change.needsRefresh { refresh() }
         }
@@ -838,7 +857,7 @@ final class MainWindowSource {
     private static func blank(_ host: MainWindowHost) -> MainWindowData {
         MainWindowData(
             meetings: [], meetingsLoad: .loading, details: [:],
-            meetingSettings: MeetingSettingsModel.load(defaults: host.defaults, daemonRetention: nil, notesWriter: .unavailable(.meetingErrDaemonDown),
+            meetingSettings: MeetingSettingsModel.load(defaults: host.defaults, daemon: nil, notesWriter: .unavailable(.meetingErrDaemonDown),
                                                        fullName: NSFullUserName()),
             permissions: [],
             dictation: DictationValues(keyTitle: nil, mode: DictationSettings.mode(host.defaults), sound: DictationSettings.sound(host.defaults), recent: []),

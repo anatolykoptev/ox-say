@@ -110,6 +110,24 @@ extension StudioClient {
         _ = try await succeed(request)
     }
 
+    /// PUT /v1/meetings/settings: `llm_endpoint` on/off — whether other local apps may reach the notes model
+    /// through the daemon's OpenAI-compatible surface.
+    public func setLLMEndpoint(on: Bool) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["llm_endpoint": on ? "on" : "off"])
+        var request = post("v1/meetings/settings", body: body, timeout: Self.quickTimeout)
+        request.httpMethod = "PUT"
+        _ = try await succeed(request)
+    }
+
+    /// POST /v1/meetings/llm-endpoint/key: a fresh per-install bearer for the endpoint; the old one stops working
+    /// the moment the daemon answers.
+    public func regenerateLLMEndpointKey() async throws -> String {
+        let data = try await succeed(post("v1/meetings/llm-endpoint/key", body: nil, timeout: Self.quickTimeout))
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let key = obj["llm_endpoint_key"] as? String else { throw StudioError.badResponse }
+        return key
+    }
+
     /// POST /v1/meetings/notes-model/install: download the notes model.
     public func installNotesModel() async throws {
         _ = try await succeed(post("v1/meetings/notes-model/install", body: nil, timeout: Self.quickTimeout))

@@ -53,3 +53,18 @@ the installed agent. `GET /status` shows the path each engine resolved to
 under `config` (`engine_bin`, `stt_bin`, `voxcpm2_bin`, `notes_bin`,
 `diar_bin`).
 
+## Meeting settings file
+
+The Settings pane and `PUT /v1/meetings/settings` write
+`$OX_SAY_HOME/meetings/settings.json`. Keys that matter to the model endpoint:
+
+| Key | Default | Notes |
+|-----|---------|-------|
+| `llm_endpoint` | unset = `off` | `on` serves the notes model to other apps at `http://<OX_SAY_ADDR>/v1` (OpenAI-compatible: `GET /v1/models`, `POST /v1/chat/completions`). While unset or `off` both routes answer 404 |
+| `llm_endpoint_ctx` | unset = `131072` | Context the notes child runs with while the endpoint is on. Never below the meeting-notes context; when the asked value does not fit memory the daemon uses the largest multiple of 4096 that does and reports the effective value in `/status` (`llm_endpoint.context`) |
+
+The endpoint bearer is not in this file: it is generated per install at
+`$OX_SAY_HOME/run/llm-endpoint.key` (mode 0600, the file is the source of truth —
+the daemon authenticates without the app, so there is no Keychain copy), shown in
+Settings and rotated by `POST /v1/meetings/llm-endpoint/key`.
+

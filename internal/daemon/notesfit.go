@@ -48,6 +48,7 @@ import (
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
+	"github.com/anatolykoptev/ox-say/internal/meeting"
 )
 
 const (
@@ -86,24 +87,30 @@ var notesGPUWired = defaultNotesGPUWired
 // no-op off Darwin); tests replace it so the fake ox-llm is not exec'd.
 var notesGPUWarmup = notesGPUWarm
 
-// notesPlan is one spawn's decision: which model file the argv names and the
-// --fit-target MiB (0: no fitter, the config's default -ngl). fit and why
-// feed /status and the log.
+// notesPlan is one spawn's decision: which model file the argv names, the
+// -c it starts with and the --fit-target MiB (0: no fitter, the config's
+// default -ngl). ctx is what the argv gets (possibly room-reduced from want);
+// want is the context the current settings ask for, recorded so a changed
+// ask marks the resident child stale. fit and why feed /status and the log.
 type notesPlan struct {
 	model  string
+	ctx    int
+	want   int
 	fitMiB int
 	fit    string
 	why    string
 }
 
 // notesSpawn is what the last spawn was planned for: the resolution's model
-// path and the model the argv named. The stale check compares the CURRENT
-// resolution with it — never a fresh plan, which would count the resident
-// child's own GPU allocation as somebody else's.
+// path, the model the argv named and the context ask of the moment (want —
+// not the possibly room-reduced ctx the argv got). The stale check compares
+// the CURRENT resolution and ask with it — never a fresh plan, which would
+// count the resident child's own GPU allocation as somebody else's.
 type notesSpawn struct {
 	set     bool
 	resPath string
 	model   string
+	want    int
 }
 
 // notesFit is the daemon's record of the fit decisions: the OOM floor, the
@@ -123,6 +130,9 @@ type notesFit struct {
 	// offload is what the last spawn's own log said it put on the GPU; nil until that child has reported (a
 	// finishPlan clears it, so an older child's count never describes the next one).
 	offload *notesOffload
+	// ctxMax caches each model file's own context_length from its GGUF, so
+	// /status and a spawn plan re-read nothing.
+	ctxMax map[string]int64
 	// now is the clock; tests inject it.
 	now func() time.Time
 }
@@ -156,6 +166,8 @@ func (d *Daemon) notesSpawnPlan() notesPlan {
 	if p.model == "" {
 		p.model = d.Cfg.NotesModel
 	}
+	p.want = d.notesCtxWant(res)
+	p.ctx = p.want
 	if !d.Cfg.UnifiedMemory() || !res.Installed {
 		return d.finishPlan(res, p) // CPU decode decides nothing; a missing model fails as before
 	}
@@ -195,16 +207,126 @@ func (d *Daemon) notesSpawnPlan() notesPlan {
 			}
 		}
 	}
+	room := notesRoomBytes(limit, used)
 	if known && p.fit == fitFull {
 		// partial is promised the same room makeNotesRoom works for: the
 		// weights plus the 1 GiB of KV/buffer slack.
-		if free := notesRoomBytes(limit, used); notesWeightBytes(res)+notesRoomSlack > free {
+		if notesWeightBytes(res)+notesRoomSlack > room {
 			p.fit = fitPartial
 			p.why = fmt.Sprintf("the model's weights (%s) plus 1 GiB of cache exceed the %s of GPU memory left after the rest of the system (%s) and the call's headroom; llama.cpp keeps part of the model on the CPU, so notes are slower",
-				notesGiB(notesWeightBytes(res)), notesGiB(max(free, 0)), notesGiB(int64(used)))
+				notesGiB(notesWeightBytes(res)), notesGiB(max(room, 0)), notesGiB(int64(used)))
 		}
 	}
+	// The endpoint's larger context is chosen against the same room: when
+	// its KV would not fit beside the weights, step down by whole 4096
+	// blocks to the largest that does — never below the notes context.
+	p.ctx = d.notesCtxFitted(p, room, known)
 	return d.finishPlan(res, p)
+}
+
+// llmCtxStep is the granularity the endpoint context is reduced in: the KV
+// cache's allocation granularity in llama.cpp.
+const llmCtxStep = 4096
+
+// notesCtxWant is the context the settings currently ask for: the notes
+// context while the endpoint is off, llm_endpoint_ctx (default 131072, never
+// below the notes context) while on — bounded above by the model's own
+// context length, floored back to the notes context when a short model
+// cannot even hold that.
+func (d *Daemon) notesCtxWant(res config.NotesResolution) int {
+	want := meeting.NotesContextTokens()
+	if d.llmEndpointOn() && d.Meet != nil && d.Meet.Store != nil {
+		want = d.Meet.Store.Settings().LLMEndpointCtxTokens()
+	}
+	if maxCtx := d.notesCtxMax(pickModelPath(res, d.Cfg)); maxCtx > 0 && int64(want) > maxCtx {
+		want = int(maxCtx / llmCtxStep * llmCtxStep)
+	}
+	return max(want, meeting.NotesContextTokens())
+}
+
+// pickModelPath is the model file a resolution resolves to (the config's
+// default when the resolution carries none).
+func pickModelPath(res config.NotesResolution, cfg *config.Config) string {
+	if res.Path != "" {
+		return res.Path
+	}
+	return cfg.NotesModel
+}
+
+// notesCtxEffective is the context the notes child actually runs with — the
+// resident child's own -c when one is up, else the ask the next spawn would
+// get — for /status and the Settings pane.
+func (d *Daemon) notesCtxEffective() int {
+	if d.LLMSup != nil {
+		if c := notesFlagValue(d.LLMSup.SpawnArgs(), "-c"); c != "" {
+			if n, err := strconv.Atoi(c); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return d.notesCtxWant(d.notesResolve())
+}
+
+// notesCtxFitted reduces want to the largest multiple of 4096 whose KV at
+// q8_0 fits the room beside the weights and the buffer slack — the same
+// budget the fit labels are computed against. When the probe or the model's
+// own KV layout is unknown the ask is kept: llama.cpp's fitter and the OOM
+// ladder decide, as they always did.
+func (d *Daemon) notesCtxFitted(p notesPlan, room int64, known bool) int {
+	want := p.want
+	floor := meeting.NotesContextTokens()
+	if !known || want <= floor {
+		return want
+	}
+	kvToken := d.notesKVPerToken(p.model)
+	if kvToken <= 0 {
+		return want
+	}
+	weights := notesFileBytes(p.model)
+	for want > floor && weights+kvToken*int64(want)+notesRoomSlack > room {
+		want -= llmCtxStep
+	}
+	return max(want, floor)
+}
+
+// notesKVPerToken estimates the q8_0 KV bytes per token of the GGUF at path
+// from its own metadata: the per-layer K+V element count times q8_0's 34
+// bytes per 32 elements. 0 when the file's metadata cannot say — an estimate
+// is never guessed.
+func (d *Daemon) notesKVPerToken(path string) int64 {
+	m, err := ggufReadMeta(path)
+	if err != nil {
+		return 0
+	}
+	return m.kvPerToken()
+}
+
+// notesCtxMax is the resolved model's own context_length from its GGUF,
+// cached per path so /status and spawn plans re-read nothing. 0 = unknown.
+func (d *Daemon) notesCtxMax(path string) int64 {
+	d.fit.mu.Lock()
+	defer d.fit.mu.Unlock()
+	if d.fit.ctxMax == nil {
+		d.fit.ctxMax = map[string]int64{}
+	}
+	if v, ok := d.fit.ctxMax[path]; ok {
+		return v
+	}
+	m, err := ggufReadMeta(path)
+	v := int64(0)
+	if err == nil {
+		v = m.Nums["context_length"]
+	}
+	d.fit.ctxMax[path] = v
+	return v
+}
+
+// notesFileBytes is a model file's own size (0 when unreadable): the weight
+// bytes of the file the argv will name — possibly the fallback's, not the
+// resolution's catalog pin.
+func notesFileBytes(path string) int64 {
+	n, _ := fileSize(path)
+	return n
 }
 
 // notesFitTargetMiB is the figure llama.cpp's fitter aims for: what the rest
@@ -295,7 +417,7 @@ func (d *Daemon) makeNotesRoom(ctx context.Context) {
 // finishPlan records the spawn and the /status label of plan p.
 func (d *Daemon) finishPlan(res config.NotesResolution, p notesPlan) notesPlan {
 	d.fit.mu.Lock()
-	d.fit.spawn = notesSpawn{set: true, resPath: res.Path, model: p.model}
+	d.fit.spawn = notesSpawn{set: true, resPath: res.Path, model: p.model, want: p.want}
 	d.fit.offload = nil
 	d.fit.mu.Unlock()
 	return d.recordPlan(p)
