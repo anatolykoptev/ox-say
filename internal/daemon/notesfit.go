@@ -194,27 +194,7 @@ func (d *Daemon) notesSpawnPlan() notesPlan {
 		p.fit = fitFull
 		p.why = fmt.Sprintf("llama.cpp fits the model with --fit-target %d MiB: the rest of the system's GPU memory plus %d MiB of headroom", target, notesFitHeadroomMiB)
 	}
-	if res.Source == config.NotesSourceAutomatic {
-		swap, why := esc >= 2, "an earlier start of the resolved model ran out of memory twice"
-		if !swap && known {
-			free := notesRoomBytes(limit, used)
-			if w := notesWeightBytes(res); w > 0 && w > free {
-				swap = true
-				why = fmt.Sprintf("the resolved model's weights (%s) exceed the %s of GPU memory left after the rest of the system and the call's headroom",
-					notesGiB(w), notesGiB(max(free, 0)))
-			}
-		}
-		if swap {
-			if path, ok := d.compactInstalled(res); ok {
-				p.model, p.fit = path, fitFallback
-				p.why = why + "; the compact model is installed and writes this meeting's notes"
-				// The ask was bounded by the resolved model's own context; the model that
-				// actually loads has its own ceiling.
-				p.want = d.notesCtxWantFor(path)
-				p.ctx = p.want
-			}
-		}
-	}
+	d.planCompactFallback(res, &p, esc, limit, used, known)
 	room := notesRoomBytes(limit, used)
 	if known && p.fit == fitFull {
 		// partial is promised the same room makeNotesRoom works for: the
@@ -230,6 +210,34 @@ func (d *Daemon) notesSpawnPlan() notesPlan {
 	// blocks to the largest that does — never below the notes context.
 	p.ctx = d.notesCtxFitted(p, room, known)
 	return d.finishPlan(res, p)
+}
+
+// planCompactFallback swaps an automatic choice onto the installed compact
+// model when the resolved one's weights cannot fit (or its starts ran out of
+// memory twice). The model that loads is the compact one, so the context ask
+// is bounded by ITS own ceiling, not the resolved model's.
+func (d *Daemon) planCompactFallback(res config.NotesResolution, p *notesPlan, esc int, limit, used uint64, known bool) {
+	if res.Source != config.NotesSourceAutomatic {
+		return
+	}
+	swap, why := esc >= 2, "an earlier start of the resolved model ran out of memory twice"
+	if !swap && known {
+		free := notesRoomBytes(limit, used)
+		if w := notesWeightBytes(res); w > 0 && w > free {
+			swap = true
+			why = fmt.Sprintf("the resolved model's weights (%s) exceed the %s of GPU memory left after the rest of the system and the call's headroom",
+				notesGiB(w), notesGiB(max(free, 0)))
+		}
+	}
+	if !swap {
+		return
+	}
+	if path, ok := d.compactInstalled(res); ok {
+		p.model, p.fit = path, fitFallback
+		p.why = why + "; the compact model is installed and writes this meeting's notes"
+		p.want = d.notesCtxWantFor(path)
+		p.ctx = p.want
+	}
 }
 
 // llmCtxStep is the granularity the endpoint context is reduced in: the KV

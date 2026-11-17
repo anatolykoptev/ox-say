@@ -441,7 +441,8 @@ type meetingSettingsIn struct {
 	LLMEndpoint     *string `json:"llm_endpoint"`
 	LLMEndpointCtx  *int    `json:"llm_endpoint_ctx"`
 	LLMEndpointMaxS *int    `json:"llm_endpoint_max_s"`
-	// What GET answers beside the settings: a client that sends the answer back is not refused. Read, never stored.
+	// What GET answers beside the settings: a client that sends the answer back is not refused as long as it
+	// changes nothing the owner guards (changesOwnerFields). Read, never stored.
 	LiveCaptionsDefault     *bool   `json:"live_captions_default"`
 	LLMEndpointURL          *string `json:"llm_endpoint_url"`
 	LLMEndpointCtxEffective *int    `json:"llm_endpoint_ctx_effective"`
@@ -452,11 +453,17 @@ func (in *meetingSettingsIn) empty() bool {
 		in.LLMEndpointCtx == nil && in.LLMEndpointMaxS == nil
 }
 
-// needsOwner: opening the endpoint, and sizing what it may take from the Mac, are the owner's calls. Turning it
-// off needs nobody: that only closes a door.
-func (in *meetingSettingsIn) needsOwner() bool {
-	return (in.LLMEndpoint != nil && *in.LLMEndpoint == meeting.LLMEndpointOn) ||
-		in.LLMEndpointCtx != nil || in.LLMEndpointMaxS != nil
+// errOwnerRequired is a settings change that only the owner may make.
+var errOwnerRequired = errors.New("the owner token is required for this change")
+
+// changesOwnerFields reports whether applying the request to cur would open the endpoint or resize what it may
+// take from the Mac — the owner's calls. Turning it off needs nobody (that only closes a door), and a value equal
+// to the stored one changes nothing, so a client that echoes the GET answer back is not refused. (Gating ctx and
+// max_s goes beyond the key itself: an unauthenticated process could otherwise ask for a 1 Mi context.)
+func (in *meetingSettingsIn) changesOwnerFields(cur meeting.Settings) bool {
+	return (in.LLMEndpoint != nil && *in.LLMEndpoint == meeting.LLMEndpointOn && !cur.LLMEndpointEnabled()) ||
+		(in.LLMEndpointCtx != nil && *in.LLMEndpointCtx != cur.LLMEndpointCtxTokens()) ||
+		(in.LLMEndpointMaxS != nil && *in.LLMEndpointMaxS != cur.LLMEndpointMaxSeconds())
 }
 
 // validate refuses a value outside what the setting means, with the sentence the client reads, and normalizes
@@ -516,13 +523,11 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusBadRequest, "retention_days, live_captions, meeting_aec, llm_endpoint, llm_endpoint_ctx or llm_endpoint_max_s is required")
 		return
 	}
-	if in.needsOwner() && !d.requireOwner(w, r) {
-		return
-	}
 	if msg := in.validate(); msg != "" {
 		writeErr(w, http.StatusBadRequest, msg)
 		return
 	}
+	owner := d.ownerOK(r)
 	// One read-modify-write (UpdateSettings): the base is the file as stored, not Settings(), which shows the default
 	// when the file is unusable — writing that back would restart a retention sweep that is paused on purpose — and a
 	// concurrent request for the other field cannot be overwritten by what this one read.
@@ -535,8 +540,16 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 			}
 			cur = meeting.Settings{}
 		}
+		// Judged against the settings as stored, under the store's own lock: no race between the check and the write.
+		if !owner && in.changesOwnerFields(cur) {
+			return cur, errOwnerRequired
+		}
 		return in.applyTo(cur), nil
 	})
+	if errors.Is(err, errOwnerRequired) {
+		d.requireOwner(w, r) // answers 401
+		return
+	}
 	if err != nil {
 		if errors.Is(err, os.ErrInvalid) {
 			writeErr(w, http.StatusBadRequest, "retention_days must be one of 0, 7, 30, 90")

@@ -356,47 +356,7 @@ func ggufString(r *bufio.Reader, max uint64) (string, error) {
 // of the right name but a non-numeric type is skipped like any other.
 func (m *ggufMeta) captureNum(r *bufio.Reader, name string, typ uint32) error {
 	if typ == ggufTypeArray {
-		elemType, err := ggufU32(r)
-		if err != nil {
-			return ggufErr(err)
-		}
-		count, err := ggufU64(r)
-		if err != nil {
-			return ggufErr(err)
-		}
-		if count > ggufMaxArrayElems {
-			return fmt.Errorf("%w: an array of %d elements", errGGUFFormat, count)
-		}
-		if elemType == ggufTypeString {
-			for i := uint64(0); i < count; i++ {
-				if _, err := ggufString(r, ggufMaxStringLen); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-		size, ok := ggufFixedSize(elemType)
-		if !ok {
-			return fmt.Errorf("%w: array element type %d", errGGUFFormat, elemType)
-		}
-		if elemType == ggufTypeFloat32 || elemType == ggufTypeFloat64 {
-			return ggufSkip(r, count*uint64(size))
-		}
-		vals := make([]int64, 0, min(count, uint64(ggufMaxLayerElems)))
-		for i := uint64(0); i < count; i++ {
-			v, err := ggufReadInt(r, elemType)
-			if err != nil {
-				return ggufErr(err)
-			}
-			if i < ggufMaxLayerElems {
-				vals = append(vals, v)
-			}
-		}
-		if m.NumLists == nil {
-			m.NumLists = map[string][]int64{}
-		}
-		m.NumLists[name] = vals
-		return nil
+		return m.captureNumList(r, name)
 	}
 	size, ok := ggufFixedSize(typ)
 	if !ok {
@@ -413,6 +373,52 @@ func (m *ggufMeta) captureNum(r *bufio.Reader, name string, typ uint32) error {
 		m.Nums = map[string]int64{}
 	}
 	m.Nums[name] = v
+	return nil
+}
+
+// captureNumList reads a whitelisted array (the per-layer figures hybrid
+// models write) into NumLists, keeping at most ggufMaxLayerElems entries.
+func (m *ggufMeta) captureNumList(r *bufio.Reader, name string) error {
+	elemType, err := ggufU32(r)
+	if err != nil {
+		return ggufErr(err)
+	}
+	count, err := ggufU64(r)
+	if err != nil {
+		return ggufErr(err)
+	}
+	if count > ggufMaxArrayElems {
+		return fmt.Errorf("%w: an array of %d elements", errGGUFFormat, count)
+	}
+	if elemType == ggufTypeString {
+		for i := uint64(0); i < count; i++ {
+			if _, err := ggufString(r, ggufMaxStringLen); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	size, ok := ggufFixedSize(elemType)
+	if !ok {
+		return fmt.Errorf("%w: array element type %d", errGGUFFormat, elemType)
+	}
+	if elemType == ggufTypeFloat32 || elemType == ggufTypeFloat64 {
+		return ggufSkip(r, count*uint64(size))
+	}
+	vals := make([]int64, 0, min(count, uint64(ggufMaxLayerElems)))
+	for i := uint64(0); i < count; i++ {
+		v, err := ggufReadInt(r, elemType)
+		if err != nil {
+			return ggufErr(err)
+		}
+		if i < ggufMaxLayerElems {
+			vals = append(vals, v)
+		}
+	}
+	if m.NumLists == nil {
+		m.NumLists = map[string][]int64{}
+	}
+	m.NumLists[name] = vals
 	return nil
 }
 

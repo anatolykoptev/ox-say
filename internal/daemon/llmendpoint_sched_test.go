@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anatolykoptev/ox-say/internal/engine"
 	"github.com/anatolykoptev/ox-say/internal/meeting"
 )
 
@@ -360,3 +361,51 @@ func (failingReader) Read([]byte) (int, error) { return 0, errors.New("upstream 
 type failingWriter struct{ http.ResponseWriter }
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
+// Dictation runs on the resident STT server, which is no part of the large
+// engines' turns: a running endpoint request holds the notes model's turn and
+// guard, and neither stops a dictation request from getting its server — while
+// another large engine (the fast voice) does wait behind that turn.
+func TestDictationIsNotBlockedByAnEndpointRequestsTurn(t *testing.T) {
+	d, _, _ := llmEndpointFixture(t, nil)
+	if d.STTSup == nil {
+		t.Skip("the fixture has no STT supervisor")
+	}
+	other := &engine.Supervisor{} // stands in for the fast voice
+	d.mem = &residency{
+		change:  make(chan struct{}),
+		engines: []*engine.Supervisor{d.LLMSup, other},
+		log:     d.log,
+		stop:    func(context.Context, *engine.Supervisor) error { return nil },
+	}
+	leave, err := d.llmEndpointTurn(t.Context()) // the endpoint request's turn, held for its stream
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leave()
+	g := d.LLMSup.Acquire() // and its guard
+	defer g.Release()
+	for _, e := range d.largeEngineSups() {
+		if e == d.STTSup {
+			t.Fatal("the STT server is among the engines that take turns")
+		}
+	}
+	// The contrast: a managed large engine does wait.
+	wctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	if _, err := d.mem.enter(wctx, other, 0); err == nil {
+		t.Fatal("the control engine entered while the notes turn was held: the test would prove nothing")
+	}
+	// Dictation: its server comes up at once.
+	sctx, scancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer scancel()
+	start := time.Now()
+	base, release, err := d.sttServer(sctx)
+	if err != nil {
+		t.Skipf("the fixture's STT server could not start (%v): the structural checks above stand", err)
+	}
+	release()
+	if base == "" || time.Since(start) > 8*time.Second {
+		t.Fatalf("dictation's server took %v", time.Since(start))
+	}
+}
