@@ -134,6 +134,10 @@ func TestPiecesKeepTheMeetingClock(t *testing.T) {
 // `if speech {` -> RED (a silent system-audio tap goes unnoticed).
 func TestSilentSystemAudioIsWarned(t *testing.T) {
 	f := newFixture(t)
+	// the test pins the whole warnings list; the echo-cancellation stage is off so it adds none of its own
+	if err := f.r.Store.SetSettings(Settings{RetentionDays: DefaultRetention, AEC: AECOff}); err != nil {
+		t.Fatal(err)
+	}
 	m, dir, _ := f.r.Store.Create(Manifest{Labels: Labels{Me: "A", Them: "B"}}, t0)
 	writePCM(t, dir, MePCM, 20, 5000)
 	writePCM(t, dir, ThemPCM, 20, 0) // the tap recorded zeros

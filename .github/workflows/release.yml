@@ -160,8 +160,16 @@ jobs:
           bash scripts/test-download-stall.sh
           bash "$RUNNER_TEMP/upgrade-gate/test-upgrade-guard.sh"
 
+      # ox-aec's webrtc-audio-processing is the one engine that is not cmake: it builds with
+      # Meson+Ninja. Pinned pip wheels into a venv — the repo pins every tool version, brew
+      # floats — and the runner's python3 is the interpreter the test_cli.py checks already use.
       - name: Build tools
-        run: command -v cmake >/dev/null || brew install cmake
+        run: |
+          set -euo pipefail
+          command -v cmake >/dev/null || brew install cmake
+          python3 -m venv "$RUNNER_TEMP/buildtools"
+          "$RUNNER_TEMP/buildtools/bin/pip" install --quiet 'meson==1.12.1' 'ninja==1.13.2'
+          echo "$RUNNER_TEMP/buildtools/bin" >> "$GITHUB_PATH"
 
       # The engines ship a precompiled Metal library, so the build needs the
       # Metal toolchain. Xcode 26 splits it into a downloadable component —
@@ -283,9 +291,12 @@ jobs:
           # VoxCPM2's server and ox-diar are optional for the installer, so a build that
           # silently dropped one would still install: pin them to the architecture
           # here. arm64 carries both, x86_64 neither. ox-clean is optional for the installer
-          # too, and BOTH packages carry it (plan decision 8).
+          # too, and BOTH packages carry it (plan decision 8). ox-aec is the same:
+          # optional to the installer, carried by both packages — echo cancellation is on
+          # by default on every install.
           test -x engine/ox-clean
-          bins=(bin/ox-say engine/tts-server engine/ox-stt engine/ox-align engine/ox-llm engine/ox-clean)
+          test -x engine/ox-aec
+          bins=(bin/ox-say engine/tts-server engine/ox-stt engine/ox-align engine/ox-llm engine/ox-clean engine/ox-aec)
           if [ "$ARCH" = arm64 ]; then
             test -x engine/audiocpp_server
             test -x engine/ox-diar
@@ -425,6 +436,11 @@ jobs:
           mkdir "$RUNNER_TEMP/clean-run"
           cp engine/ox-clean "$RUNNER_TEMP/clean-run/"
           python3 "$GITHUB_WORKSPACE/engine/clean/test_cli.py" --bin "$RUNNER_TEMP/clean-run/ox-clean" --no-models
+          # ox-aec, the packaged binary, against its synthetic end-to-end fixture on both
+          # architectures: echo cancellation, double-talk, lag steps, the passthroughs. Run in
+          # place — the binary is fully static, with nothing beside it to lean on — and the
+          # x86_64 leg is the first time that build ever executes.
+          python3 "$GITHUB_WORKSPACE/engine/aec/test_cli.py" --bin engine/ox-aec
           # the dictation app: signed, ours, carrying this version
           codesign --verify --strict app/OxSayDictation.app
           test "$(plutil -extract CFBundleIdentifier raw -o - app/OxSayDictation.app/Contents/Info.plist)" = io.github.anatolykoptev.ox-say.dictation

@@ -86,3 +86,13 @@ Koptev/mossformer2-se-48k-coreml, which scripts/fetch-models.sh downloads at a p
 used, and which modifies the computation graph as its NOTICE.md lists (engine/clean/model/NOTICE.md; both it and the
 Apache-2.0 text ship next to the installed binary and next to the models). Licence: Apache-2.0. Credit: Alibaba SLAB
 (ClearerVoice-Studio).
+
+Meeting echo cancellation (engine/aec, the ox-aec engine) statically links freedesktop's webrtc-audio-processing
+(https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing), the WebRTC AudioProcessing module's AEC3 echo
+canceller: BSD-3-Clause, Copyright (c) 2011 Google Inc. The build links the parts the module bundles: Google's
+abseil-cpp (Apache-2.0); pffft by Julien Pommier (2013), a FFTPACK-derived FFT under the FFTPACK licence
+(Copyright (c) 2004 the University Corporation for Atmospheric Research); rnnoise (BSD-3-Clause: Copyright (c) 2017
+Mozilla, 2007-2017 Jean-Marc Valin, 2005-2017 Xiph.Org Foundation, 2003-2004 Mark Borgerding); the Olesen FFT in
+modules/third_party/fft (Copyright (c) 1995,97 Mark Olesen, Queen's Univ at Kingston); and the Ooura FFT in
+common_audio/third_party/ooura (Copyright Takuya OOURA, 1996-2001). All their licence texts ship next to the
+installed binary (engine/licenses/).

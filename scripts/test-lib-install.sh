@@ -535,6 +535,67 @@ check "package-release.sh runs the architecture baseline guard on ox-clean" "${n
 n=$(grep -cE '^[[:space:]]*cp "[$]work/out/ox-clean" "[$]stage/engine/"' "$root/scripts/package-release.sh" || true)
 check "package-release.sh stages ox-clean in the engine directory" "${n:-x}" 1
 
+# --- I4: ox-aec is installed when the package carries it ---------------------
+# Both packages carry it (echo cancellation is on by default for every install), beside ox-diar/ox-clean and
+# with the same copy-then-rename. The packager does not treat it as optional though: the build ran with
+# OX_SAY_WITH_AEC=1, so a missing binary fails package-release.sh instead of shipping a package short.
+# Mutation: drop ox-aec from the `for bin in ox-diar ox-clean ox-aec` loop of oxs_install_engines -> the binary
+# is missing -> RED ("installs ox-aec from a package"). Mutations (scripts/package-release.sh): drop the
+# `[ ! -x "$work/out/ox-aec" ]` refusal or the unconditional `cp` -> the shape checks below fail.
+aec_case() { # name with-aec
+    local d="$tmp/aec-$1" bin
+    mkdir -p "$d/out/licenses" "$d/home"
+    echo x > "$d/out/licenses/x.LICENSE"
+    for bin in tts-server ox-stt ox-align ox-llm ox-diar ox-clean $( [ "$2" = yes ] && echo ox-aec ); do
+        printf '#!/bin/sh\n' > "$d/out/$bin"
+        chmod +x "$d/out/$bin"
+    done
+    bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$d/home'; oxs_install_engines '$d/out'" >"$d/log" 2>&1
+    echo "rc=$?" >> "$d/log"
+    for f in "$d/home/engine"/*; do
+        if [ -f "$f" ]; then
+            printf '%s ' "$(basename "$f")"
+        fi
+    done
+}
+check "installs ox-aec from a package" "$(aec_case with yes)" "ox-aec ox-align ox-clean ox-diar ox-llm ox-stt tts-server "
+check_in_log "with ox-aec: exit 0" "$tmp/aec-with/log" "rc=0"
+check_in_log "with ox-aec: says so" "$tmp/aec-with/log" "installed $tmp/aec-with/home/engine/ox-aec"
+check "a package without ox-aec still installs" "$(aec_case without no)" "ox-align ox-clean ox-diar ox-llm ox-stt tts-server "
+check_in_log "without ox-aec: exit 0" "$tmp/aec-without/log" "rc=0"
+n=$(grep -cE '^[^#]*for bin in .* [$]\( \[ -f "[$]work/out/ox-aec" \] && echo ox-aec \)' "$root/scripts/package-release.sh" || true)
+check "package-release.sh runs the architecture baseline guard on ox-aec" "${n:-x}" 1
+n=$(grep -cE '^[^#]*! -x "[$]work/out/ox-aec"' "$root/scripts/package-release.sh" || true)
+check "package-release.sh refuses to package without ox-aec" "${n:-x}" 1
+n=$(grep -cE '^[[:space:]]*cp "[$]work/out/ox-aec" "[$]stage/engine/"' "$root/scripts/package-release.sh" || true)
+check "package-release.sh stages ox-aec in the engine directory" "${n:-x}" 1
+
+# --- I5: the package holds every engine the build produced --------------------
+# check-package-contents.sh reads the expected engine set off the build's out/ itself — not a second
+# hand-written list that could forget the same name — and fails the package when a staged file is missing.
+# Mutations (scripts/check-package-contents.sh): drop the `[ ! -f "$stage/$name" ]` test -> the dropped-engine
+# case passes -> RED; drop the pins.env/*.metallib skip or the `[ -f ]` test -> the complete-package case
+# fails (pins.env, a metallib and the licences directory must not be demanded as engines). Mutation
+# (scripts/package-release.sh): drop the call -> the call-site check fails.
+pkg_case() { # name drop-from-stage
+    local d="$tmp/pkg-$1" f rc=0
+    mkdir -p "$d/out/licenses" "$d/stage"
+    for f in tts-server ox-stt ox-align ox-llm ox-clean ox-aec ox-diar audiocpp_server; do
+        printf '#!/bin/sh\n' > "$d/out/$f"
+        chmod +x "$d/out/$f"
+        [ "$f" != "$2" ] && cp "$d/out/$f" "$d/stage/$f"
+    done
+    : > "$d/out/pins.env"
+    : > "$d/out/tts-server.metallib"
+    bash "$root/scripts/check-package-contents.sh" "$d/out" "$d/stage" >"$d/log" 2>&1 || rc=$?
+    echo "$rc"
+}
+check "package contents: a complete stage passes" "$(pkg_case complete '')" 0
+check "package contents: a dropped engine fails" "$(pkg_case dropped ox-aec)" 1
+check_in_log "package contents: names the missing engine" "$tmp/pkg-dropped/log" "ox-aec is in the build output but not in the package"
+n=$(grep -cE '^[^#]*check-package-contents\.sh" "[$]work/out" "[$]stage/engine"' "$root/scripts/package-release.sh" || true)
+check "package-release.sh checks the stage against the build output" "${n:-x}" 1
+
 # --- J: audio.cpp is built only on request ---------------------------------
 # A source install (scripts/install.sh -> engine/build.sh) must not clone and
 # build a second engine nobody asked for. Mutation (engine/want-audiocpp.sh:9):
@@ -579,7 +640,7 @@ gate_case "arm64 with-voxcpm2" arm64 go left OX_SAY_WITH_VOXCPM2=1
 # the release.yml arm64 `test -x engine/audiocpp_server` is the behavioural check.
 n=$(grep -cE '^[^#]*if audiocpp_gate "[$]arch" "[$]out"; then' "$root/engine/build.sh" || true)
 check "build.sh guards the audio.cpp block with audiocpp_gate" "${n:-x}" 1
-n=$(grep -cE '^[^#]*OX_SAY_DIST=1 "[$]root/engine/build.sh"' "$root/scripts/package-release.sh" || true)
+n=$(grep -cE '^[^#]*OX_SAY_DIST=1.*"[$]root/engine/build.sh"' "$root/scripts/package-release.sh" || true)
 check "package-release.sh builds with OX_SAY_DIST=1" "${n:-x}" 1
 
 # --- J2: ox-diar is built only where it can run -----------------------------
@@ -675,6 +736,50 @@ diar_build_case "requested, build fails" 15.7 fail ok 1 left OX_SAY_WITH_DIAR=1
 diar_build_case "release, build fails" 15.7 fail ok 1 left OX_SAY_DIST=1
 diar_build_case "release, post-build check fails" 15.7 ok fail 1 left OX_SAY_DIST=1
 diar_build_case "requested, build ok" 15.7 ok ok 0 left OX_SAY_WITH_DIAR=1
+
+# --- J4: ox-aec builds only when asked ----------------------------------------
+# The release packaging and the source installer set OX_SAY_WITH_AEC=1; a plain engine/build.sh must not
+# clone webrtc and run meson — and unlike the Swift helpers, having the toolchain does NOT opt in. When the
+# flag is off aec_gate drops a stale binary AND its licence files: the packager ships every file in
+# out/licenses, so notices for a binary that is not there must not stay. Mutations (engine/want-aec.sh):
+# `[ "${OX_SAY_WITH_AEC:-0}" = 1 ]` -> always true -> "ox-aec built: plain build" fails; aec_gate dropping
+# the licence `rm -f` list -> "stale ox-aec licences plain build" fails; dropping the binary's -> "stale
+# ox-aec plain build" fails.
+aec_want_case() { # name want [env assignments...]
+    local name=$1 want=$2 got=no
+    shift 2
+    if env -i PATH="/usr/bin:/bin" "$@" bash -c ". '$root/engine/want-aec.sh'; want_aec"; then got=yes; fi
+    check "ox-aec built: $name" "$got" "$want"
+}
+aec_want_case "plain build" no
+aec_want_case "with-aec" yes OX_SAY_WITH_AEC=1
+aec_want_case "dist alone does not build it" no OX_SAY_DIST=1
+aec_want_case "with-aec=0" no OX_SAY_WITH_AEC=0
+aec_gate_case() { # name want-continue want-stale-left [env assignments...]
+    local name=$1 cont=$2 left=$3 d="$tmp/ag-$1" rc=stop stale=gone stalelic=gone
+    shift 3
+    mkdir -p "$d/out/licenses"
+    : > "$d/out/ox-aec"
+    : > "$d/out/licenses/webrtc-audio-processing.LICENSE"
+    : > "$d/out/licenses/ooura-fft.LICENSE"
+    : > "$d/out/licenses/unrelated.LICENSE"
+    if env -i PATH="/usr/bin:/bin" "$@" bash -c ". '$root/engine/want-aec.sh'; aec_gate '$d/out'" 2>"$d/err"; then rc=go; fi
+    if [ -e "$d/out/ox-aec" ]; then stale=left; fi
+    if [ -e "$d/out/licenses/webrtc-audio-processing.LICENSE" ] || [ -e "$d/out/licenses/ooura-fft.LICENSE" ]; then stalelic=left; fi
+    check "aec gate continues the build: $name" "$rc" "$cont"
+    check "stale ox-aec $name" "$stale" "$left"
+    check "stale ox-aec licences $name" "$stalelic" "$left"
+    check "unrelated licence stays: $name" "$([ -e "$d/out/licenses/unrelated.LICENSE" ] && echo yes || echo no)" yes
+    if [ "$cont" = stop ]; then check_in_log "aec gate says why: $name" "$d/err" "ox-aec not built"; fi
+}
+aec_gate_case "plain build" stop gone
+aec_gate_case "with-aec" go left OX_SAY_WITH_AEC=1
+n=$(grep -cE '^[^#]*if aec_gate "[$]out"; then' "$root/engine/build.sh" || true)
+check "build.sh guards the ox-aec block with aec_gate" "${n:-x}" 1
+n=$(grep -cE 'OX_SAY_WITH_AEC=1.*"[$]root/engine/build.sh' "$root/scripts/package-release.sh" || true)
+check "package-release.sh builds with OX_SAY_WITH_AEC=1" "${n:-x}" 1
+n=$(grep -cE 'OX_SAY_WITH_AEC=1 "[$]root/engine/build.sh' "$root/scripts/install.sh" || true)
+check "install.sh builds with OX_SAY_WITH_AEC=1" "${n:-x}" 1
 
 # --- K: precompiled Metal libraries travel with the engines -----------------
 # oxs_install_engines installs <bin>.metallib and <bin>-tensor.metallib next

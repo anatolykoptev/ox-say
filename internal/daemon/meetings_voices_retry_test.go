@@ -43,10 +43,14 @@ func (r *readiness) set(s string) { r.reason.Store(s) }
 func (r *readiness) get() string  { return r.reason.Load().(string) }
 
 // voicesFixture is a meeting daemon whose diarizer is a fake that counts its calls and breaks (so a run that reached
-// it is visible in the manifest), and whose readiness the test sets.
+// it is visible in the manifest), and whose readiness the test sets. Echo cancellation is off: these tests pin the
+// warnings list to the diarization ones, and a run without ox-aec would prepend aec_missing.
 func voicesFixture(t *testing.T) (*Daemon, *http.ServeMux, *readiness, *atomic.Int32) {
 	t.Helper()
 	d, mux := meetingFixture(t, nil)
+	if err := d.Meet.Store.SetSettings(meeting.Settings{RetentionDays: meeting.DefaultRetention, AEC: meeting.AECOff}); err != nil {
+		t.Fatal(err)
+	}
 	ready := &readiness{}
 	ready.set("")
 	var calls atomic.Int32

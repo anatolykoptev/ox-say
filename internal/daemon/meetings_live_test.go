@@ -553,23 +553,32 @@ func TestSettingsPutAcceptsTheGetAnswerBack(t *testing.T) {
 	}
 }
 
-// meeting_aec is off until chosen; a PUT of it keeps the other fields, one of the others keeps it, and a value that is
+// meeting_aec is on until chosen off — the never-chosen "" and a settings file written before the key existed
+// both read as on; a PUT of it keeps the other fields, one of the others keeps it, and a value that is
 // neither "on" nor "off" is a 400 that stores nothing.
 // Mutation: internal/daemon/meetings_http.go handleMeetingSettingsSet, delete the `cur.AEC = *in.AEC` line -> RED
-// (the choice is acknowledged and never stored).
-func TestMeetingAECSettingDefaultsOffAndIsStored(t *testing.T) {
-	_, mux := meetingFixture(t, nil)
+// (the choice is acknowledged and never stored); internal/meeting/retention.go AECEnabled,
+// `st.AEC != AECOff` -> `st.AEC == AECOn` -> RED (the never-chosen settings read as off).
+func TestMeetingAECSettingDefaultsOnAndIsStored(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
 	put := func(body string) int { return call(t, mux, "PUT", "/v1/meetings/settings", body).Code }
-	if got := settingsOf(t, mux); got.AEC != meeting.AECOff {
-		t.Fatalf("a never-chosen meeting_aec reads %q, want off", got.AEC)
+	if got := settingsOf(t, mux); got.AEC != meeting.AECOn {
+		t.Fatalf("a never-chosen meeting_aec reads %q, want on", got.AEC)
 	}
-	if put(`{"retention_days":90}`) != http.StatusOK || put(`{"meeting_aec":"on"}`) != http.StatusOK {
+	// An existing install's file, written before the key existed: no meeting_aec line, still on.
+	if err := d.Meet.Store.SetSettings(meeting.Settings{RetentionDays: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if got := settingsOf(t, mux); got.AEC != meeting.AECOn {
+		t.Fatalf("a settings file without meeting_aec reads %q, want on", got.AEC)
+	}
+	if put(`{"retention_days":90}`) != http.StatusOK || put(`{"meeting_aec":"off"}`) != http.StatusOK {
 		t.Fatal("PUT failed")
 	}
-	if got := settingsOf(t, mux); got.AEC != meeting.AECOn || got.RetentionDays != 90 {
-		t.Fatalf("after retention then aec: %+v, want aec on and retention 90", got)
+	if got := settingsOf(t, mux); got.AEC != meeting.AECOff || got.RetentionDays != 90 {
+		t.Fatalf("after retention then aec: %+v, want aec off and retention 90", got)
 	}
-	if put(`{"live_captions":true}`) != http.StatusOK || settingsOf(t, mux).AEC != meeting.AECOn {
+	if put(`{"live_captions":true}`) != http.StatusOK || settingsOf(t, mux).AEC != meeting.AECOff {
 		t.Fatal("a live_captions PUT changed meeting_aec")
 	}
 	for _, body := range []string{`{"meeting_aec":"maybe"}`, `{"meeting_aec":""}`} {
@@ -577,21 +586,21 @@ func TestMeetingAECSettingDefaultsOffAndIsStored(t *testing.T) {
 			t.Errorf("PUT %s = %d, want 400", body, c)
 		}
 	}
-	if settingsOf(t, mux).AEC != meeting.AECOn {
+	if settingsOf(t, mux).AEC != meeting.AECOff {
 		t.Fatal("a refused PUT changed the stored choice")
 	}
-	if put(`{"meeting_aec":"off"}`) != http.StatusOK || settingsOf(t, mux).AEC != meeting.AECOff {
-		t.Fatal("meeting_aec could not be switched off again")
+	if put(`{"meeting_aec":"on"}`) != http.StatusOK || settingsOf(t, mux).AEC != meeting.AECOn {
+		t.Fatal("meeting_aec could not be switched back on")
 	}
 }
 
 // /status says whether the canceller is configured, whether the binary is on this Mac, and how the last stage ended;
 // the runner's AEC dep runs the configured binary, not a path fixed at startup.
 func TestAECStatusAndWiring(t *testing.T) {
-	d, mux := meetingFixture(t, nil)
+	d, _ := meetingFixture(t, nil)
 	st := d.Status().AEC
-	if st.Setting != meeting.AECOff || st.Bin != "missing" || st.Last != nil {
-		t.Fatalf("fresh status = %+v, want off/missing/no last run", st)
+	if st.Setting != meeting.AECOn || st.Bin != "missing" || st.Last != nil {
+		t.Fatalf("fresh status = %+v, want on/missing/no last run", st)
 	}
 	if _, err := d.Meet.AEC(context.Background(), t.TempDir()); !errors.Is(err, meeting.ErrAECMissing) {
 		t.Fatalf("the runner's AEC dep with no binary = %v, want ErrAECMissing", err)
@@ -601,9 +610,6 @@ func TestAECStatusAndWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.Cfg.AECBin = bin
-	if call(t, mux, "PUT", "/v1/meetings/settings", `{"meeting_aec":"on"}`).Code != http.StatusOK {
-		t.Fatal("PUT failed")
-	}
 	if st := d.Status().AEC; st.Setting != meeting.AECOn || st.Bin != "ready" {
 		t.Fatalf("status with a binary and the setting on = %+v, want on/ready", st)
 	}

@@ -303,7 +303,9 @@ oxs_install_engines() {
     # audiocpp_server: a package without it still installs (the daemon then reports the diarizer as engine_missing)
     # and release.yml pins which architectures must carry it. ox-clean (voice cleanup) is the same kind of
     # optional Swift helper, but both architectures' packages carry it. Its models are not installed here: the
-    # daemon fetches them on the first cleanup.
+    # daemon fetches them on the first cleanup. ox-aec (meeting echo cancellation) is neither ggml nor
+    # model-bound — a static binary both packages must carry — and lands at the path the daemon reads
+    # by default ($home/engine/ox-aec, OX_SAY_AEC_BIN aside).
     for bin in tts-server ox-stt ox-align ox-llm audiocpp_server; do
         for lib in "$bin.metallib" "$bin-tensor.metallib"; do
             if [ -f "$out/$lib" ]; then
@@ -318,7 +320,7 @@ oxs_install_engines() {
         oxs_stage "$out/$bin" "$home/engine/$bin" u+w || { oxs_stage_abort; exit 1; }
         oxs_stage_add say "$home/engine/$bin"
     done
-    for bin in ox-diar ox-clean; do
+    for bin in ox-diar ox-clean ox-aec; do
         if [ -x "$out/$bin" ]; then
             oxs_stage "$out/$bin" "$home/engine/$bin" u+w || { oxs_stage_abort; exit 1; }
             oxs_stage_add say "$home/engine/$bin"

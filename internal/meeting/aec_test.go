@@ -171,37 +171,31 @@ func TestAECCancelledChannelReachesTheRecognizer(t *testing.T) {
 	}
 }
 
-// meeting_aec off — the never-chosen default or an explicit off: the stage
-// logs skipped reason=off, the binary is never spawned, and the run is
-// byte-for-byte today's pipeline.
+// meeting_aec explicitly off: the stage logs skipped reason=off, the binary
+// is never spawned, and the run is byte-for-byte the pipeline without it.
+// ("" is not off: it is the never-chosen default, which is on.)
 func TestAECOffSpawnsNothing(t *testing.T) {
-	for _, setting := range []string{"", AECOff} {
-		t.Run("meeting_aec="+strconv.Quote(setting), func(t *testing.T) {
-			f := newFixture(t)
-			if setting != "" {
-				if err := f.r.Store.SetSettings(Settings{RetentionDays: DefaultRetention, AEC: setting}); err != nil {
-					t.Fatal(err)
-				}
-			}
-			bin := aecStub(t, "ok") // a stub that would leave its artifacts if it ran
-			f.r.AEC = aecRunner(bin)
-			cancelled, raw := f.aecSources()
-			id := f.start(t, 30, 30, 5000, false)
-			if err := f.r.Process(context.Background(), id); err != nil {
-				t.Fatal(err)
-			}
-			wantRawOnly(t, cancelled, raw)
-			dir, _ := f.r.Store.Dir(id)
-			for _, name := range []string{MeAECPCM, AECJSON} {
-				if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
-					t.Errorf("%s exists though the stage was off (the binary ran)", name)
-				}
-			}
-			last := f.r.LastAEC()
-			if last == nil || last.Result != stageSkipped || last.Reason != aecReasonOff {
-				t.Fatalf("LastAEC = %+v, want skipped/off", last)
-			}
-		})
+	f := newFixture(t)
+	if err := f.r.Store.SetSettings(Settings{RetentionDays: DefaultRetention, AEC: AECOff}); err != nil {
+		t.Fatal(err)
+	}
+	bin := aecStub(t, "ok") // a stub that would leave its artifacts if it ran
+	f.r.AEC = aecRunner(bin)
+	cancelled, raw := f.aecSources()
+	id := f.start(t, 30, 30, 5000, false)
+	if err := f.r.Process(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	wantRawOnly(t, cancelled, raw)
+	dir, _ := f.r.Store.Dir(id)
+	for _, name := range []string{MeAECPCM, AECJSON} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s exists though the stage was off (the binary ran)", name)
+		}
+	}
+	last := f.r.LastAEC()
+	if last == nil || last.Result != stageSkipped || last.Reason != aecReasonOff {
+		t.Fatalf("LastAEC = %+v, want skipped/off", last)
 	}
 }
 
@@ -640,7 +634,10 @@ func TestAECRunLeftoversGoWithTheAudio(t *testing.T) {
 // A later run with the setting off still leaves no audio copy behind: the stage sweeps stale run dirs even
 // when the canceller itself never runs, and a finished transcription removes work/ whole.
 func TestAECOffRunLeavesNoAudioCopy(t *testing.T) {
-	f := newFixture(t) // meeting_aec never turned on
+	f := newFixture(t)
+	if err := f.r.Store.SetSettings(Settings{RetentionDays: DefaultRetention, AEC: AECOff}); err != nil {
+		t.Fatal(err)
+	}
 	id := f.start(t, 30, 30, 5000, false)
 	dir, _ := f.r.Store.Dir(id)
 	stale := filepath.Join(dir, WorkDir, aecRunPrefix+"1")

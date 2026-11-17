@@ -29,7 +29,8 @@ type Settings struct {
 	// before the option existed is not read as "off".
 	LiveCaptions *bool `json:"live_captions,omitempty"`
 	// AEC is the user's choice of echo cancellation before transcription: AECOn or AECOff; "" is "never chosen",
-	// which is off. A file written before the option existed reads as off, the same default it had then.
+	// which is on — a settings file written before the option existed gets the default every new install does,
+	// and only an explicit off keeps it off.
 	AEC string `json:"meeting_aec,omitempty"`
 }
 
@@ -41,8 +42,9 @@ const (
 
 func validRetention(days int) bool { return slices.Contains(RetentionChoices, days) }
 
-// AECEnabled is the effective choice behind Settings.AEC: on only when it says so.
-func (st Settings) AECEnabled() bool { return st.AEC == AECOn }
+// AECEnabled is the effective choice behind Settings.AEC: off only when it says so — ox-aec ships in
+// every package, so echo cancellation is on unless the user turned it off.
+func (st Settings) AECEnabled() bool { return st.AEC != AECOff }
 
 // LoadSettings reads settings.json. A file that does not exist means the
 // default of DefaultRetention days; a file that exists but cannot be read,
