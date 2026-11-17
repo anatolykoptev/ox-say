@@ -519,7 +519,7 @@ inline std::string skip_report(const std::vector<std::string> & skipped) {
     return "ox-stt: boost: " + std::to_string(skipped.size()) +
            " term form(s) cannot be spelled with the model's vocabulary, skipped\n";
 }
-inline constexpr size_t kMaxTerms = 200;
+inline constexpr size_t kMaxTerms = 512;
 inline constexpr size_t kMaxAliases = 8;
 // A term-line field that marks a written form which is an ordinary word of its language: only the spoken forms are
 // boosted. "@" cannot start a heard form (glossary heard forms carry letters, digits, spaces, ' and - only).
