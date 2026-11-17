@@ -54,6 +54,8 @@ The same app reads text aloud. Select text in any app and press **⌃⌥Space** 
 Selection), and OxSay speaks it in a voice you pick per language. Details, permissions and troubleshooting:
 [docs/dictation.md](docs/dictation.md).
 
+Dictating about code? Settings has a **Code vocabulary** switch for Python, Go and Rust, so names like `kwargs`, `TypeError` and `goroutine` come out as written ([docs/http-api.md](docs/http-api.md#code-vocabulary-packs)).
+
 ### Meetings
 
 OxSay records a call, writes the transcript, tells the other people's voices apart and writes notes.

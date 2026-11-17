@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/anatolykoptev/ox-say/internal/codevocab"
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
 	"github.com/anatolykoptev/ox-say/internal/glossary"
@@ -93,7 +94,10 @@ type Daemon struct {
 	tbVMu      sync.Mutex
 	tbVerdicts map[string]bool // form -> ordinary word, so a derivation reloads no dictionary for a form it has judged
 	tbDerives  atomic.Int64
-	tbChecks   atomic.Int64
+	// sttWide is true while the running ox-stt reported max_terms_header >= the large header (GET /health).
+	// False — the default, and after any probe failure — means the legacy 4 KB / 200-term wire.
+	sttWide  atomic.Bool
+	tbChecks atomic.Int64
 	// ownerToken is the bearer the owner-only glossary routes check, loaded
 	// or created at start from $OX_SAY_HOME/owner.token (mode 0600). Empty
 	// fails closed: nothing approves or rejects.
@@ -336,6 +340,8 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox, 
 			Logger:         logger,
 			// GPU or CPU per the memory model; see STTServeArgs.
 			Args: func(port int) []string { return STTServeArgs(cfg, port) },
+			// Verify never fails the start: it only learns which boost wire the engine speaks.
+			Verify: d.probeSTTCaps,
 		}
 		if tuneSTT != nil {
 			tuneSTT(&sc)
@@ -823,6 +829,29 @@ type statusSummary struct {
 	// TTSFaults counts speech takes the engine failed to finish since the
 	// daemon started (see ttsFaults).
 	TTSFaults ttsFaults `json:"tts_faults"`
+	// CodeVocabulary is the built-in code packs setting: the enabled pack
+	// names, how many boost terms the current list carries, and the wire cap.
+	CodeVocabulary codeVocabStatus `json:"code_vocabulary"`
+}
+
+// codeVocabStatus is /status code_vocabulary: the enabled packs and the size
+// of the boost list they and the glossary produce against its caps.
+type codeVocabStatus struct {
+	// Packs is the enabled language packs, canonical order (empty = off).
+	Packs []string `json:"packs"`
+	// PacksAvailable is every pack id the setting accepts.
+	PacksAvailable []string `json:"packs_available"`
+	// BoostTerms is the term lines the current boost list holds (glossary +
+	// packs); the wire sends at most BoostWireBytes of it and at most
+	// BoostCap terms.
+	BoostTerms int `json:"boost_terms"`
+	// BoostCap is the most terms the engine parses (engine/stt/boost.h).
+	BoostCap int `json:"boost_cap"`
+	// BoostWireBytes is the JSON byte budget all delivery paths trim to.
+	BoostWireBytes int `json:"boost_wire_bytes"`
+	// WideWire is true when the running ox-stt accepts the large boost header; false means the 4 KB / 200-term
+	// legacy wire (engine older than the daemon, or not probed yet).
+	WideWire bool `json:"wide_wire"`
 }
 
 var version = "dev"
@@ -841,6 +870,7 @@ func (d *Daemon) Status() statusSummary {
 		sttServer = d.STTSup.Status()
 	}
 	busy := d.busy()
+	enabled := d.codePacks()
 	return statusSummary{
 		Engine:     d.Sup.Status(),
 		STTServer:  sttServer,
@@ -885,6 +915,14 @@ func (d *Daemon) Status() statusSummary {
 		Busy:       busy,
 		Idle:       busy.idle(),
 		TTSFaults:  ttsFaults{Runaways: d.runaways.Load(), StreamAborts: d.streamAborts.Load()},
+		CodeVocabulary: codeVocabStatus{
+			Packs:          enabled,
+			PacksAvailable: codevocab.Names,
+			BoostTerms:     d.boostTermsLen(),
+			BoostCap:       d.boostTermCap(),
+			BoostWireBytes: d.boostWireBytes(),
+			WideWire:       d.sttWide.Load(),
+		},
 	}
 }
 

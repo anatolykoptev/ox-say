@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/anatolykoptev/ox-say/internal/codevocab"
 	"github.com/anatolykoptev/ox-say/internal/meeting"
 )
 
@@ -389,10 +391,11 @@ func (d *Daemon) handleMeetingDelete(w http.ResponseWriter, r *http.Request) {
 // choice resolved against this Mac's default (LiveCaptionsDefault says which that is). AEC is the effective
 // meeting_aec choice, "on" or "off"; a meeting setting that was never made reads as on.
 type meetingSettingsAnswer struct {
-	RetentionDays       int    `json:"retention_days"`
-	LiveCaptions        bool   `json:"live_captions"`
-	LiveCaptionsDefault bool   `json:"live_captions_default"`
-	AEC                 string `json:"meeting_aec"`
+	RetentionDays       int      `json:"retention_days"`
+	LiveCaptions        bool     `json:"live_captions"`
+	LiveCaptionsDefault bool     `json:"live_captions_default"`
+	AEC                 string   `json:"meeting_aec"`
+	CodeVocabulary      []string `json:"code_vocabulary"`
 }
 
 func (d *Daemon) settingsAnswer() meetingSettingsAnswer {
@@ -405,6 +408,7 @@ func (d *Daemon) settingsAnswer() meetingSettingsAnswer {
 		LiveCaptions:        d.liveEnabled(),
 		LiveCaptionsDefault: d.liveDefault(),
 		AEC:                 aec,
+		CodeVocabulary:      d.codePacks(),
 	}
 }
 
@@ -416,9 +420,10 @@ func (d *Daemon) handleMeetingSettings(w http.ResponseWriter, _ *http.Request) {
 // must not read as 0, which is "never delete", and an absent live_captions must not read as "off".
 func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		RetentionDays *int    `json:"retention_days"`
-		LiveCaptions  *bool   `json:"live_captions"`
-		AEC           *string `json:"meeting_aec"`
+		RetentionDays  *int      `json:"retention_days"`
+		LiveCaptions   *bool     `json:"live_captions"`
+		AEC            *string   `json:"meeting_aec"`
+		CodeVocabulary *[]string `json:"code_vocabulary"`
 		// What GET answers beside the settings: a client that sends the answer back is not refused. Read, never stored.
 		LiveCaptionsDefault *bool `json:"live_captions_default"`
 	}
@@ -426,13 +431,21 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if in.RetentionDays == nil && in.LiveCaptions == nil && in.AEC == nil {
-		writeErr(w, http.StatusBadRequest, "retention_days, live_captions or meeting_aec is required")
+	if in.RetentionDays == nil && in.LiveCaptions == nil && in.AEC == nil && in.CodeVocabulary == nil {
+		writeErr(w, http.StatusBadRequest, "retention_days, live_captions, meeting_aec or code_vocabulary is required")
 		return
 	}
 	if in.AEC != nil && *in.AEC != meeting.AECOn && *in.AEC != meeting.AECOff {
 		writeErr(w, http.StatusBadRequest, "meeting_aec must be \"on\" or \"off\"")
 		return
+	}
+	if in.CodeVocabulary != nil {
+		for _, name := range *in.CodeVocabulary {
+			if !codevocab.ValidName(name) {
+				writeErr(w, http.StatusBadRequest, fmt.Sprintf("code_vocabulary %q is not one of %v", name, codevocab.Names))
+				return
+			}
+		}
 	}
 	// One read-modify-write (UpdateSettings): the base is the file as stored, not Settings(), which shows the default
 	// when the file is unusable — writing that back would restart a retention sweep that is paused on purpose — and a
@@ -455,6 +468,9 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 		if in.AEC != nil {
 			cur.AEC = *in.AEC
 		}
+		if in.CodeVocabulary != nil {
+			cur.CodeVocabulary = codevocab.Enabled(*in.CodeVocabulary)
+		}
 		return cur, nil
 	})
 	if err != nil {
@@ -464,6 +480,11 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 		}
 		d.writeMeetingErr(w, err)
 		return
+	}
+	if in.CodeVocabulary != nil {
+		// The boost list's input changed: rebuild now, on this goroutine, so the first dictation after the
+		// toggle is boosted with the new packs and the answer reflects what is on.
+		d.refreshBoost()
 	}
 	d.live.reconcile()
 	writeJSON(w, http.StatusOK, d.settingsAnswer())

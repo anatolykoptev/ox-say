@@ -32,7 +32,7 @@ Meeting routes (see [Meetings](meetings.md); the app uses them, and so can an ag
 | `GET /v1/meetings/<id>/speakers`, `PATCH …/speakers` | The other side's voices; name, merge and split them in one request |
 | `POST /v1/meetings/<id>/voices` | Tell the voices apart again after the voice engine failed |
 | `DELETE /v1/meetings/<id>` | Delete a meeting that nothing is working on |
-| `GET /v1/meetings/settings`, `PUT …/settings` | `retention_days`: how long audio is kept — 0 (forever), 7, 30 or 90; `live_captions`: live captions while recording (the answer carries the effective value and `live_captions_default`: on for Apple Silicon, off for Intel); `meeting_aec`: `on`/`off` — run `ox-aec` echo cancellation on the mic channel before transcription (on by default; a settings file written before the key existed reads as on, `"off"` is the explicit opt-out). A PUT changes the fields it carries and keeps the rest |
+| `GET /v1/meetings/settings`, `PUT …/settings` | `retention_days`: how long audio is kept — 0 (forever), 7, 30 or 90; `live_captions`: live captions while recording (the answer carries the effective value and `live_captions_default`: on for Apple Silicon, off for Intel); `meeting_aec`: `on`/`off` — run `ox-aec` echo cancellation on the mic channel before transcription (on by default; a settings file written before the key existed reads as on, `"off"` is the explicit opt-out). `code_vocabulary`: the built-in code vocabulary packs that are on — a list of `python`, `go`, `rust` (default `[]`; an unknown name is a 400; see below). A PUT changes the fields it carries and keeps the rest |
 | `GET /v1/meetings/notes-model` | The notes model in use: resolved `model` (catalog id or `custom`), `source` (`env`, `saved`, `automatic`), `path`, `installed`, and `choices` — one row per catalog model with `installed` and `supported`, and `upstream` on the uncensored row while it is not installed (`available`, `gone`, `unknown`: a background HEAD of its download URL, 404/410 and 401/403 read as `gone`, everything else as `unknown`) |
 | `PUT /v1/meetings/notes-model` | `{"id":"<catalog id>"}` or `{"path":"/abs/file.gguf"}` — choose the notes model. `400`: unknown id, relative path, neither field, or an own file that fails the trial load. `409`: the model is busy (a download, or a meeting queued, running or recording). On success the choice is saved, a resident notes engine is stopped and the next notes run loads the new file — no restart |
 | `POST /v1/meetings/notes-model/validate` | Try an own notes model without choosing it: `{"path":"/abs/file.gguf"}` → `200` with `{"ok":true,"name","architecture","bytes"}` — the file's own GGUF `general.name`/`general.architecture` — or `{"ok":false,"reason"}`. The check is the one `PUT {"path"}` runs: a v2/v3 GGUF that fits 70% of this Mac's memory, then `ox-llm` really loading it on a private port, answering `/health` and one short completion |
@@ -124,3 +124,24 @@ A cleanup starts when no dictation session, speech, voice design, transcription,
 
 On Apple Silicon (unified memory) a cleanup takes no GPU lease and shares the GPU with other jobs for the few seconds it runs. On Intel, voice cleanup and speech share one graphics card and take turns: the cleanup stops an idle speech engine to take the card, waits up to 2 minutes if speech is working (then 503 `gpu_busy`, "The graphics card is busy with speech; try again in a moment."), and a speech request that arrives meanwhile and cannot start the engine fails with 503 `gpu_busy_cleanup` ("Voice cleanup is using the graphics card; speech will be available when it finishes."). That refusal comes after at most 10 seconds of waiting, not when the cleanup ends. A cleanup that finds an idle speech engine recycles it, so the next speech request after the cleanup pays a cold start.
 
+
+## Code vocabulary packs
+
+`code_vocabulary` (in `GET`/`PUT /v1/meetings/settings`, shown in `GET /status` as `code_vocabulary`) turns on built-in
+vocabulary packs for dictating about code: `python`, `go`, `rust`. A shared review set (idempotent, traceback, TOML, nit,
+LGTM, ...) rides with any enabled pack. Packs are JSON files embedded in the daemon (`internal/codevocab/packs`); an entry
+is a written form plus the spoken forms measured on Parakeet. Changing the setting rebuilds the boost list at once, with
+no restart.
+
+- **Decoder boost.** An enabled pack's written forms and its `safe` spoken forms join the glossary's decoder boost list, with
+  the same wire format and the same ordinary-word filter. A spoken form that is an ordinary word is not boosted.
+- **Post-pass.** `safe` forms (`Quargs` -> `kwargs`, `dunder init` -> `__init__`) are rewritten like active glossary pairs,
+  case-insensitively and on whole words. An ordinary word or phrase is never rewritten (`chords`, `Tokyo`, `salary`, `a sync`);
+  the one exception is a fused identifier spoken as its exact words, two or more words of two letters or more that join into the
+  written form (`type error` -> `TypeError`, `data class` -> `dataclass`, `go routine` -> `goroutine`). The owner's glossary
+  pair wins over a pack pair for the same spoken form.
+- **Cap and priority.** The glossary's terms come first and the packs fill the rest, so a cap drops pack terms, never glossary
+  ones. `ox-stt` reports `max_terms_header` on `GET /health`; with it the wire carries up to 512 terms in a 16 KB header, without it
+  (an `ox-stt` older than the daemon) the daemon keeps the old 4 KB / 200-term wire, because an old engine refuses an oversize
+  header and decodes with no boost at all. `GET /status` `code_vocabulary` says which wire is in use (`wide_wire`), the term
+  count, and the cap.
