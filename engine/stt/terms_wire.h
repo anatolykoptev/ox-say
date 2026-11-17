@@ -16,8 +16,8 @@
 
 namespace oxstt::boost {
 
-// The header (base64url) is capped at 16 KB; a session body at 16 KB. Larger input is refused unread.
-inline constexpr size_t kMaxTermsHeader = 16 << 10;
+// The header (base64url) is capped at 4 KB; a session body at 16 KB. Larger input is refused unread.
+inline constexpr size_t kMaxTermsHeader = 4 << 10;
 inline constexpr size_t kMaxTermsBody = 16 << 10;
 
 struct wire {

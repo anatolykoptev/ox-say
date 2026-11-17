@@ -183,10 +183,10 @@ func TestCLIUnboostedRetryIsLogged(t *testing.T) {
 // Mutation: boost.go, Stdin ranging over b.Terms instead of b.Terms[:b.Fit(MaxWireJSON)] -> RED.
 func TestAllPathsCarryTheSameFit(t *testing.T) {
 	var terms []string
-	for i := 0; i < 700; i++ {
+	for i := 0; i < 400; i++ {
 		terms = append(terms, fmt.Sprintf("Term%03d\t1\tтермин%03d", i, i))
 	}
-	b := Boost{Alpha: 2, Terms: terms, Wide: true}
+	b := Boost{Alpha: 2, Terms: terms}
 	n := b.Fit(MaxWireJSON)
 	if n == 0 || n >= len(terms) || b.Dropped() != len(terms)-n {
 		t.Fatalf("Fit = %d of %d, Dropped = %d", n, len(terms), b.Dropped())
@@ -195,7 +195,7 @@ func TestAllPathsCarryTheSameFit(t *testing.T) {
 		t.Fatalf("stdin carries %d terms, the wire carries %d", got, n)
 	}
 	var w struct{ Terms []string }
-	if err := json.Unmarshal(b.JSON(b.Budget()), &w); err != nil || len(w.Terms) != n {
+	if err := json.Unmarshal(b.JSON(MaxWireJSON), &w); err != nil || len(w.Terms) != n {
 		t.Fatalf("JSON carries %d terms (%v), want %d", len(w.Terms), err, n)
 	}
 	// the one more term that would not fit really does not fit
@@ -207,32 +207,5 @@ func TestAllPathsCarryTheSameFit(t *testing.T) {
 	}
 	if (Boost{Alpha: 2, Terms: terms[:3]}).Dropped() != 0 {
 		t.Fatal("a short list drops nothing")
-	}
-}
-
-// A daemon newer than its ox-stt must never send the large header: the old engine refuses an oversize header and
-// decodes with NO boost, so the glossary would be lost with the packs. Without the max_terms_header signal
-// (Wide false) the wire is the legacy one: at most LegacyHeaderBytes of header and LegacyTerms terms.
-// Mutations: boost.go Budget() returning MaxWireJSON for !Wide -> RED on the header length; TermCap() returning
-// MaxTerms for !Wide -> RED on the count (short terms never reach the byte budget first).
-func TestLegacyEngineNeverGetsTheLargeHeader(t *testing.T) {
-	var long, short []string
-	for i := 0; i < 700; i++ {
-		long = append(long, fmt.Sprintf("Term%03d\t1\tтермин%03d", i, i))
-		short = append(short, fmt.Sprintf("T%03d", i))
-	}
-	legacy := Boost{Alpha: 2, Terms: long}
-	if h := legacy.Header(); h == "" || len(h) > LegacyHeaderBytes {
-		t.Fatalf("legacy header len = %d, want 1..%d", len(h), LegacyHeaderBytes)
-	}
-	if n := (Boost{Alpha: 2, Terms: short}).Fit((Boost{}).Budget()); n != LegacyTerms {
-		t.Fatalf("legacy Fit(short terms) = %d, want the term cap %d", n, LegacyTerms)
-	}
-	wide := Boost{Alpha: 2, Terms: long, Wide: true}
-	if len(wide.Header()) <= LegacyHeaderBytes || len(wide.Header()) > MaxHeaderBytes {
-		t.Fatalf("wide header len = %d, want %d..%d", len(wide.Header()), LegacyHeaderBytes+1, MaxHeaderBytes)
-	}
-	if n := (Boost{Alpha: 2, Terms: short, Wide: true}).Fit(MaxWireJSON); n != MaxTerms {
-		t.Fatalf("wide Fit(short terms) = %d, want %d", n, MaxTerms)
 	}
 }

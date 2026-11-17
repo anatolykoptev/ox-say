@@ -16,45 +16,18 @@ import (
 type Boost struct {
 	Alpha float64  // 0 = off; ox-stt refuses anything above MaxAlpha
 	Terms []string // one term line each, most important first
-	// Wide is true only when the running ox-stt reported (GET /health max_terms_header) that it accepts the
-	// large X-Ox-Terms header. The zero value is the legacy engine: a newer daemon must never send an oversize
-	// header to an older ox-stt, which refuses it and decodes with NO boost at all — the glossary's too.
-	Wide bool
 }
 
 // Wire limits, mirrored by engine/stt/terms_wire.h.
 const (
 	MaxAlpha       = 100
-	MaxHeaderBytes = 16 << 10 // base64url of the JSON, inside the HTTP header limit (engines that report it)
-	// LegacyHeaderBytes and LegacyTerms are the limits of an ox-stt that does not report max_terms_header.
-	LegacyHeaderBytes = 4 << 10
-	LegacyTerms       = 200
-	// MaxTerms is the term-line cap of an ox-stt that reports max_terms_header (engine/stt/boost.h kMaxTerms).
-	MaxTerms     = 512
-	MaxBodyBytes = 16 << 10 // the largest JSON body ox-stt accepts on POST /sessions
+	MaxHeaderBytes = 4 << 10  // base64url of the JSON, inside the HTTP header limit
+	MaxBodyBytes   = 16 << 10 // the largest JSON body ox-stt accepts on POST /sessions
 	// MaxWireJSON is the JSON budget of BOTH delivery paths: the header's, scaled down by base64's 4/3. The
 	// session body carries the same trimmed list as the header, because ox-stt caches one built graph by list
 	// text and two different lists would rebuild it on every alternating request.
 	MaxWireJSON = MaxHeaderBytes / 4 * 3
-	// LegacyWireJSON is the same budget for an engine without the large header.
-	LegacyWireJSON = LegacyHeaderBytes / 4 * 3
 )
-
-// Budget is the JSON byte budget this request may use: the large one only for an engine known to accept it.
-func (b Boost) Budget() int {
-	if b.Wide {
-		return MaxWireJSON
-	}
-	return LegacyWireJSON
-}
-
-// TermCap is the most term lines this request may carry.
-func (b Boost) TermCap() int {
-	if b.Wide {
-		return MaxTerms
-	}
-	return LegacyTerms
-}
 
 // Active reports whether the request should carry a list at all.
 func (b Boost) Active() bool {
@@ -62,7 +35,7 @@ func (b Boost) Active() bool {
 }
 
 // Fit is how many leading terms fit a JSON budget of maxBytes: the most recent terms win, the tail is dropped.
-// All three delivery paths (session body, header, CLI stdin) send the same Fit(Budget()) prefix, so the
+// All three delivery paths (session body, header, CLI stdin) send the same Fit(MaxWireJSON) prefix, so the
 // resident server's one-entry graph cache and the per-call CLI see one list.
 func (b Boost) Fit(maxBytes int) int {
 	a, err := json.Marshal(b.Alpha)
@@ -72,9 +45,6 @@ func (b Boost) Fit(maxBytes int) int {
 	size := len(`{"alpha":,"terms":[]}`) + len(a)
 	n := 0
 	for _, t := range b.Terms {
-		if n >= b.TermCap() {
-			break
-		}
 		e, err := json.Marshal(t)
 		if err != nil {
 			break
@@ -97,7 +67,7 @@ func (b Boost) Dropped() int {
 	if !b.Active() {
 		return 0
 	}
-	return len(b.Terms) - b.Fit(b.Budget())
+	return len(b.Terms) - b.Fit(MaxWireJSON)
 }
 
 // JSON encodes {"alpha":…,"terms":[…]} within maxBytes by dropping terms from the tail (the least recent
@@ -124,7 +94,7 @@ func (b Boost) JSON(maxBytes int) []byte {
 // "" when there is nothing to send.
 func (b Boost) Header() string {
 	// base64 inflates by 4/3: the JSON budget is the header budget scaled down, rounded down
-	j := b.JSON(b.Budget())
+	j := b.JSON(MaxWireJSON)
 	if j == nil {
 		return ""
 	}
@@ -135,7 +105,7 @@ func (b Boost) Header() string {
 // server paths carry.
 func (b Boost) Stdin() string {
 	var sb strings.Builder
-	for _, t := range b.Terms[:b.Fit(b.Budget())] {
+	for _, t := range b.Terms[:b.Fit(MaxWireJSON)] {
 		sb.WriteString(t)
 		sb.WriteByte('\n')
 	}

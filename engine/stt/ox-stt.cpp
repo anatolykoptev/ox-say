@@ -21,11 +21,10 @@
 //   ox-stt --serve -m <parakeet model> --port <port> [--vad <silero VAD model>]
 //          [-t threads] [-ng] [--chunk-s 30] [-v]
 //          loads the model once, warms it up, then serves loopback HTTP (whisper stays CLI-only):
-//            GET  /health      -> 200 {"status":"ok","max_terms_header":16384} (the daemon sends the large
-//                                 X-Ox-Terms header only to an engine that reports it)
+//            GET  /health      -> 200 {"status":"ok"}
 //            POST /transcribe  -> body is a 16 kHz mono WAV sent as Content-Type: audio/wav with a
 //                                 Content-Length; 200 with the same JSON the CLI prints
-//                                 Optional header X-Ox-Terms: base64url (no padding, at most 16 KB) of
+//                                 Optional header X-Ox-Terms: base64url (no padding, at most 4 KB) of
 //                                 {"alpha":2,"terms":["OxSay\t1\tоксей","Devin"]} (terms_wire.h): the same term
 //                                 lines as --terms-stdin, boosted for this request only; a missing, malformed or
 //                                 oversize header means an unboosted decode, never an error, and term text is
@@ -1172,7 +1171,7 @@ int serve(const args & a) {
         setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *) &on, sizeof(on));
     });
     srv.Get("/health", [](const httplib::Request &, httplib::Response & res) {
-        res.set_content("{\"status\":\"ok\",\"max_terms_header\":" + std::to_string(oxstt::boost::kMaxTermsHeader) + "}", "application/json");
+        res.set_content("{\"status\":\"ok\"}", "application/json");
     });
     srv.Post("/transcribe", [&](const httplib::Request & req, httplib::Response & res) {
         {
@@ -1194,7 +1193,7 @@ int serve(const args & a) {
             if (oxstt::boost::parse_header(req.get_header_value("X-Ox-Terms"), tw)) {
                 plan = plan_from_wire(ctx, terms_cache, &tw);
             } else {
-                fprintf(stderr, "ox-stt: X-Ox-Terms refused (malformed or over 16 KB); decoding without boost\n");
+                fprintf(stderr, "ox-stt: X-Ox-Terms refused (malformed or over 4 KB); decoding without boost\n");
             }
         }
         result r;

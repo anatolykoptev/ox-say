@@ -8,7 +8,7 @@ import (
 
 // Boost-list limits, mirrored by engine/stt/boost.h (kMaxTerms, kMaxAliases, kMinTermChars).
 const (
-	MaxBoostTerms   = 512
+	MaxBoostTerms   = 200
 	maxBoostAliases = 8
 	minBoostChars   = 3
 )

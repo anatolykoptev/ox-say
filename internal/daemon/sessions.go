@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"regexp"
 	"time"
+
+	"github.com/anatolykoptev/ox-say/internal/stt"
 )
 
 // Streaming transcription sessions on the resident ox-stt server
@@ -184,7 +186,7 @@ func (d *Daemon) sttSessionOp(w http.ResponseWriter, r *http.Request, op string,
 // re-decode reuses it — or an empty body. It replaces whatever the client sent: the list is the daemon's to
 // choose, never the caller's.
 func (d *Daemon) sessionBoostBody() func([]byte) []byte {
-	b := func() []byte { b := d.sttBoost(); return b.JSON(b.Budget()) }()
+	b := d.sttBoost().JSON(stt.MaxWireJSON)
 	return func([]byte) []byte { return b }
 }
 
