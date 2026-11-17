@@ -66,6 +66,11 @@ final class MainWindowSource {
     private var visible = false
     private var pollTask: Task<Void, Never>?
     private var clockTimer: Timer?
+    /// The code vocabulary switches: one save at a time, the latest choice last, the page shows the daemon's answer.
+    private lazy var codePackSync = CodePackSync(
+        put: { [unowned self] packs, unknown in try await self.host.client.setCodeVocabulary(packs, keeping: unknown) },
+        read: { [unowned self] in try await self.host.client.codeVocabularyAnswer() },
+        apply: { [unowned self] answer in self.model.data.codePacks = answer.packs })
     private var gate = RefreshGate()
     /// The poll of live captions of the chosen meeting while it is recorded (`LivePolling`); one at a time.
     private var liveTask: Task<Void, Never>?
@@ -345,12 +350,10 @@ final class MainWindowSource {
         }
         a.setCodePack = { [weak self] _, _ in
             guard let self else { return }
-            // The model already holds the new set (the switch's binding wrote it); the daemon is told the whole set,
-            // and a refused save shows the daemon's own value again.
+            // The model already holds the new set (the switch's binding wrote it); the sync sends the latest set one
+            // request at a time and then shows what the daemon confirms.
             let packs = self.model.data.codePacks
-            Task { @MainActor in
-                do { try await self.host.client.setCodeVocabulary(packs) } catch { await self.reloadSettingsAsync() }
-            }
+            Task { @MainActor in await self.codePackSync.choose(packs) }
         }
         a.dismissNotice = { [weak self] in self?.model.data.notice = nil }
         a.searchTyped = { [weak self] text in self?.searchEvent(.typed(text)) }
@@ -558,7 +561,10 @@ final class MainWindowSource {
         if let pickedFolder { MeetingSettings.setFolder(pickedFolder, host.defaults) }
         let daemon = try? await host.client.meetingDaemonSettings()
         let notes = host.daemonStatus()?.notes
-        if let packs = try? await host.client.codeVocabulary() { model.data.codePacks = packs }
+        if let answer = try? await host.client.codeVocabularyAnswer() {
+            codePackSync.learn(answer)
+            if !codePackSync.isBusy { model.data.codePacks = answer.packs }
+        }
         model.data.meetingSettings = pickedFolder.map {
             MeetingSettingsModel.folderPicked($0, defaults: host.defaults, daemonRetention: daemon?.retention,
                                               notesWriter: NotesWriterState.of(notes), fullName: NSFullUserName())
