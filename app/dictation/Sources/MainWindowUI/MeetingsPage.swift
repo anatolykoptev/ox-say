@@ -212,7 +212,7 @@ private struct MeetingList: View {
                     ForEach(groups.indices, id: \.self) { g in
                         Section(groups[g].title) {
                             ForEach(groups[g].meetings, id: \.id) { m in
-                                MeetingRow(info: m).tag(m.id)
+                                MeetingRow(info: m, caption: MeetingRowCaption.line(info: m, feed: model.data.live[m.id])).tag(m.id)
                             }
                         }
                     }
@@ -234,6 +234,8 @@ private struct MeetingList: View {
 
 private struct MeetingRow: View {
     let info: MeetingInfo
+    /// The last live caption of a recording; nil: the row is as it was.
+    var caption: String?
 
     var body: some View {
         let status = MeetingRowModel.status(of: info)
@@ -250,6 +252,9 @@ private struct MeetingRow: View {
                 if let d = MeetingRowModel.duration(info.durationSeconds) {
                     Text("· \(d)").font(.caption).foregroundStyle(.secondary)
                 }
+            }
+            if let caption {
+                Text(caption).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
             }
         }
         .padding(.vertical, 3)

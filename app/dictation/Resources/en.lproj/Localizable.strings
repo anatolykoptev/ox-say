@@ -382,6 +382,11 @@
 "meeting.error.off" = "Meeting notes are switched off. Turn them on in Settings.";
 "meetings.title.call" = "%@ call";
 "settings.keep.unchecked" = "Couldn't check with the service. This is your last choice.";
+"settings.live_captions" = "Live captions during a meeting";
+"settings.live_captions.footer" = "Shows what is said while you record. Speech recognition uses the processor.";
+"settings.live_captions.default_on" = "On by default on this Mac.";
+"settings.live_captions.default_off" = "Off by default on this Mac.";
+"badge.open_live" = "Open live captions";
 "notice.meeting.copy_stale" = "The title was changed, but the copy in your notes folder has not been updated.";
 "search.placeholder" = "Search meetings";
 "search.searching" = "Searching…";
