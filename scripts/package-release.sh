@@ -20,7 +20,9 @@ case $arch in
 esac
 asset=ox-say-macos-$arch.tar.gz
 
-OX_SAY_DIST=1 "$root/engine/build.sh" "$work"
+# OX_SAY_WITH_AEC: the package ships ox-aec to every user (echo cancellation is on by default);
+# the require below makes a build that left none fail here instead of packaging short.
+OX_SAY_DIST=1 OX_SAY_WITH_AEC=1 "$root/engine/build.sh" "$work"
 VERSION="$version" "$root/app/dictation/build.sh"
 (cd "$root" && CGO_ENABLED=0 GOOS=darwin GOARCH=$goarch go build -trimpath \
     -ldflags "-s -w -X main.version=$version" -o "$root/build/ox-say-dist" ./cmd/ox-say)
@@ -30,7 +32,7 @@ VERSION="$version" "$root/app/dictation/build.sh"
 # i8mm/BF16/SME an M1 lacks. One such instruction is a SIGILL there, and a
 # build machine that has it would slip it in silently. The guards fail
 # closed on an otool error.
-for bin in tts-server ox-stt ox-align ox-llm $( [ -f "$work/out/ox-diar" ] && echo ox-diar ) $( [ -f "$work/out/ox-clean" ] && echo ox-clean ) $( [ -f "$work/out/audiocpp_server" ] && echo audiocpp_server ); do
+for bin in tts-server ox-stt ox-align ox-llm $( [ -f "$work/out/ox-diar" ] && echo ox-diar ) $( [ -f "$work/out/ox-clean" ] && echo ox-clean ) $( [ -f "$work/out/ox-aec" ] && echo ox-aec ) $( [ -f "$work/out/audiocpp_server" ] && echo audiocpp_server ); do
     "$root/scripts/$baseline" "$work/out/$bin"
 done
 
@@ -47,6 +49,14 @@ fi
 if [ -f "$work/out/ox-clean" ]; then
     cp "$work/out/ox-clean" "$stage/engine/"
 fi
+# ox-aec (meeting echo cancellation): required, both packages — the build above asked for it with
+# OX_SAY_WITH_AEC=1, so a missing binary is a broken build, not an engine to skip. Both packages
+# carry it (echo cancellation is on by default for every install); release.yml asserts it.
+if [ ! -x "$work/out/ox-aec" ]; then
+    echo "package-release.sh: OX_SAY_WITH_AEC=1 was set but $work/out has no ox-aec — refusing to package without it" >&2
+    exit 1
+fi
+cp "$work/out/ox-aec" "$stage/engine/"
 # VoxCPM2's server: the arm64 package only.
 if [ -f "$work/out/audiocpp_server" ]; then
     cp "$work/out/audiocpp_server" "$stage/engine/"
@@ -75,6 +85,9 @@ for lib in $metallibs; do
 done
 cp "$work"/out/*.metallib "$stage/engine/"
 cp "$work"/out/licenses/* "$stage/engine/licenses/"
+# Every engine binary the build produced must be in the stage: the expected set is read off the
+# build output itself, so an engine name dropped from the copies above fails here.
+"$root/scripts/check-package-contents.sh" "$work/out" "$stage/engine"
 cp "$root"/launchd/*.plist.in "$stage/launchd/"
 cp "$root"/scripts/install-release.sh "$root"/scripts/lib-install.sh "$root"/scripts/fetch-models.sh \
     "$root"/scripts/uninstall.sh "$root"/app/dictation/install-app.sh "$stage/scripts/"

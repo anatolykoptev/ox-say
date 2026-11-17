@@ -9,7 +9,9 @@ root=$(cd "$(dirname "$0")/.." && pwd -P)
 # shellcheck source=scripts/lib-install.sh source-path=SCRIPTDIR
 . "$root/scripts/lib-install.sh"
 
-oxs_require "brew install cmake go ffmpeg" go cmake ffmpeg plutil launchctl curl
+# meson and ninja: ox-aec (the meeting echo canceller, on for every install since it ships in every
+# package) is built with them, the only engine that is not cmake.
+oxs_require "brew install cmake go ffmpeg meson ninja" go cmake ffmpeg meson ninja plutil launchctl curl
 
 version=dev
 if command -v git >/dev/null && [ "$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" = "$root" ]; then
@@ -26,7 +28,9 @@ oxs_settings
 
 # 2. Build and fetch the rest. Nothing the running daemon uses changes until
 #    step 3, so a failure here leaves the installed version intact.
-"$root/engine/build.sh"
+#    OX_SAY_WITH_AEC: the source install gets the same ox-aec the release package ships —
+#    without it the daemon's default-on echo cancellation would warn aec_missing on every meeting.
+OX_SAY_WITH_AEC=1 "$root/engine/build.sh"
 oxs_fetch_models "$root/scripts/fetch-models.sh"
 # Caller-owned temp dir + plain-statement render: inside `tmp=$(oxs_render_agent)`
 # command substitution bash 3.2 clears `set -e`, so a failing plutil would not

@@ -65,7 +65,8 @@ OxSay records a call, writes the transcript, tells the other people's voices apa
 - **What is recorded.** Two channels that start together: your microphone and everything the Mac plays.
   macOS asks once for System Audio Recording.
 - **Transcript.** Each channel is transcribed, then the two are merged into one conversation with who said what.
-  Your microphone picking up the other side's voice is detected and dropped.
+  The speakers' echo is cancelled in the microphone channel before transcription (the `ox-aec` engine, on by
+  default), and a turn that is still only an echo is dropped.
 - **Speakers.** On Apple Silicon with macOS 15 or later, the other side's voices are told apart and labelled
   Speaker 1, Speaker 2 and so on (with two voices the app offers a split by voice). You can name a speaker, merge two or split one, and the transcript and notes
   are rewritten with the names. Intel Macs keep one label for the whole far side.

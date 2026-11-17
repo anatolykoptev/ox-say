@@ -22,10 +22,12 @@ app can copy a sentence for that to the clipboard (**Copy consent phrase**).
 **What you get.**
 - **Transcript.** The same speech recognizer as dictation (Parakeet by default) writes it, channel by channel,
   then merges the two with who said what. Turns on your
-  microphone that are only an echo of the other side are dropped. When `meeting_aec` is on in the meeting
-  settings, `ox-aec` first cancels the far side's echo in the microphone channel itself (`me.aec.pcm`, report in
-  `aec.json`), and the transcript reads that instead; the canceller is off by default and absent or failing it
-  only costs a warning (`aec_missing`, `aec_failed`) — the raw channel is transcribed as before. `/status` `aec` shows the setting, whether the binary is on this Mac and how the last run ended.
+  microphone that are only an echo of the other side are dropped. `ox-aec` first cancels the far side's echo in
+  the microphone channel itself (`me.aec.pcm`, report in `aec.json`), and the transcript reads that instead;
+  echo cancellation is on by default — `meeting_aec: "off"` in the meeting settings is the explicit opt-out —
+  and an absent or failing canceller only costs a warning (`aec_missing`, `aec_failed`), the raw channel is
+  transcribed as before. `/status` `aec` shows the setting, whether the binary is on this Mac and how the last
+  run ended.
 - **Other people's voices.** `ox-diar` (FluidAudio, running Nemotron 3 Diarization on the Neural Engine) separates
   the far side's voices. The app records a meeting for up to 6 hours. With three or more voices the transcript shows them as "Speaker 1", "Speaker 2"…; with two,
   it keeps one label and offers **split by voice**. You can name a speaker, merge two voices, or split them

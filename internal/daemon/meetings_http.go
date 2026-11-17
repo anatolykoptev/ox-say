@@ -387,7 +387,7 @@ func (d *Daemon) handleMeetingDelete(w http.ResponseWriter, r *http.Request) {
 
 // meetingSettingsAnswer is the meeting settings as the app reads them: the stored retention and the live-captions
 // choice resolved against this Mac's default (LiveCaptionsDefault says which that is). AEC is the effective
-// meeting_aec choice, "on" or "off"; a meeting setting that was never made reads as off.
+// meeting_aec choice, "on" or "off"; a meeting setting that was never made reads as on.
 type meetingSettingsAnswer struct {
 	RetentionDays       int    `json:"retention_days"`
 	LiveCaptions        bool   `json:"live_captions"`

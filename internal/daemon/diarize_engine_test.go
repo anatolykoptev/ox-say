@@ -114,6 +114,10 @@ printf '{"version":1,"duration_s":15,"speakers":[{"id":0,"speech_s":60},{"id":1,
 `
 	stubCfg, _ := stubDiar(t, stub)
 	d, mux := meetingFixture(t, func(c *config.Config) { c.DiarBin = stubCfg.DiarBin })
+	// the warnings list is pinned to the diarization ones; ox-aec is not on this daemon, so off it is
+	if err := d.Meet.Store.SetSettings(meeting.Settings{RetentionDays: meeting.DefaultRetention, AEC: meeting.AECOff}); err != nil {
+		t.Fatal(err)
+	}
 	writeMarker(t, d.Cfg, oldPyannoteMarker, oldPyannoteRev) // the old set only
 
 	rec := call(t, mux, "POST", "/v1/meetings", `{"title":"Plan","labels":{"me":"Anatoly","them":"Other","speaker":"Speaker"}}`)

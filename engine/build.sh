@@ -10,13 +10,14 @@
 #   ox-diar     from engine/diar, a Swift package on FluidAudio's Core ML models (speaker diarization), arm64
 #   ox-clean    from engine/clean, a Swift package on a Core ML mask model (voice cleanup), arm64 and x86_64
 #   ox-aec      from engine/aec on the pinned freedesktop webrtc-audio-processing (meeting echo
-#               cancellation, AEC3), meson+ninja into a static lib, arm64 and x86_64; opt-in only —
-#               a full build skips it (and needs no meson) unless OX_SAY_WITH_AEC=1
+#               cancellation, AEC3), meson+ninja into a static lib, arm64 and x86_64; the flag-gated
+#               build — release and source installs set OX_SAY_WITH_AEC=1, a plain build skips it
+#               (and needs no meson)
 # The first three carry engine/patches/ggml on their ggml tree, on both architectures: on
 # unified memory the patches are inert or bug fixes (engine/README.md).
 #
 # Usage: [OX_SAY_ONLY=stt|aec] [OX_SAY_WITH_AEC=1] engine/build.sh [work-dir]  (default: build/engine)
-# Output: <work-dir>/out/{tts-server,ox-stt,ox-align,ox-llm,ox-diar (arm64),ox-clean,audiocpp_server (arm64),
+# Output: <work-dir>/out/{tts-server,ox-stt,ox-align,ox-llm,ox-diar (arm64),ox-clean,audiocpp_server (arm64),ox-aec (OX_SAY_WITH_AEC=1),
 #                        each <bin>.metallib (+<bin>-tensor.metallib on a
 #                        macOS 26 SDK) when the Metal toolchain is present,
 #                        licenses/, pins.env (the repo and commit pins this build used)}
@@ -632,9 +633,9 @@ if audiocpp_gate "$arch" "$out"; then
 fi
 
 # --- ox-aec on the full-build path (OX_SAY_ONLY=aec already ran it above and exited) ---
-# Opt-in only: the full build must not need meson/ninja, and no installer or
-# package stage yet ships the binary. aec_gate also drops a stale binary and
-# its licence files when the flag is off.
+# Flag-gated: the release packaging and the source installer set OX_SAY_WITH_AEC=1 (the package
+# ships the binary to every user); a plain build keeps no meson/ninja requirement. aec_gate
+# also drops a stale binary and its licence files when the flag is off.
 if aec_gate "$out"; then
     build_ox_aec
 fi
