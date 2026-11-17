@@ -165,6 +165,12 @@
 //	                            health wait succeed)
 //	OXSAY_FAKE_LLM_CHUNK_MS     ms between SSE chunks of a "stream":true
 //	                            completion (default 40); each chunk flushes
+//	OXSAY_FAKE_LLM_WORD_KB      n: each streamed word is n KiB of "x" — a
+//	                            reply too big for the socket buffers, to
+//	                            exercise a client that stops reading
+//	OXSAY_FAKE_LLM_ENDLESS=1    a "stream":true completion never finishes:
+//	                            it emits a chunk every CHUNK_MS until the
+//	                            client or the proxy hangs up
 //	OXSAY_FAKE_LLM_REQLOG       append-only file: "chat stream=<bool>
 //	                            body=<raw request body>" on arrival, then
 //	                            "chat-done" or "chat-cancelled" (the request
@@ -508,9 +514,20 @@ func fakeLLMStream(w http.ResponseWriter, r *http.Request, reply string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	fl, _ := w.(http.Flusher)
-	for i, word := range strings.Fields(reply) {
-		if i >= 3 {
-			break
+	words := strings.Fields(reply)
+	if len(words) > 3 {
+		words = words[:3]
+	}
+	if kb, _ := strconv.Atoi(os.Getenv("OXSAY_FAKE_LLM_WORD_KB")); kb > 0 {
+		for i := range words {
+			words[i] = strings.Repeat("x", kb<<10)
+		}
+	}
+	endless := os.Getenv("OXSAY_FAKE_LLM_ENDLESS") == "1"
+	for i := 0; endless || i < len(words); i++ {
+		word := "more"
+		if i < len(words) {
+			word = words[i]
 		}
 		chunk, _ := json.Marshal(map[string]any{
 			"choices": []map[string]any{{"delta": map[string]string{"content": word + " "}}},

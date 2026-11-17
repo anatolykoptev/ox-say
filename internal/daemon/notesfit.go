@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -131,8 +132,11 @@ type notesFit struct {
 	// finishPlan clears it, so an older child's count never describes the next one).
 	offload *notesOffload
 	// ctxMax caches each model file's own context_length from its GGUF, so
-	// /status and a spawn plan re-read nothing.
-	ctxMax map[string]int64
+	// /status and a spawn plan re-read nothing. Keyed by the file's path,
+	// size and mtime: a file replaced at the same path is a new entry, and a
+	// path that cannot be stat'ed is never cached (a model installed later
+	// must not inherit a 0 read while it was missing).
+	ctxMax map[ggufStamp]int64
 	// now is the clock; tests inject it.
 	now func() time.Time
 }
@@ -166,7 +170,7 @@ func (d *Daemon) notesSpawnPlan() notesPlan {
 	if p.model == "" {
 		p.model = d.Cfg.NotesModel
 	}
-	p.want = d.notesCtxWant(res)
+	p.want = d.notesCtxWantFor(pickModelPath(res, d.Cfg))
 	p.ctx = p.want
 	if !d.Cfg.UnifiedMemory() || !res.Installed {
 		return d.finishPlan(res, p) // CPU decode decides nothing; a missing model fails as before
@@ -204,6 +208,10 @@ func (d *Daemon) notesSpawnPlan() notesPlan {
 			if path, ok := d.compactInstalled(res); ok {
 				p.model, p.fit = path, fitFallback
 				p.why = why + "; the compact model is installed and writes this meeting's notes"
+				// The ask was bounded by the resolved model's own context; the model that
+				// actually loads has its own ceiling.
+				p.want = d.notesCtxWantFor(path)
+				p.ctx = p.want
 			}
 		}
 	}
@@ -228,17 +236,23 @@ func (d *Daemon) notesSpawnPlan() notesPlan {
 // cache's allocation granularity in llama.cpp.
 const llmCtxStep = 4096
 
-// notesCtxWant is the context the settings currently ask for: the notes
-// context while the endpoint is off, llm_endpoint_ctx (default 131072, never
-// below the notes context) while on — bounded above by the model's own
-// context length, floored back to the notes context when a short model
-// cannot even hold that.
+// notesCtxWant is the context the settings currently ask for of the resolved
+// model; see notesCtxWantFor.
 func (d *Daemon) notesCtxWant(res config.NotesResolution) int {
+	return d.notesCtxWantFor(pickModelPath(res, d.Cfg))
+}
+
+// notesCtxWantFor is the context the settings currently ask for of the model
+// file at path: the notes context while the endpoint is off, llm_endpoint_ctx
+// (default 131072, never below the notes context) while on — bounded above by
+// that file's own context length, floored back to the notes context when a
+// short model cannot even hold that.
+func (d *Daemon) notesCtxWantFor(path string) int {
 	want := meeting.NotesContextTokens()
 	if d.llmEndpointOn() && d.Meet != nil && d.Meet.Store != nil {
 		want = d.Meet.Store.Settings().LLMEndpointCtxTokens()
 	}
-	if maxCtx := d.notesCtxMax(pickModelPath(res, d.Cfg)); maxCtx > 0 && int64(want) > maxCtx {
+	if maxCtx := d.notesCtxMax(path); maxCtx > 0 && int64(want) > maxCtx {
 		want = int(maxCtx / llmCtxStep * llmCtxStep)
 	}
 	return max(want, meeting.NotesContextTokens())
@@ -273,20 +287,36 @@ func (d *Daemon) notesCtxEffective() int {
 // own KV layout is unknown the ask is kept: llama.cpp's fitter and the OOM
 // ladder decide, as they always did.
 func (d *Daemon) notesCtxFitted(p notesPlan, room int64, known bool) int {
-	want := p.want
 	floor := meeting.NotesContextTokens()
-	if !known || want <= floor {
-		return want
+	if !known || p.want <= floor {
+		return p.want
 	}
 	kvToken := d.notesKVPerToken(p.model)
 	if kvToken <= 0 {
-		return want
+		return p.want
 	}
-	weights := notesFileBytes(p.model)
-	for want > floor && weights+kvToken*int64(want)+notesRoomSlack > room {
-		want -= llmCtxStep
+	return fitCtx(p.want, floor, kvToken, notesFileBytes(p.model), room)
+}
+
+// fitCtx is the largest multiple of llmCtxStep not above want whose KV
+// (kvToken bytes per token) fits what is left of room after the weights and
+// notesRoomSlack, never below floor. Closed-form and overflow-safe: the
+// budget is one saturating subtraction and the token count one division — no
+// product of a token count and a per-token size is ever formed.
+func fitCtx(want, floor int, kvToken, weights, room int64) int {
+	if kvToken <= 0 || weights < 0 || weights > math.MaxInt64-notesRoomSlack {
+		return floor
 	}
-	return max(want, floor)
+	need := weights + notesRoomSlack
+	if room < math.MinInt64+need { // room - need would wrap
+		return floor
+	}
+	avail := room - need
+	if avail < 0 {
+		return floor
+	}
+	fits := min(avail/kvToken, int64(want))
+	return max(int(fits/llmCtxStep*llmCtxStep), floor)
 }
 
 // notesKVPerToken estimates the q8_0 KV bytes per token of the GGUF at path
@@ -301,23 +331,45 @@ func (d *Daemon) notesKVPerToken(path string) int64 {
 	return m.kvPerToken()
 }
 
-// notesCtxMax is the resolved model's own context_length from its GGUF,
-// cached per path so /status and spawn plans re-read nothing. 0 = unknown.
+// ggufStamp identifies one version of a model file: where it is and what it
+// was when read.
+type ggufStamp struct {
+	path  string
+	size  int64
+	mtime int64
+}
+
+// notesCtxMax is the model file's own context_length from its GGUF, cached per
+// path+size+mtime so /status and spawn plans re-read nothing. 0 = unknown: a
+// missing file, one that is not a GGUF, or one that says nothing; only a file
+// that was actually read is cached.
 func (d *Daemon) notesCtxMax(path string) int64 {
-	d.fit.mu.Lock()
-	defer d.fit.mu.Unlock()
-	if d.fit.ctxMax == nil {
-		d.fit.ctxMax = map[string]int64{}
+	st, err := os.Stat(path)
+	if err != nil || !st.Mode().IsRegular() {
+		return 0
 	}
-	if v, ok := d.fit.ctxMax[path]; ok {
+	key := ggufStamp{path: path, size: st.Size(), mtime: st.ModTime().UnixNano()}
+	d.fit.mu.Lock()
+	v, ok := d.fit.ctxMax[key]
+	d.fit.mu.Unlock()
+	if ok {
 		return v
 	}
-	m, err := ggufReadMeta(path)
-	v := int64(0)
-	if err == nil {
+	v = 0
+	if m, err := ggufReadMeta(path); err == nil {
 		v = m.Nums["context_length"]
 	}
-	d.fit.ctxMax[path] = v
+	d.fit.mu.Lock()
+	if d.fit.ctxMax == nil {
+		d.fit.ctxMax = map[ggufStamp]int64{}
+	}
+	for k := range d.fit.ctxMax {
+		if k.path == path && k != key {
+			delete(d.fit.ctxMax, k) // the replaced version is dead weight
+		}
+	}
+	d.fit.ctxMax[key] = v
+	d.fit.mu.Unlock()
 	return v
 }
 

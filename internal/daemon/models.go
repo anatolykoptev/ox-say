@@ -383,7 +383,9 @@ func (d *Daemon) modelRoutes(mux *http.ServeMux) {
 // model — or a 404 while that feature is off; a bearer-less request is the
 // app's own and gets the internal catalog as before.
 func (d *Daemon) handleModelsList(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Authorization") != "" {
+	// Presence, not content: an empty or whitespace Authorization header is still an
+	// OpenAI client's attempt, answered by the endpoint (401 or 404), never the internal catalog.
+	if len(r.Header.Values("Authorization")) > 0 {
 		d.handleLLMModels(w, r)
 		return
 	}

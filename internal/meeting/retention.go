@@ -40,6 +40,10 @@ type Settings struct {
 	// 0 is "never chosen" = LLMEndpointDefaultCtx. Values below NotesContextTokens are clamped up to it,
 	// never refused: a smaller stored number (an older daemon, a hand edit) still means "as large as asked".
 	LLMEndpointCtx int `json:"llm_endpoint_ctx,omitempty"`
+	// LLMEndpointMaxS is the longest one endpoint request may run, in seconds; 0 is "never chosen" =
+	// LLMEndpointDefaultMaxS. A stream that reaches it is ended cleanly so one agent cannot hold the
+	// notes model for the upstream's whole timeout.
+	LLMEndpointMaxS int `json:"llm_endpoint_max_s,omitempty"`
 }
 
 // The values Settings.AEC accepts ("" stands for never chosen).
@@ -56,6 +60,22 @@ const (
 
 // LLMEndpointDefaultCtx is the notes child's context while the endpoint is on and nothing is stored.
 const LLMEndpointDefaultCtx = 131072
+
+// The bounds of llm_endpoint_ctx the settings route accepts: the notes context below, and above the
+// largest window any model in the catalog's class advertises (1 Mi tokens). A multiple of
+// LLMEndpointCtxStep, llama.cpp's KV allocation granularity.
+const (
+	LLMEndpointMaxCtx  = 1 << 20
+	LLMEndpointCtxStep = 4096
+)
+
+// The bounds of llm_endpoint_max_s the settings route accepts, and its default: ten minutes covers a
+// long agent turn, and the ceiling is the notes call's own 20-minute bound.
+const (
+	LLMEndpointDefaultMaxS = 600
+	LLMEndpointMinMaxS     = 10
+	LLMEndpointMaxMaxS     = 1200
+)
 
 func validRetention(days int) bool { return slices.Contains(RetentionChoices, days) }
 
@@ -82,6 +102,14 @@ func (st Settings) LLMEndpointCtxTokens() int {
 		return LLMEndpointDefaultCtx
 	}
 	return max(st.LLMEndpointCtx, NotesContextTokens())
+}
+
+// LLMEndpointMaxSeconds is the effective per-request cap: the stored value, the default when unset.
+func (st Settings) LLMEndpointMaxSeconds() int {
+	if st.LLMEndpointMaxS <= 0 {
+		return LLMEndpointDefaultMaxS
+	}
+	return st.LLMEndpointMaxS
 }
 
 // LoadSettings reads settings.json. A file that does not exist means the
@@ -150,6 +178,9 @@ func (s *Store) SetSettings(st Settings) error {
 	}
 	if st.LLMEndpointCtx < 0 {
 		return fmt.Errorf("meeting: llm_endpoint_ctx of %d is negative: %w", st.LLMEndpointCtx, os.ErrInvalid)
+	}
+	if st.LLMEndpointMaxS < 0 {
+		return fmt.Errorf("meeting: llm_endpoint_max_s of %d is negative: %w", st.LLMEndpointMaxS, os.ErrInvalid)
 	}
 	if err := os.MkdirAll(s.Root, 0o700); err != nil {
 		return err

@@ -71,55 +71,112 @@ type ggufMeta struct {
 }
 
 // ggufWantedNums is the metadata a notes-context fit reads: the model's own
-// context ceiling and the K/V layout per attention layer. Keyed by the name
-// after the architecture prefix.
+// context ceiling and what llama.cpp derives the KV cache's shape from (its
+// layer count, which layers attend, their KV head count and per-head K/V
+// widths). Keyed by the name after the architecture prefix.
 var ggufWantedNums = map[string]bool{
 	"context_length":          true,
 	"block_count":             true,
+	"embedding_length":        true,
+	"nextn_predict_layers":    true,
+	"full_attention_interval": true,
+	"attention.head_count":    true,
 	"attention.head_count_kv": true,
 	"attention.key_length":    true,
 	"attention.value_length":  true,
 }
 
-// ggufQ8Scale is q8_0's storage: 34 bytes per 32 elements (llama.cpp's
-// block_q8_0 of half scale + 32 int8). The KV estimate multiplies the
-// element count by 34/32.
-const ggufQ8Scale = 34
+// q8_0 stores 34 bytes per 32 elements (llama.cpp's block_q8_0: a half scale
+// plus 32 int8). The KV estimate multiplies the element count by 34/32.
+const (
+	ggufQ8BlockBytes = 34
+	ggufQ8BlockElems = 32
+	// ggufMaxKVDim bounds each factor of the KV estimate: no real model has a
+	// head count or a per-head width near it, and a made-up header cannot
+	// overflow the product.
+	ggufMaxKVDim = 1 << 20
+	// ggufQwen35FullAttnInterval is the default llama.cpp's qwen35 loader
+	// uses when the file carries no full_attention_interval.
+	ggufQwen35FullAttnInterval = 4
+)
 
-// kvPerToken estimates the model's q8_0 KV bytes per token: the K+V element
-// count summed over the attention layers, times 34/32. key_length and
-// value_length are the GGUF's per-layer totals (n_embd_k_gqa / n_embd_v_gqa);
-// a per-layer array counts the layers that actually attend — a hybrid's
-// linear layers carry no KV. 0 when the metadata cannot say: the estimate
-// is never guessed, the fit just keeps the ask and lets llama.cpp's fitter
-// and the OOM ladder decide.
+// kvPerToken is the model's q8_0 KV bytes per token, the way llama.cpp sizes
+// its cache: for each layer that keeps KV, KV heads x (key_length +
+// value_length) elements — GGUF's key/value lengths are PER HEAD — times
+// 34/32. Which layers keep KV follows llama.cpp: the trunk (block_count minus
+// nextn_predict_layers; the MTP layer is not in the main context); of those a
+// hybrid's full_attention_interval marks every interval-th layer as attention
+// (src/models/qwen35.cpp: is_recr = (il+1) % interval != 0), a per-layer
+// head_count_kv array keeps the layers with a nonzero entry, and a plain
+// model keeps all of them. 0 when the metadata cannot say: the estimate is
+// never guessed, the fit just keeps the ask and lets llama.cpp's fitter and
+// the OOM ladder decide.
 func (m ggufMeta) kvPerToken() int64 {
-	var dims int64
-	if kl := m.NumLists["attention.key_length"]; len(kl) > 0 {
-		vl := m.NumLists["attention.value_length"]
-		for i, k := range kl {
-			dims += k
-			if i < len(vl) {
-				dims += vl[i]
-			}
+	trunk := m.Nums["block_count"] - m.Nums["nextn_predict_layers"]
+	if trunk <= 0 || trunk > ggufMaxLayerElems {
+		return 0
+	}
+	interval := m.Nums["full_attention_interval"]
+	if interval <= 0 && (m.Architecture == "qwen35" || m.Architecture == "qwen35moe") {
+		interval = ggufQwen35FullAttnInterval
+	}
+	kvHeads := m.NumLists["attention.head_count_kv"]
+	_, kvScalar := m.Nums["attention.head_count_kv"]
+	var elems int64
+	for il := int64(0); il < trunk; il++ {
+		heads := m.layerNum("attention.head_count_kv", il)
+		if len(kvHeads) == 0 && !kvScalar {
+			heads = m.layerNum("attention.head_count", il) // no GQA key: one KV head per head
 		}
-	} else {
-		k, v := m.Nums["attention.key_length"], m.Nums["attention.value_length"]
-		if k <= 0 || v <= 0 {
+		attends := true
+		switch {
+		case interval > 0:
+			attends = (il+1)%interval == 0 // the others are linear-attention layers: recurrent state, no KV
+		case len(kvHeads) > 0:
+			attends = heads > 0 // a per-layer array's zero marks a layer without KV
+		}
+		if !attends {
+			continue
+		}
+		k, v := m.layerKV(il)
+		if heads <= 0 || k <= 0 || v <= 0 || heads > ggufMaxKVDim || k > ggufMaxKVDim || v > ggufMaxKVDim {
 			return 0
 		}
-		layers := m.Nums["block_count"]
-		if hl := m.NumLists["attention.head_count_kv"]; len(hl) > 0 {
-			layers = 0
-			for _, h := range hl {
-				if h > 0 {
-					layers++
-				}
-			}
-		}
-		dims = (k + v) * layers
+		elems += heads * (k + v)
 	}
-	return dims * ggufQ8Scale / 32
+	return elems * ggufQ8BlockBytes / ggufQ8BlockElems
+}
+
+// layerNum is a metadata number for layer il: the array's entry when the file
+// wrote a per-layer array, else the scalar; 0 when it carries neither.
+func (m ggufMeta) layerNum(name string, il int64) int64 {
+	if arr := m.NumLists[name]; len(arr) > 0 {
+		if il < int64(len(arr)) {
+			return arr[il]
+		}
+		return 0
+	}
+	return m.Nums[name]
+}
+
+// layerKV is the per-head key and value widths of layer il: the file's
+// key_length/value_length, else llama.cpp's own fallback of embedding_length
+// divided by the head count.
+func (m ggufMeta) layerKV(il int64) (k, v int64) {
+	k, v = m.layerNum("attention.key_length", il), m.layerNum("attention.value_length", il)
+	if k > 0 && v > 0 {
+		return k, v
+	}
+	if heads := m.layerNum("attention.head_count", il); heads > 0 {
+		d := m.Nums["embedding_length"] / heads
+		if k <= 0 {
+			k = d
+		}
+		if v <= 0 {
+			v = d
+		}
+	}
+	return k, v
 }
 
 // ggufReadMeta reads the header and metadata of the GGUF at path. A file whose
@@ -137,69 +194,81 @@ func ggufReadMeta(path string) (ggufMeta, error) {
 		return m, errGGUFUnreadable
 	}
 	m.Bytes = st.Size()
-
 	r := bufio.NewReaderSize(&metaCapReader{r: f, left: ggufMaxMetaBytes}, 32<<10)
-	var magic [4]byte
-	if _, err := io.ReadFull(r, magic[:]); err != nil {
-		return m, ggufErr(err)
-	}
-	if string(magic[:]) != "GGUF" {
-		return m, errGGUFNotModel
-	}
-	v, err := ggufU32(r)
-	if err != nil {
-		return m, ggufErr(err)
-	}
-	m.Version = v
-	if v != 2 && v != 3 {
-		return m, nil
-	}
-	if _, err := ggufU64(r); err != nil { // the tensor count: never read
-		return m, ggufErr(err)
-	}
-	kvCount, err := ggufU64(r)
-	if err != nil {
-		return m, ggufErr(err)
-	}
-	if kvCount > ggufMaxKVEntries {
-		return m, fmt.Errorf("%w: %d metadata entries", errGGUFFormat, kvCount)
+	kvCount, err := m.readHeader(r)
+	if err != nil || kvCount == 0 {
+		return m, err
 	}
 	for i := uint64(0); i < kvCount; i++ {
-		key, err := ggufString(r, ggufMaxKeyLen)
-		if err != nil {
-			return m, err
-		}
-		typ, err := ggufU32(r)
-		if err != nil {
-			return m, ggufErr(err)
-		}
-		if typ == ggufTypeString && (key == "general.name" || key == "general.architecture") {
-			s, err := ggufString(r, ggufMaxStringLen)
-			if err != nil {
-				return m, err
-			}
-			if key == "general.name" {
-				m.Name = ggufMetaString(s)
-			} else {
-				m.Architecture = ggufMetaString(s)
-			}
-			continue
-		}
-		name := key
-		if i := strings.IndexByte(key, '.'); i >= 0 {
-			name = key[i+1:]
-		}
-		if ggufWantedNums[name] {
-			if err := m.captureNum(r, name, typ); err != nil {
-				return m, err
-			}
-			continue
-		}
-		if err := ggufSkipValue(r, typ); err != nil {
+		if err := m.readEntry(r); err != nil {
 			return m, err
 		}
 	}
 	return m, nil
+}
+
+// readHeader reads the magic, the version and the counts, and returns how many
+// metadata entries follow (0 for a version this reader does not parse).
+func (m *ggufMeta) readHeader(r *bufio.Reader) (uint64, error) {
+	var magic [4]byte
+	if _, err := io.ReadFull(r, magic[:]); err != nil {
+		return 0, ggufErr(err)
+	}
+	if string(magic[:]) != "GGUF" {
+		return 0, errGGUFNotModel
+	}
+	v, err := ggufU32(r)
+	if err != nil {
+		return 0, ggufErr(err)
+	}
+	m.Version = v
+	if v != 2 && v != 3 {
+		return 0, nil
+	}
+	if _, err := ggufU64(r); err != nil { // the tensor count: never read
+		return 0, ggufErr(err)
+	}
+	kvCount, err := ggufU64(r)
+	if err != nil {
+		return 0, ggufErr(err)
+	}
+	if kvCount > ggufMaxKVEntries {
+		return 0, fmt.Errorf("%w: %d metadata entries", errGGUFFormat, kvCount)
+	}
+	return kvCount, nil
+}
+
+// readEntry reads one metadata entry: the general strings and the wanted
+// numbers are kept, anything else is skipped.
+func (m *ggufMeta) readEntry(r *bufio.Reader) error {
+	key, err := ggufString(r, ggufMaxKeyLen)
+	if err != nil {
+		return err
+	}
+	typ, err := ggufU32(r)
+	if err != nil {
+		return ggufErr(err)
+	}
+	if typ == ggufTypeString && (key == "general.name" || key == "general.architecture") {
+		s, err := ggufString(r, ggufMaxStringLen)
+		if err != nil {
+			return err
+		}
+		if key == "general.name" {
+			m.Name = ggufMetaString(s)
+		} else {
+			m.Architecture = ggufMetaString(s)
+		}
+		return nil
+	}
+	name := key
+	if i := strings.IndexByte(key, '.'); i >= 0 {
+		name = key[i+1:]
+	}
+	if ggufWantedNums[name] {
+		return m.captureNum(r, name, typ)
+	}
+	return ggufSkipValue(r, typ)
 }
 
 // ggufMaxMetaRunes bounds the metadata strings the check reports: they are

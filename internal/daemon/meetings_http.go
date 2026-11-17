@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -393,15 +394,16 @@ type meetingSettingsAnswer struct {
 	LiveCaptions        bool   `json:"live_captions"`
 	LiveCaptionsDefault bool   `json:"live_captions_default"`
 	AEC                 string `json:"meeting_aec"`
-	// LLMEndpoint is the effective llm_endpoint choice, "on" or "off" (a
-	// setting never made reads as off). LLMEndpointCtx is the context the
-	// notes child runs with under it — the fitted figure, not just the ask —
-	// and LLMEndpointURL/Key the loopback base and the per-install bearer,
-	// for the Settings pane's copy buttons.
-	LLMEndpoint    string `json:"llm_endpoint"`
-	LLMEndpointCtx int    `json:"llm_endpoint_ctx"`
-	LLMEndpointURL string `json:"llm_endpoint_url"`
-	LLMEndpointKey string `json:"llm_endpoint_key"`
+	// LLMEndpoint is the effective llm_endpoint choice, "on" or "off" (a setting never made reads as off).
+	// LLMEndpointCtx is the context the settings ASK for (stored, or the default); LLMEndpointCtxEffective is
+	// what the notes child runs with — or would on its next start — after the fit and the model's own limit,
+	// read-only. LLMEndpointURL is the loopback base. The per-install key is NOT here: it is served only to the
+	// owner, at GET /v1/meetings/llm-endpoint/key.
+	LLMEndpoint             string `json:"llm_endpoint"`
+	LLMEndpointCtx          int    `json:"llm_endpoint_ctx"`
+	LLMEndpointCtxEffective int    `json:"llm_endpoint_ctx_effective"`
+	LLMEndpointMaxS         int    `json:"llm_endpoint_max_s"`
+	LLMEndpointURL          string `json:"llm_endpoint_url"`
 }
 
 func (d *Daemon) settingsAnswer() meetingSettingsAnswer {
@@ -414,53 +416,111 @@ func (d *Daemon) settingsAnswer() meetingSettingsAnswer {
 		ep = meeting.LLMEndpointOn
 	}
 	return meetingSettingsAnswer{
-		RetentionDays:       st.RetentionDays,
-		LiveCaptions:        d.liveEnabled(),
-		LiveCaptionsDefault: d.liveDefault(),
-		AEC:                 aec,
-		LLMEndpoint:         ep,
-		LLMEndpointCtx:      d.notesCtxEffective(),
-		LLMEndpointURL:      d.llmEndpointURL(),
-		LLMEndpointKey:      d.llmKey,
+		RetentionDays:           st.RetentionDays,
+		LiveCaptions:            d.liveEnabled(),
+		LiveCaptionsDefault:     d.liveDefault(),
+		AEC:                     aec,
+		LLMEndpoint:             ep,
+		LLMEndpointCtx:          st.LLMEndpointCtxTokens(),
+		LLMEndpointCtxEffective: d.notesCtxEffective(),
+		LLMEndpointMaxS:         st.LLMEndpointMaxSeconds(),
+		LLMEndpointURL:          d.llmEndpointURL(),
 	}
 }
 
 func (d *Daemon) handleMeetingSettings(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, d.settingsAnswer())
+	d.writeLLMJSON(w, http.StatusOK, d.settingsAnswer())
 }
 
-// handleMeetingSettingsSet changes the fields it is given and keeps the rest. Pointers: an absent retention_days
-// must not read as 0, which is "never delete", and an absent live_captions must not read as "off".
-func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		RetentionDays  *int    `json:"retention_days"`
-		LiveCaptions   *bool   `json:"live_captions"`
-		AEC            *string `json:"meeting_aec"`
-		LLMEndpoint    *string `json:"llm_endpoint"`
-		LLMEndpointCtx *int    `json:"llm_endpoint_ctx"`
-		// What GET answers beside the settings: a client that sends the answer back is not refused. Read, never stored.
-		LiveCaptionsDefault *bool   `json:"live_captions_default"`
-		LLMEndpointURL      *string `json:"llm_endpoint_url"`
-		LLMEndpointKey      *string `json:"llm_endpoint_key"`
+// meetingSettingsIn is the body of PUT /v1/meetings/settings. Pointers: an absent retention_days must not read as
+// 0, which is "never delete", and an absent live_captions must not read as "off".
+type meetingSettingsIn struct {
+	RetentionDays   *int    `json:"retention_days"`
+	LiveCaptions    *bool   `json:"live_captions"`
+	AEC             *string `json:"meeting_aec"`
+	LLMEndpoint     *string `json:"llm_endpoint"`
+	LLMEndpointCtx  *int    `json:"llm_endpoint_ctx"`
+	LLMEndpointMaxS *int    `json:"llm_endpoint_max_s"`
+	// What GET answers beside the settings: a client that sends the answer back is not refused. Read, never stored.
+	LiveCaptionsDefault     *bool   `json:"live_captions_default"`
+	LLMEndpointURL          *string `json:"llm_endpoint_url"`
+	LLMEndpointCtxEffective *int    `json:"llm_endpoint_ctx_effective"`
+}
+
+func (in *meetingSettingsIn) empty() bool {
+	return in.RetentionDays == nil && in.LiveCaptions == nil && in.AEC == nil && in.LLMEndpoint == nil &&
+		in.LLMEndpointCtx == nil && in.LLMEndpointMaxS == nil
+}
+
+// needsOwner: opening the endpoint, and sizing what it may take from the Mac, are the owner's calls. Turning it
+// off needs nobody: that only closes a door.
+func (in *meetingSettingsIn) needsOwner() bool {
+	return (in.LLMEndpoint != nil && *in.LLMEndpoint == meeting.LLMEndpointOn) ||
+		in.LLMEndpointCtx != nil || in.LLMEndpointMaxS != nil
+}
+
+// validate refuses a value outside what the setting means, with the sentence the client reads, and normalizes
+// llm_endpoint_ctx to a multiple of 4096 (rounded down). "" is valid.
+func (in *meetingSettingsIn) validate() string {
+	if in.AEC != nil && *in.AEC != meeting.AECOn && *in.AEC != meeting.AECOff {
+		return "meeting_aec must be \"on\" or \"off\""
 	}
+	if in.LLMEndpoint != nil && *in.LLMEndpoint != meeting.LLMEndpointOn && *in.LLMEndpoint != meeting.LLMEndpointOff {
+		return "llm_endpoint must be \"on\" or \"off\""
+	}
+	if c := in.LLMEndpointCtx; c != nil {
+		if *c < meeting.NotesContextTokens() || *c > meeting.LLMEndpointMaxCtx {
+			return fmt.Sprintf("llm_endpoint_ctx must be between %d and %d tokens", meeting.NotesContextTokens(), meeting.LLMEndpointMaxCtx)
+		}
+		// Rounded down to llama.cpp's allocation step, but never under the notes context itself (which is not
+		// a multiple of it): that floor is a valid ask, and the lowest one.
+		*c = max(*c/meeting.LLMEndpointCtxStep*meeting.LLMEndpointCtxStep, meeting.NotesContextTokens())
+	}
+	if m := in.LLMEndpointMaxS; m != nil && (*m < meeting.LLMEndpointMinMaxS || *m > meeting.LLMEndpointMaxMaxS) {
+		return fmt.Sprintf("llm_endpoint_max_s must be between %d and %d seconds", meeting.LLMEndpointMinMaxS, meeting.LLMEndpointMaxMaxS)
+	}
+	return ""
+}
+
+// applyTo sets the fields the request carries on cur.
+func (in *meetingSettingsIn) applyTo(cur meeting.Settings) meeting.Settings {
+	if in.RetentionDays != nil {
+		cur.RetentionDays = *in.RetentionDays
+	}
+	if in.LiveCaptions != nil {
+		cur.LiveCaptions = in.LiveCaptions
+	}
+	if in.AEC != nil {
+		cur.AEC = *in.AEC
+	}
+	if in.LLMEndpoint != nil {
+		cur.LLMEndpoint = *in.LLMEndpoint
+	}
+	if in.LLMEndpointCtx != nil {
+		cur.LLMEndpointCtx = *in.LLMEndpointCtx
+	}
+	if in.LLMEndpointMaxS != nil {
+		cur.LLMEndpointMaxS = *in.LLMEndpointMaxS
+	}
+	return cur
+}
+
+// handleMeetingSettingsSet changes the fields it is given and keeps the rest.
+func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request) {
+	var in meetingSettingsIn
 	if err := decodeStrict(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if in.RetentionDays == nil && in.LiveCaptions == nil && in.AEC == nil && in.LLMEndpoint == nil && in.LLMEndpointCtx == nil {
-		writeErr(w, http.StatusBadRequest, "retention_days, live_captions, meeting_aec, llm_endpoint or llm_endpoint_ctx is required")
+	if in.empty() {
+		writeErr(w, http.StatusBadRequest, "retention_days, live_captions, meeting_aec, llm_endpoint, llm_endpoint_ctx or llm_endpoint_max_s is required")
 		return
 	}
-	if in.AEC != nil && *in.AEC != meeting.AECOn && *in.AEC != meeting.AECOff {
-		writeErr(w, http.StatusBadRequest, "meeting_aec must be \"on\" or \"off\"")
+	if in.needsOwner() && !d.requireOwner(w, r) {
 		return
 	}
-	if in.LLMEndpoint != nil && *in.LLMEndpoint != meeting.LLMEndpointOn && *in.LLMEndpoint != meeting.LLMEndpointOff {
-		writeErr(w, http.StatusBadRequest, "llm_endpoint must be \"on\" or \"off\"")
-		return
-	}
-	if in.LLMEndpointCtx != nil && *in.LLMEndpointCtx < 0 {
-		writeErr(w, http.StatusBadRequest, "llm_endpoint_ctx must not be negative")
+	if msg := in.validate(); msg != "" {
+		writeErr(w, http.StatusBadRequest, msg)
 		return
 	}
 	// One read-modify-write (UpdateSettings): the base is the file as stored, not Settings(), which shows the default
@@ -475,22 +535,7 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 			}
 			cur = meeting.Settings{}
 		}
-		if in.RetentionDays != nil {
-			cur.RetentionDays = *in.RetentionDays
-		}
-		if in.LiveCaptions != nil {
-			cur.LiveCaptions = in.LiveCaptions
-		}
-		if in.AEC != nil {
-			cur.AEC = *in.AEC
-		}
-		if in.LLMEndpoint != nil {
-			cur.LLMEndpoint = *in.LLMEndpoint
-		}
-		if in.LLMEndpointCtx != nil {
-			cur.LLMEndpointCtx = *in.LLMEndpointCtx
-		}
-		return cur, nil
+		return in.applyTo(cur), nil
 	})
 	if err != nil {
 		if errors.Is(err, os.ErrInvalid) {
@@ -501,7 +546,10 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 		return
 	}
 	d.live.reconcile()
-	writeJSON(w, http.StatusOK, d.settingsAnswer())
+	if in.LLMEndpoint != nil && *in.LLMEndpoint == meeting.LLMEndpointOff {
+		go d.llmEndpointOffRecycle() // the large-context child ends at the next safe point, not at its idle stop
+	}
+	d.writeLLMJSON(w, http.StatusOK, d.settingsAnswer())
 }
 
 // handleNotesModelInstall starts the download of a notes model. The app's

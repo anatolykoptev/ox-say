@@ -100,13 +100,25 @@ type Daemon struct {
 	ownerToken string
 	// llmKey is the per-install bearer of the OpenAI-compatible endpoint,
 	// loaded or created at start from run/llm-endpoint.key (mode 0600).
-	// Empty fails closed: no request authenticates (llmendpoint.go).
+	// Empty fails closed: no request authenticates. llmMu makes the file
+	// write and the in-memory publish of a rotation one step and gives
+	// readers a consistent snapshot (llmendpoint.go: currentLLMKey).
 	llmKey string
+	llmMu  sync.RWMutex
 	// notesReqSlot is the daemon's stand-in for the notes child's single
 	// decode slot (-np 1): a meeting's notes call holds it for its HTTP
 	// call, an endpoint request for the whole proxied stream, so one
-	// request at a time reaches the model whichever side asked.
-	notesReqSlot chan struct{}
+	// request at a time reaches the model whichever side asked. A notes
+	// call is served before a queued endpoint request.
+	notesReqSlot *reqSlot
+	// notesJobs counts meeting notes jobs queued or running (one per
+	// NotesTurn, held for the whole job): while it is above zero a new
+	// endpoint request is refused at admission.
+	notesJobs atomic.Int64
+	// llmGate bounds the endpoint requests in the daemon at once — one
+	// running plus llmMaxWaiters queued — and is taken BEFORE a request
+	// body is read, so the bodies held in memory are bounded too.
+	llmGate chan struct{}
 	// meetCancel and meetDone stop and await StartMeetings' goroutines.
 	meetCancel context.CancelFunc
 	meetDone   chan struct{}
@@ -413,7 +425,8 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox, 
 	}
 	d.initGlossary()
 	d.llmKey = llmEndpointKey(cfg.RunDir(), logger)
-	d.notesReqSlot = make(chan struct{}, 1)
+	d.notesReqSlot = newReqSlot()
+	d.llmGate = make(chan struct{}, 1+llmMaxWaiters)
 	d.initMeetings()
 	d.initTranscripts()
 	if d.VoxSup != nil {

@@ -53,11 +53,13 @@ func llmEndpointFixture(t *testing.T, edit func(*config.Config)) (*Daemon, *http
 	return d, mux, dir
 }
 
-// llmPutSettings turns the endpoint on (or off) through the settings route.
-func llmPutSettings(t *testing.T, mux http.Handler, body string) {
+// llmPutSettings changes the endpoint settings through the settings route as
+// the owner (turning the endpoint on needs the owner bearer).
+func llmPutSettings(t *testing.T, d *Daemon, mux http.Handler, body string) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPut, "/v1/meetings/settings", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+d.ownerToken)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -100,7 +102,7 @@ func TestLLMEndpointOffAnswers404(t *testing.T) {
 // check -> RED (a bearer-less request reaches the child).
 func TestLLMEndpointRequiresTheKey(t *testing.T) {
 	d, mux, _ := llmEndpointFixture(t, nil)
-	llmPutSettings(t, mux, `{"llm_endpoint":"on"}`)
+	llmPutSettings(t, d, mux, `{"llm_endpoint":"on"}`)
 	for _, tc := range []struct {
 		name, key string
 	}{
@@ -122,7 +124,7 @@ func TestLLMEndpointRequiresTheKey(t *testing.T) {
 			t.Fatalf("a wrong bearer on /v1/models -> %d, want 401", rec.Code)
 		}
 	}
-	if rec := llmReq(mux, http.MethodGet, "/v1/models", d.llmKey, ""); rec.Code != http.StatusOK {
+	if rec := llmReq(mux, http.MethodGet, "/v1/models", d.currentLLMKey(), ""); rec.Code != http.StatusOK {
 		t.Fatalf("the install key -> %d, want 200", rec.Code)
 	}
 }
@@ -130,9 +132,9 @@ func TestLLMEndpointRequiresTheKey(t *testing.T) {
 // /v1/models names the selected notes model and follows a choice switch.
 func TestLLMEndpointModelsFollowsTheSelection(t *testing.T) {
 	d, mux, _ := llmEndpointFixture(t, nil)
-	llmPutSettings(t, mux, `{"llm_endpoint":"on"}`)
+	llmPutSettings(t, d, mux, `{"llm_endpoint":"on"}`)
 	modelID := func() string {
-		rec := llmReq(mux, http.MethodGet, "/v1/models", d.llmKey, "")
+		rec := llmReq(mux, http.MethodGet, "/v1/models", d.currentLLMKey(), "")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("/v1/models -> %d", rec.Code)
 		}
@@ -166,14 +168,14 @@ func TestLLMEndpointStreamsThrough(t *testing.T) {
 	reqlog := filepath.Join(t.TempDir(), "req.log")
 	t.Setenv("OXSAY_FAKE_LLM_REQLOG", reqlog)
 	d, mux, _ := llmEndpointFixture(t, nil)
-	llmPutSettings(t, mux, `{"llm_endpoint":"on"}`)
+	llmPutSettings(t, d, mux, `{"llm_endpoint":"on"}`)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	body := `{"model":"notes","stream":true,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"f"}}],"tool_choice":"auto","reasoning_effort":"low"}`
 	start := time.Now()
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+d.llmKey)
+	req.Header.Set("Authorization", "Bearer "+d.currentLLMKey())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -220,14 +222,14 @@ func TestLLMEndpointCancelReachesUpstream(t *testing.T) {
 	reqlog := filepath.Join(t.TempDir(), "req.log")
 	t.Setenv("OXSAY_FAKE_LLM_REQLOG", reqlog)
 	d, mux, _ := llmEndpointFixture(t, nil)
-	llmPutSettings(t, mux, `{"llm_endpoint":"on"}`)
+	llmPutSettings(t, d, mux, `{"llm_endpoint":"on"}`)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/v1/chat/completions",
 		strings.NewReader(`{"model":"notes","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
-	req.Header.Set("Authorization", "Bearer "+d.llmKey)
+	req.Header.Set("Authorization", "Bearer "+d.currentLLMKey())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -259,10 +261,10 @@ func TestLLMEndpointYieldsToDictation(t *testing.T) {
 	llmWaitBudget = 300 * time.Millisecond
 	t.Cleanup(func() { llmWaitBudget = keep })
 	d, mux, _ := llmEndpointFixture(t, nil)
-	llmPutSettings(t, mux, `{"llm_endpoint":"on"}`)
+	llmPutSettings(t, d, mux, `{"llm_endpoint":"on"}`)
 	end := d.beginInteractive() // a dictation request is in flight
 	defer end()
-	rec := llmReq(mux, http.MethodPost, "/v1/chat/completions", d.llmKey, `{"model":"notes","messages":[]}`)
+	rec := llmReq(mux, http.MethodPost, "/v1/chat/completions", d.currentLLMKey(), `{"model":"notes","messages":[]}`)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("during dictation -> %d, want 503", rec.Code)
 	}
@@ -272,21 +274,22 @@ func TestLLMEndpointYieldsToDictation(t *testing.T) {
 }
 
 // The notes child's single request slot (-np 1) serializes an endpoint
-// request against another already streaming — the second is refused in
-// bounded time, not queued behind a minutes-long stream.
+// request against another already streaming — the second queues for the slot
+// and, when the stream outlasts its slot budget, is refused in bounded time
+// rather than held behind a minutes-long stream.
 func TestLLMEndpointTakesTheSingleSlot(t *testing.T) {
-	keep := llmWaitBudget
-	llmWaitBudget = 300 * time.Millisecond
-	t.Cleanup(func() { llmWaitBudget = keep })
+	keep, keepSlot := llmWaitBudget, llmSlotBudget
+	llmWaitBudget, llmSlotBudget = 2*time.Second, 300*time.Millisecond
+	t.Cleanup(func() { llmWaitBudget, llmSlotBudget = keep, keepSlot })
 	t.Setenv("OXSAY_FAKE_LLM_CHUNK_MS", "800")
 	d, mux, _ := llmEndpointFixture(t, nil)
-	llmPutSettings(t, mux, `{"llm_endpoint":"on"}`)
+	llmPutSettings(t, d, mux, `{"llm_endpoint":"on"}`)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	chat := func() *http.Response {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
 			strings.NewReader(`{"model":"notes","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
-		req.Header.Set("Authorization", "Bearer "+d.llmKey)
+		req.Header.Set("Authorization", "Bearer "+d.currentLLMKey())
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -344,7 +347,7 @@ func TestLLMEndpointContextInArgv(t *testing.T) {
 		t.Fatal(err)
 	}
 	// On, custom ctx.
-	llmPutSettings(t, mux, `{"llm_endpoint":"on","llm_endpoint_ctx":65536}`)
+	llmPutSettings(t, d, mux, `{"llm_endpoint":"on","llm_endpoint_ctx":65536}`)
 	if _, err := d.LLMSup.EnsureReady(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +374,7 @@ func TestLLMEndpointContextBounds(t *testing.T) {
 }
 
 // The key file is 0600 under the run dir and survives as the source of
-// truth; regenerating rotates it through the route.
+// truth; regenerating rotates it through the (owner-only) route.
 func TestLLMEndpointKeyFileAndRotation(t *testing.T) {
 	d, mux, _ := llmEndpointFixture(t, nil)
 	path := filepath.Join(d.Cfg.RunDir(), llmEndpointKeyFile)
@@ -383,22 +386,22 @@ func TestLLMEndpointKeyFileAndRotation(t *testing.T) {
 		t.Fatalf("the key file is %o, want 0600", st.Mode().Perm())
 	}
 	raw, _ := os.ReadFile(path)
-	if strings.TrimSpace(string(raw)) != d.llmKey {
+	if strings.TrimSpace(string(raw)) != d.currentLLMKey() {
 		t.Fatal("the daemon's key is not the file's")
 	}
-	old := d.llmKey
-	rec := llmReq(mux, http.MethodPost, "/v1/meetings/llm-endpoint/key", "", "")
+	old := d.currentLLMKey()
+	rec := llmReq(mux, http.MethodPost, "/v1/meetings/llm-endpoint/key", d.ownerToken, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("regenerate -> %d %s", rec.Code, rec.Body)
 	}
-	if d.llmKey == "" || d.llmKey == old {
+	if d.currentLLMKey() == "" || d.currentLLMKey() == old {
 		t.Fatal("regeneration did not rotate the key")
 	}
-	llmPutSettings(t, mux, `{"llm_endpoint":"on"}`)
+	llmPutSettings(t, d, mux, `{"llm_endpoint":"on"}`)
 	if rec := llmReq(mux, http.MethodGet, "/v1/models", old, ""); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("the rotated-out key still works: %d", rec.Code)
 	}
-	if rec := llmReq(mux, http.MethodGet, "/v1/models", d.llmKey, ""); rec.Code != http.StatusOK {
+	if rec := llmReq(mux, http.MethodGet, "/v1/models", d.currentLLMKey(), ""); rec.Code != http.StatusOK {
 		t.Fatalf("the new key -> %d", rec.Code)
 	}
 }
