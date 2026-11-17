@@ -51,9 +51,23 @@ public struct GlossaryPair: Equatable, Identifiable {
         return String(sightings)
     }
 
-    /// Where the sightings came from, for the row's tooltip.
+    /// Where the sightings came from, for the row's tooltip: sentences, counted in the words of the language.
     public var provenanceText: String {
-        L10nKey.glossaryProvenance.text(String(seenDictation), String(max(0, sightings - seenDictation)))
+        L10nKey.glossaryProvenance.text(Self.sentences(seenDictation), Self.sentences(max(0, sightings - seenDictation)))
+    }
+
+    /// "1 sentence" / "2 sentences" / «5 предложений»: the plural form is the language's, named by the
+    /// `glossary.plural.rule` string (`one-other` or `slavic`) so a language added later says its own rule.
+    static func sentences(_ n: Int) -> String {
+        let slavic = L10nKey.glossaryPluralRule.text == "slavic"
+        let tail = n % 100
+        let key: L10nKey
+        switch (slavic, n % 10) {
+        case (true, 1) where tail != 11, (false, _) where n == 1: key = .glossarySentencesOne
+        case (true, 2...4) where !(12...14).contains(tail): key = .glossarySentencesFew
+        default: key = .glossarySentencesMany
+        }
+        return key.text(String(n))
     }
 
     /// `{"pairs":[…]}`; nil when it is not that. A row with no id, heard or meant is skipped, never shown half.

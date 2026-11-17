@@ -91,9 +91,17 @@ by its hash like an agent's. The guards, all required:
   pair from zero.
 - Only the live dictation counts (`/finish` of a streaming session). Meeting transcripts, `/v1/audio/transcriptions`,
   `/v1/transcripts` and the MCP `transcribe` tool never do: a meeting repeats the same far-side audio and a
-  file can be run again.
+  file can be run again. The app's one-shot fallback (used
+  when a streaming session fails) goes through `/v1/audio/transcriptions` and cannot be told from a file
+  transcription, so a dictation that took it is not counted: an under-count, which fails safe.
 - Privacy: only the 8-hex hash of the sentence is stored, and the daemon logs counts (`sightings`, `activated`),
   never a sentence or a heard form.
+- At most **one** sighting per pair per dictation: two sentences of one utterance do not activate a pair,
+  because recurrence means the error comes back in a later dictation.
+- One segmentation for both sources: a sentence is the text between `. ! ? …` or a newline. An agent's filing
+  hashes the sentence(s) of its `context` that carry the heard form by the same rule (at most one sighting per
+  filing; a context where no sentence carries the form keeps the hash of the whole context), so a sentence an
+  agent filed and a dictation later repeats is one sighting, even with an abbreviation («т.е.», "Mr.") in it.
 - The match is the exact heard form, whole word, in the raw output; no dictionary is loaded and no file is
   written when nothing matched. The dictation that completes a pair's evidence is answered with the pairs it
   started with; the next one gets the correction.

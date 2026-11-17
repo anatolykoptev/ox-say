@@ -22,7 +22,8 @@ func (d *Daemon) finishRewrite(raw []byte) []byte {
 // noteDictation counts the recogniser's raw final text of a dictation. It parses the body only when some
 // candidate could count, so a glossary with no vetted candidate costs a stat of the glossary file.
 func (d *Daemon) noteDictation(raw []byte) {
-	if d.recurrenceMatcher().Empty() {
+	m := d.recurrenceMatcher()
+	if m.Empty() {
 		return
 	}
 	var fin struct {
@@ -31,13 +32,14 @@ func (d *Daemon) noteDictation(raw []byte) {
 	if json.Unmarshal(raw, &fin) != nil {
 		return
 	}
-	d.noteDictationText(fin.Text)
+	d.recordDictation(m, fin.Text)
 }
 
-// noteDictationText records, for every vetted candidate whose heard form the text carries, the hash of the
-// sentence it is in. Only counts are logged: the sentence, the heard form and the hashes never are.
-func (d *Daemon) noteDictationText(text string) {
-	found := d.recurrenceMatcher().Scan(text)
+// recordDictation records, for every vetted candidate whose heard form the text carries, the hash of the first
+// new sentence it is in (one sighting per pair per dictation). Only counts are logged: the sentence, the heard
+// form and the hashes never are.
+func (d *Daemon) recordDictation(m *glossary.Recurrence, text string) {
+	found := m.Scan(text)
 	if len(found) == 0 {
 		return
 	}

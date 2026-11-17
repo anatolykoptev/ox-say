@@ -166,12 +166,38 @@ func TestDictationRecurrenceCountsAndActivates(t *testing.T) {
 	}
 }
 
-// Two sentences of one dictation are two sightings.
-func TestDictationRecurrenceCountsEachSentence(t *testing.T) {
+// Two sentences of one dictation are one sighting: recurrence means the error comes back in a LATER
+// dictation, so one utterance cannot activate a pair by itself; two dictations of one sentence each do.
+// Mutation: glossary/recurrence.go addDictation, delete the `break` -> RED (the one dictation activates the pair).
+func TestDictationRecurrenceCountsOncePerDictation(t *testing.T) {
 	r := newDictRig(t)
 	r.candidate(t, recHeard, recMeant, true)
 	r.dictate(t, "first zorbex here. second zorbex there.")
+	wantCounts(t, r.pair(t, recHeard), 1, 1, glossary.Candidate)
+	r.dictate(t, "third zorbex elsewhere.")
 	wantCounts(t, r.pair(t, recHeard), 2, 2, glossary.Active)
+}
+
+// One real sentence is one sighting whether an agent filed it or a dictation repeated it, even with an
+// internal sentence boundary in it ("Mr. ", «т.е. »): the filing and the scan cut and hash alike.
+// Mutation: glossary/store.go AddChecked, hash8(key(context)) instead of contextHashes -> RED (the pair
+// turns active on one sentence).
+func TestDictationRecurrenceDoesNotRecountAFiledSentence(t *testing.T) {
+	for _, c := range []struct{ heard, meant, sentence string }{
+		{recHeard, recMeant, "Mr. Zorbex called."},
+		{"зорбекс", "Zorbax", "Это, т.е. зорбекс звонил."},
+	} {
+		r := newDictRig(t)
+		if _, _, err := r.d.Glossary.AddChecked(c.heard, c.meant, c.sentence, true); err != nil {
+			t.Fatal(err)
+		}
+		r.d.invalidateGlossary()
+		r.dictate(t, c.sentence)
+		p := r.pair(t, c.heard)
+		if len(p.Sightings) != 1 || p.SeenDictation != 0 || p.Status != glossary.Candidate {
+			t.Fatalf("%q: sightings %d, seen_dictation %d, status %s; want 1, 0, candidate", c.sentence, len(p.Sightings), p.SeenDictation, p.Status)
+		}
+	}
 }
 
 // A pair with no verdict, or whose heard form is an ordinary word, never gains a passive sighting.

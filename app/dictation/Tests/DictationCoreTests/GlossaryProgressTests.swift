@@ -48,11 +48,25 @@ final class GlossaryProgressTests: XCTestCase {
     func testTheTooltipSplitsDictationFromAgents() {
         withLocale("en") {
             XCTAssertEqual(pair(.candidate, sightings: 3, dictation: 2, needed: 2).provenanceText,
-                           "Heard again in dictation: 2. Filed by assistants: 1.")
+                           "From dictation: 2 sentences. From assistants: 1 sentence.")
         }
         withLocale("ru") {
             XCTAssertEqual(pair(.candidate, sightings: 3, dictation: 2, needed: 2).provenanceText,
-                           "Снова услышано в диктовке: 2. Предложено ассистентами: 1.")
+                           "Из диктовки: 2 предложения. От ассистентов: 1 предложение.")
+        }
+    }
+
+    /// Mutation: GlossaryPair.sentences, drop the `tail != 11` / the 12...14 exclusion -> RED.
+    func testSentencePluralsFollowTheLanguage() {
+        withLocale("ru") {
+            let got = [0, 1, 2, 4, 5, 11, 12, 14, 21, 22, 25, 101, 111].map { GlossaryPair.sentences($0) }
+            XCTAssertEqual(got, ["0 предложений", "1 предложение", "2 предложения", "4 предложения", "5 предложений",
+                                 "11 предложений", "12 предложений", "14 предложений", "21 предложение", "22 предложения",
+                                 "25 предложений", "101 предложение", "111 предложений"])
+        }
+        withLocale("en") {
+            XCTAssertEqual([0, 1, 2, 11, 21].map { GlossaryPair.sentences($0) },
+                           ["0 sentences", "1 sentence", "2 sentences", "11 sentences", "21 sentences"])
         }
     }
 

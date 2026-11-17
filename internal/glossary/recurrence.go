@@ -41,40 +41,75 @@ func (r *Recurrence) Scan(text string) map[string][]string {
 	if r.Empty() {
 		return nil
 	}
-	toks := tokenize(text)
 	var found map[string][]string
 	hits := map[int]struct{}{}
-	start := 0
-	for i, t := range toks {
-		switch {
-		case t.word:
+	for _, seg := range splitSentences(tokenize(text)) {
+		clear(hits)
+		for i, t := range seg {
+			if !t.word {
+				continue
+			}
 			for _, ci := range r.first[fold(t.s)] {
-				if _, ok := matchAt(toks, i, r.cs[ci], true); ok {
+				if _, ok := matchAt(seg, i, r.cs[ci], true); ok {
 					hits[ci] = struct{}{}
 				}
 			}
-		case strings.ContainsAny(t.s, sentenceEnds):
-			found = r.flush(found, toks[start:i], hits)
-			start = i + 1
-			clear(hits)
 		}
+		found = r.flush(found, seg, hits)
 	}
-	return r.flush(found, toks[start:], hits)
+	return found
 }
 
-// flush adds the sentence's hash to every pair that hit in it. The hash is the one the store keeps for an
-// agent's context (hash8 of the folded words), so one sentence is one sighting whoever reports it.
-func (r *Recurrence) flush(found map[string][]string, sentence []token, hits map[int]struct{}) map[string][]string {
-	if len(hits) == 0 {
-		return found
+// splitSentences cuts tokens at the tokens that close a sentence (sentenceEnds), dropping those tokens. It is
+// the one segmentation both the dictation scan and an agent's filing hash by, so one sentence is one hash
+// whichever path reports it. It is a coarse rule: an abbreviation ("Mr. ", "т.е. ") also cuts, and both paths
+// cut there alike.
+func splitSentences(toks []token) [][]token {
+	var out [][]token
+	start := 0
+	for i, t := range toks {
+		if !t.word && strings.ContainsAny(t.s, sentenceEnds) {
+			out = append(out, toks[start:i])
+			start = i + 1
+		}
 	}
+	return append(out, toks[start:])
+}
+
+// segmentWords is the folded words of one sentence.
+func segmentWords(seg []token) []string {
 	var ws []string
-	for _, t := range sentence {
+	for _, t := range seg {
 		if t.word {
 			ws = append(ws, fold(t.s))
 		}
 	}
-	h := hash8(strings.Join(ws, " "))
+	return ws
+}
+
+// contextHashes are the sighting hashes an agent's filing adds for its context: one per sentence of the
+// context that carries the heard form, in order. A context in which no single sentence carries it (the form
+// spans a cut) keeps the hash of the whole context.
+func contextHashes(context, heard string) []string {
+	hw := words(heard)
+	var out []string
+	for _, seg := range splitSentences(tokenize(context)) {
+		if ws := segmentWords(seg); containsSeq(ws, hw) {
+			out = append(out, hash8(strings.Join(ws, " ")))
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, hash8(key(context)))
+	}
+	return out
+}
+
+// flush adds the sentence's hash to every pair that hit in it.
+func (r *Recurrence) flush(found map[string][]string, sentence []token, hits map[int]struct{}) map[string][]string {
+	if len(hits) == 0 {
+		return found
+	}
+	h := hash8(strings.Join(segmentWords(sentence), " "))
 	if found == nil {
 		found = map[string][]string{}
 	}
@@ -130,8 +165,10 @@ func (s *Store) RecordDictation(found map[string][]string) (Recorded, error) {
 	return rec, s.save(pairs)
 }
 
-// addDictation appends the hashes the pair has not seen, up to maxSightings, and counts each as a sighting from
-// dictation. It returns how many it added.
+// addDictation appends the first hash the pair has not seen (room permitting) and counts it as a sighting from
+// dictation: one dictation is one sighting at most, since recurrence means the error comes back in a LATER
+// dictation, and two sentences of one utterance would otherwise activate a pair on their own. It returns how
+// many it added (0 or 1).
 func (p *Pair) addDictation(hashes []string) int {
 	n := 0
 	for _, h := range hashes {
@@ -141,6 +178,7 @@ func (p *Pair) addDictation(hashes []string) int {
 		p.Sightings = append(p.Sightings, h)
 		p.SeenDictation++
 		n++
+		break
 	}
 	return n
 }

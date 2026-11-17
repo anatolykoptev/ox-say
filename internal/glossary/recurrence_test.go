@@ -49,7 +49,7 @@ func TestRecurrenceCompilesOnlyVettedCandidates(t *testing.T) {
 	}
 }
 
-// RecordDictation caps at maxSightings, skips a pair that is no longer a vetted candidate, writes nothing when
+// RecordDictation adds one sighting per call, skips a pair that is no longer a vetted candidate, writes nothing when
 // it changes nothing, and an old file without seen_dictation reads as 0.
 func TestRecordDictation(t *testing.T) {
 	home := t.TempDir()
@@ -63,16 +63,19 @@ func TestRecordDictation(t *testing.T) {
 	if err != nil || ps[0].SeenDictation != 0 {
 		t.Fatalf("old file: %+v, %v", ps, err)
 	}
-	var hs []string
-	for i := range maxSightings + 3 {
-		hs = append(hs, fmt.Sprintf("%08x", i))
+	// One dictation is one sighting, however many sentences it found.
+	// Mutation: recurrence.go addDictation, delete the `break` -> RED (three sightings from one call).
+	rec, err := s.RecordDictation(map[string][]string{ID("zorbex"): {"00000001", "00000002", "00000003"}})
+	if err != nil || rec.Sightings != 1 || rec.Activated != 0 {
+		t.Fatalf("rec = %+v, %v", rec, err)
 	}
-	rec, err := s.RecordDictation(map[string][]string{ID("zorbex"): hs})
-	if err != nil || rec.Sightings != maxSightings || rec.Activated != 1 {
+	// The next dictation skips what the pair already has and adds the first new hash: needed (2) is reached.
+	rec, err = s.RecordDictation(map[string][]string{ID("zorbex"): {"00000001", "00000004", "00000005"}})
+	if err != nil || rec.Sightings != 1 || rec.Activated != 1 {
 		t.Fatalf("rec = %+v, %v", rec, err)
 	}
 	ps, _ = s.List()
-	if len(ps[0].Sightings) != maxSightings || ps[0].SeenDictation != maxSightings || ps[0].Status != Active {
+	if want := []string{"00000001", "00000004"}; !slices.Equal(ps[0].Sightings, want) || ps[0].SeenDictation != 2 || ps[0].Status != Active {
 		t.Fatalf("pair = %+v", ps[0])
 	}
 	// now active: a further call changes nothing and does not rewrite the file
@@ -110,5 +113,38 @@ func BenchmarkRecurrenceScan(b *testing.B) {
 		if len(r.Scan(text)) == 0 {
 			b.Fatal("no match")
 		}
+	}
+}
+
+// An agent's filing and a dictation hash a sentence the same way: a context with an internal boundary
+// ("Mr. ", «т.е. ») still yields the dictation's sentence hash, so one real sentence is one sighting.
+// Mutation: store.go AddChecked, hash8(key(context)) instead of contextHashes -> RED.
+func TestAgentFilingHashesLikeADictation(t *testing.T) {
+	for _, c := range []struct{ heard, meant, context, sentence string }{
+		{"zorbex", "Zorbax", "Mr. Zorbex called.", "Zorbex called"},
+		{"зорбекс", "Zorbax", "Это, т.е. зорбекс звонил.", "зорбекс звонил"},
+		{"zorbex", "Zorbax", "It rained. Then zorbex called! Fine.", "then zorbex called"},
+	} {
+		s := NewStore(t.TempDir())
+		p, err := s.Add(c.heard, c.meant, c.context)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := NewRecurrence([]Pair{{ID: ID(c.heard), Heard: c.heard, Meant: c.meant, Status: Candidate, Vetted: true}})
+		got := r.Scan(c.context)[ID(c.heard)]
+		if len(p.Sightings) != 1 || !slices.Equal(got, p.Sightings) || got[0] != hash8(key(c.sentence)) {
+			t.Fatalf("%q: filing %v, scan %v, want %s", c.context, p.Sightings, got, hash8(key(c.sentence)))
+		}
+	}
+	// A heard form in two sentences of the context: one filing, one sighting.
+	s := NewStore(t.TempDir())
+	p, err := s.Add("zorbex", "Zorbax", "zorbex one. zorbex two.")
+	if err != nil || len(p.Sightings) != 1 {
+		t.Fatalf("sightings = %v, %v", p.Sightings, err)
+	}
+	// A form that spans a cut keeps the whole-context hash.
+	p, err = NewStore(t.TempDir()).Add("pill versus", "PV", "x pill. versus y")
+	if err == nil && len(p.Sightings) != 1 {
+		t.Fatalf("spanning form: %v", p.Sightings)
 	}
 }
