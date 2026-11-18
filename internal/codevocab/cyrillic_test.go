@@ -16,53 +16,53 @@ var allPacks = []string{"python", "go", "rust"}
 // prose-reading rows the pack once had live in TestUnsafeRowsNeverRewrite now.
 func TestCyrillicRowsRewrite(t *testing.T) {
 	pairs := RewritePairs(allPacks)
-	for in, want := range map[string]string{
+	for _, c := range []struct{ in, want string }{
 		// the recognition table
-		"Пайтест":       "pytest",
-		"Из инстанс":    "isinstance",
-		"Изинстанс":     "isinstance",
-		"asis instance": "isinstance",
-		"Энумерейт":     "enumerate",
-		"Аппент":        "append",
-		"Аппент.":       "append.",
-		"Эрстрип":       "rstrip",
-		"реплейс":       "replace",
-		"реплейс,":      "replace,",
-		"Startс with":   "startswith",
-		"Endс with":     "endswith",
-		"enдs with":     "endswith", // the spelled-out mix Parakeet emits for it
-		"Ченнал":        "channel",
-		"Комрехеншин":   "comprehension",
-		"Компрехеншн":   "comprehension",
-		"Дэйсон Лодс":   "json.loads",
-		"Регулер экспрессионс": "regular expressions",
-		"Сортед": "sorted",
+		{"Пайтест", "pytest"},
+		{"Из инстанс", "isinstance"},
+		{"Изинстанс", "isinstance"},
+		{"asis instance", "isinstance"},
+		{"Энумерейт", "enumerate"},
+		{"Аппент", "append"},
+		{"Аппент.", "append."},
+		{"Эрстрип", "rstrip"},
+		{"реплейс", "replace"},
+		{"реплейс,", "replace,"},
+		{"Startс with", "startswith"},
+		{"Endс with", "endswith"},
+		{"enдs with", "endswith"}, // the spelled-out mix Parakeet emits for it
+		{"Ченнал", "channel"},
+		{"Комрехеншин", "comprehension"},
+		{"Компрехеншн", "comprehension"},
+		{"Дэйсон Лодс", "json.loads"},
+		{"Регулер экспрессионс", "regular expressions"},
+		{"Сортед", "sorted"},
 		// builtins and methods
-		"Аппенд":      "append",
-		"Экстенд":     "extend",
-		"Элстрип":     "lstrip",
-		"Стрип":       "strip",
-		"Эндсвиз":     "endswith",
-		"Реверст":     "reversed",
-		"Лямда":       "lambda",
-		"Асинк":       "async",
-		"Авейт":       "await",
-		"Эксепт":      "except",
-		"Кваргс":      "kwargs",
-		"Дандер инит": "__init__",
-		"Пайтон":      "Python",
+		{"Аппенд", "append"},
+		{"Экстенд", "extend"},
+		{"Элстрип", "lstrip"},
+		{"Стрип", "strip"},
+		{"Эндсвиз", "endswith"},
+		{"Реверст", "reversed"},
+		{"Лямда", "lambda"},
+		{"Асинк", "async"},
+		{"Авейт", "await"},
+		{"Эксепт", "except"},
+		{"Кваргс", "kwargs"},
+		{"Дандер инит", "__init__"},
+		{"Пайтон", "Python"},
 		// go and rust
-		"Горутина":  "goroutine",
-		"Готест":    "go test",
-		"Голанг":    "Go",
-		"Анврап":    "unwrap",
-		"Карготест": "cargo test",
-		"Резалт":    "Result",
-		"Трейсбек":  "traceback",
-		"Сабагент":  "subagent",
+		{"Горутина", "goroutine"},
+		{"Готест", "go test"},
+		{"Голанг", "Go"},
+		{"Анврап", "unwrap"},
+		{"Карготест", "cargo test"},
+		{"Резалт", "Result"},
+		{"Трейсбек", "traceback"},
+		{"Сабагент", "subagent"},
 	} {
-		if out, _ := glossary.Apply(in, pairs); out != want {
-			t.Errorf("%q -> %q, want %q", in, out, want)
+		if out, _ := glossary.Apply(c.in, pairs); out != c.want {
+			t.Errorf("%q -> %q, want %q", c.in, out, c.want)
 		}
 	}
 }
