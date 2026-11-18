@@ -366,6 +366,29 @@ func same(h string, c compiled, k int, exact bool, w string) bool {
 	return sameWord(h, c.stem(k, exact), w)
 }
 
+// PackTokenMatch reports whether folded input token w matches a pack pair's
+// heard word h — same() specialised to a pack pair: a pure-Latin alias word
+// also meets a foldable token that latinizes to it, every other spelling
+// matches only itself. A pack pair never stems.
+func PackTokenMatch(h, w string) bool {
+	if !hasCyrillic(h) && foldable(w) {
+		return Latinized(w) == h
+	}
+	return sameWord(h, "", w)
+}
+
+// OwnerTokenMatch reports whether folded input token w matches an owner
+// pair's heard word h — the spelling itself or, under stemsFor's rule, a
+// nominal case of it (a stem exists only for a pair whose meant is written in
+// Latin).
+func OwnerTokenMatch(p Pair, h, w string) bool {
+	hs := ""
+	if !p.Pack && !hasCyrillic(p.Meant) {
+		hs = nominalStem(h)
+	}
+	return sameWord(h, hs, w)
+}
+
 // edges returns what surrounds the word characters of one recognised word.
 func edges(w string) (pre, post string) {
 	toks := tokenize(w)

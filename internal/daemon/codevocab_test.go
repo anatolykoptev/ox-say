@@ -150,6 +150,26 @@ func TestOwnerMixedScriptPairBeatsPack(t *testing.T) {
 	}
 }
 
+// Codex PR-651b repro: owner «стартс» -> MyBrand is pure Cyrillic — its forms only
+// transliterate to the pack's «startс», a spelling the matcher never equates, so
+// packFixPairs must keep the alias and «startс with care» still rewrites.
+// Mutation: codevocab.go DropOwned comparing Latinized(Key(f)) word sets -> RED
+// ("startс with care" stays unchanged).
+func TestCyrillicOwnerKeepsUnmatchablePackAlias(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+	approvedPair(t, d, "стартс", "MyBrand")
+	if code := putPacks(t, mux, `{"code_vocabulary":["python","go","rust"]}`); code != http.StatusOK {
+		t.Fatalf("PUT = %d", code)
+	}
+	if out := d.corrector()("startс with care"); out != "startswith care" {
+		t.Fatalf("got %q, an unmatchable owner pair must not disable the pack alias", out)
+	}
+	if out := d.corrector()("стартс with care"); out != "MyBrand with care" {
+		t.Fatalf("got %q, the owner's own spelling must still rewrite", out)
+	}
+}
+
 // Packs off is main: the decoder lines are exactly the owner's lines and the post-pass pairs are exactly the owner's
 // pairs, in order. The packs only ever ADD after the owner.
 // Mutation: boost.go withPackTerms, drop the `len(packs) == 0` early return AND append unconditionally -> RED.

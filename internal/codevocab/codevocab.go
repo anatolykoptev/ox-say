@@ -381,27 +381,37 @@ var joinable = map[string]bool{
 	"monkeypatch": true, "WaitGroup": true,
 }
 
-// DropOwned removes every pack pair that shares a word with an owner pair's heard or meant form: where the owner
-// has said anything about a word, the pack says nothing, so an owner pair beats a pack pair even when the pack
-// phrase is longer ("beautiful" -> Lovely against "beautiful soup" -> BeautifulSoup). The comparison is the
-// matcher's own normalisation — the folded word identity transliterated to Latin — so an owner pair written in
-// Cyrillic or in a script mix («Stаrts» -> MyBrand) owns the same spoken word the pack alias «startс» does.
+// DropOwned removes every pack pair the owner's pairs can claim at match time: a word of the pack's heard form
+// is owned when the runtime matcher could match one input token to it and to a word the owner filed, so an owner
+// pair beats a pack pair even when the pack phrase is longer ("beautiful" -> Lovely against "beautiful soup" ->
+// BeautifulSoup). The comparison is the matcher's own, never a broader fold: an owner heard word owns a pack
+// word it could match as input (its spelling or a nominal case of it), and each filed owner form owns a pack
+// word that could match the form's own spelling as input (the Latin fold a pure-Latin pack word allows, or the
+// same spelling). An owner «стартс» therefore leaves the pack's «startс» alone — the matcher never equates
+// them — while «Stаrts» still owns the pure-Latin "starts" its token folds to.
 func DropOwned(pack, owner []glossary.Pair) []glossary.Pair {
-	owned := map[string]bool{}
-	for _, o := range owner {
-		for _, f := range []string{o.Heard, o.Meant} {
-			for _, w := range strings.Fields(glossary.Latinized(glossary.Key(f))) {
-				owned[w] = true
+	owned := func(pw string) bool {
+		for _, o := range owner {
+			for _, w := range strings.Fields(glossary.Key(o.Heard)) {
+				if glossary.OwnerTokenMatch(o, w, pw) || glossary.PackTokenMatch(pw, w) {
+					return true
+				}
+			}
+			for _, w := range strings.Fields(glossary.Key(o.Meant)) {
+				if glossary.PackTokenMatch(pw, w) {
+					return true
+				}
 			}
 		}
+		return false
 	}
 	out := make([]glossary.Pair, 0, len(pack))
 	for _, p := range pack {
-		hit := false
-		for _, w := range strings.Fields(glossary.Latinized(glossary.Key(p.Heard))) {
-			hit = hit || owned[w]
+		drop := false
+		for _, w := range strings.Fields(glossary.Key(p.Heard)) {
+			drop = drop || owned(w)
 		}
-		if !hit {
+		if !drop {
 			out = append(out, p)
 		}
 	}

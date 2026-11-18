@@ -343,8 +343,9 @@ func TestProseIsNeverRewritten(t *testing.T) {
 }
 
 // An owner pair beats a pack pair that overlaps it, a longer pack phrase included — and the
-// comparison is the matcher's own Latin fold, so a mixed-script owner form («Stаrts» with a
-// Cyrillic а) owns the same word the pack alias «startс» spells.
+// comparison is the matcher's own: an owner form owns a pack word only when the runtime could
+// match one input token to both, so «Stаrts» owns the pure-Latin "starts" its token folds to
+// but never the differently-spelled «startс».
 // Mutation: DropOwned returning `pack` unchanged -> RED ("beautiful soup" outbids the owner's "beautiful").
 func TestOwnerPairBeatsOverlappingPackPair(t *testing.T) {
 	owner := []glossary.Pair{{Heard: "beautiful", Meant: "Lovely", Status: glossary.Active}}
@@ -357,13 +358,41 @@ func TestOwnerPairBeatsOverlappingPackPair(t *testing.T) {
 		t.Errorf("an unrelated pack pair must survive, got %q", out)
 	}
 	ownerM := []glossary.Pair{{Heard: "Stаrts", Meant: "MyBrand", Status: glossary.Active}}
-	packM := []glossary.Pair{{Heard: "startс with", Meant: "startswith", Status: glossary.Active}}
-	if left := DropOwned(packM, ownerM); len(left) != 0 {
-		t.Fatalf("the mixed-script owner must own the folded word: %d pack pairs left", len(left))
+	packM := []glossary.Pair{{Heard: "startс with", Meant: "startswith", Status: glossary.Active, Pack: true}}
+	if left := DropOwned(packM, ownerM); len(left) != 1 {
+		t.Fatalf("«stаrts» never meets «startс» at match time: %d pack pairs left", len(left))
+	}
+	packL := []glossary.Pair{{Heard: "starts with", Meant: "startswith", Status: glossary.Active, Pack: true}}
+	if left := DropOwned(packL, ownerM); len(left) != 0 {
+		t.Fatalf("owner «Stаrts» must own the pure-Latin \"starts\" its token folds to: %d left", len(left))
 	}
 	all = append(append([]glossary.Pair{}, ownerM...), DropOwned(packM, ownerM)...)
 	if out, _ := glossary.Apply("Stаrts with care", all); out != "MyBrand with care" {
 		t.Errorf("got %q, want the owner's rewrite", out)
+	}
+	if out, _ := glossary.Apply("startс with care", all); out != "startswith care" {
+		t.Errorf("got %q, want the kept alias firing on its own spelling", out)
+	}
+}
+
+// Codex PR-651b repro: an owner pair whose forms only transliterate to a pack alias must not
+// disable it — owner «стартс» and the pack's «startс» are spellings the matcher never equates,
+// so the pair survives DropOwned and still rewrites its own spelling.
+// Mutation: DropOwned latinizing the stored forms unconditionally -> RED (the pair is dropped
+// and «startс with care» stays unchanged).
+func TestDropOwnedKeepsAliasOwnerCannotMatch(t *testing.T) {
+	owner := []glossary.Pair{{Heard: "стартс", Meant: "MyBrand", Status: glossary.Active}}
+	pack := []glossary.Pair{{Heard: "startс with", Meant: "startswith", Status: glossary.Active, Pack: true}}
+	kept := DropOwned(pack, owner)
+	if len(kept) != 1 {
+		t.Fatalf("the pack alias must survive DropOwned: %d left", len(kept))
+	}
+	all := append(append([]glossary.Pair{}, owner...), kept...)
+	if out, _ := glossary.Apply("startс with care", all); out != "startswith care" {
+		t.Errorf("got %q, want %q", out, "startswith care")
+	}
+	if out, _ := glossary.Apply("стартс with care", all); out != "MyBrand with care" {
+		t.Errorf("got %q, want the owner's rewrite on its own spelling", out)
 	}
 }
 
