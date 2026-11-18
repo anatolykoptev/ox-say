@@ -69,7 +69,7 @@ final class PillOwnershipTests: XCTestCase {
     func testTheSpeakPillIsNotTakenOverARunningDictation() {
         let body = Self.appBody("private func speakRequest(_ text: String, voice: String?, language: String? = nil) {")
         guard let idle = body.range(of: "if controller.state == .idle"),
-              let pill = body.range(of: "overlay.showWorking()"),
+              let pill = body.range(of: "overlay.showWorking(owner: .task)"),
               let begin = body.range(of: "beginPill(&speakPill)") else {
             return XCTFail("speakRequest lost the idle guard, the pill show or the slot begin")
         }
@@ -116,12 +116,12 @@ final class PillOwnershipTests: XCTestCase {
         let idle = Self.appBody("private func show(_ state: DictationState) {")
         XCTAssertTrue(idle.contains("overlay.finish()"), "the dictation's own idle hide moved")
         let end = Self.appBody("private func endPill(_ slot: inout PillSlot) {")
-        XCTAssertTrue(end.contains("overlay.finish()") && end.contains("showListening()") && end.contains("showWorking()"),
+        XCTAssertTrue(end.contains("overlay.finish()") && end.contains("showListening(owner: .dictation)") && end.contains("showWorking(owner: .dictation)"),
                       "endPill must finish, or put the dictation look back")
         // The restored "Transcribing…" label gets its elapsed seconds back at
         // once, not at the next one-second tick. Mutation: drop the tickWorking()
         // call after showWorking() in endPill -> RED.
-        XCTAssertTrue(end.contains("showWorking()\n            tickWorking()"),
+        XCTAssertTrue(end.contains("showWorking(owner: .dictation)\n            tickWorking()"),
                       "the restored working label waits a tick for its seconds")
     }
 
@@ -248,61 +248,98 @@ final class PillOwnershipTests: XCTestCase {
         XCTAssertFalse(PillOwnership.mayShowPlayback(dictation: .transcribing))
     }
 
-    /// «Показывать пилюлю при диктовке» off hides the dictation's own shows
-    /// and nothing else: a listening show and a working show while the
-    /// dictation runs stay ordered out; a message (errors must be seen) and a
-    /// playback show pass at any dictation state; and the install, handshake,
-    /// studio and "Speaking…" pills — which borrow the working look but come
-    /// up only while idle — are never gated.
-    /// Mutations (PillOwnership.mayOrderIn): `pillShown ||` alone -> RED (the
-    /// suppressed shows return true); drop `look == nil` -> RED (messages are
-    /// swallowed during a dictation); drop the `PillDictationLook(dictation:)`
-    /// clause -> RED (the install pill is gated while idle).
-    func testTheHiddenPillGatesOnlyTheDictationsOwnShows() {
-        XCTAssertFalse(PillOwnership.mayOrderIn(look: .listening, pillShown: false, dictation: .recording),
-                       "a listening show with the setting off must leave the panel ordered out")
-        XCTAssertFalse(PillOwnership.mayOrderIn(look: .working, pillShown: false, dictation: .transcribing),
-                       "a working show with the setting off must leave the panel ordered out")
-        XCTAssertTrue(PillOwnership.mayOrderIn(look: nil, pillShown: false, dictation: .recording),
-                      "a message (an error!) must still order the panel in")
-        XCTAssertTrue(PillOwnership.mayOrderIn(look: nil, pillShown: false, dictation: .idle),
-                      "playback controls must still order the panel in")
-        XCTAssertTrue(PillOwnership.mayOrderIn(look: .working, pillShown: false, dictation: .idle),
-                      "install/handshake/studio pills borrow the working look while idle — never gated")
-        XCTAssertTrue(PillOwnership.mayOrderIn(look: .listening, pillShown: true, dictation: .recording),
-                      "with the setting on the dictation's shows pass as before")
+    /// «Показывать пилюлю при диктовке» off orders out only the dictation's
+    /// own shows. The owner is declared at the call site — a task's borrowed
+    /// working look (studio, update check, install, handshake, "Speaking…")
+    /// orders in even while a dictation runs, and a message or playback is
+    /// never gated at all.
+    /// Mutations (PillOwnership.order): `owner == .dictation` -> `owner != .dictation`
+    /// -> RED; `!pillShown` -> `pillShown` -> RED; gating `.task` too -> RED.
+    func testTheGateOrdersOutOnlyTheDictationsOwnShows() {
+        XCTAssertEqual(PillOwnership.order(owner: .dictation, pillShown: false), .orderOut,
+                       "the dictation's own show with the setting off stays ordered out")
+        XCTAssertEqual(PillOwnership.order(owner: .dictation, pillShown: true), .orderIn,
+                       "with the setting on the dictation's shows pass as before")
+        XCTAssertEqual(PillOwnership.order(owner: .task, pillShown: false), .orderIn,
+                       "a task's working show during a dictation still orders in — the owner decides, not the state")
+        XCTAssertEqual(PillOwnership.order(owner: .task, pillShown: true), .orderIn)
+        XCTAssertEqual(PillOwnership.order(owner: .transient, pillShown: false), .orderIn,
+                       "a message (an error!) or playback is never gated")
+        XCTAssertEqual(PillOwnership.order(owner: .transient, pillShown: true), .orderIn)
     }
 
-    /// The gate lives in the one show path, reads the setting live through the
-    /// closure AppDelegate wires, and the refused branch takes the pill down —
-    /// which is also how flipping the switch off mid-dictation drops a pill
-    /// that is up: `dictationPillSettingChanged` puts the dictation look back
-    /// through the same gated shows, and the refused hide's restore takes the
-    /// same path, so nothing re-shows a hidden dictation pill.
-    /// Mutations (Overlay.show): delete the `PillOwnership.mayOrderIn` guard ->
-    /// RED; `showsDictationPill?()` -> `true` -> RED; pass `.listening` as the
-    /// look of every show -> RED (the nil mapping is pinned). Mutations
-    /// (Overlay.dictationPillSettingChanged): drop `restoreDictationLook` ->
-    /// RED; drop the `!showingMessage` guard -> RED.
-    func testTheHiddenPillGateSitsInTheOneShowPath() {
-        let show = Self.overlayBody("private func show() {")
-        XCTAssertTrue(show.contains("PillOwnership.mayOrderIn(look:"), "the gate left the one show path")
+    /// The gate lives in the one show path and every show declares its owner:
+    /// `show()` records who asked, asks DictationCore for the verdict and
+    /// applies it verbatim — `.orderIn` puts the panel up, anything else
+    /// orders it out. Because the branch outcome is a value returned, not a
+    /// Bool consumed inline, an inverted call site reads wrong in this test
+    /// and a `!` no longer compiles.
+    /// Mutations (Overlay.show): `verdict == .orderIn` -> `verdict != .orderIn`
+    /// or `== .orderOut` (Codex's `!`, which is now a compile error) -> RED;
+    /// `pillOwner = who` dropped -> RED (the toggle and restores lose the
+    /// owner); drop `panel.orderOut(nil)` -> RED. Mutations (call sites): a
+    /// task pill shown `owner: .dictation` -> RED.
+    func testTheGateKnowsWhoAskedForTheShow() {
+        let show = Self.overlayBody("private func show(owner who: PillOwner) -> PillOrder {")
+        XCTAssertTrue(show.contains("pillOwner = who"), "the show records who asked — the toggle and the restores read it")
+        XCTAssertTrue(show.contains("PillOwnership.order(owner: who"), "the gate left the one show path")
         XCTAssertTrue(show.contains("showsDictationPill?()"), "the gate no longer reads the setting live")
-        XCTAssertTrue(show.contains("kind == \"listening\" ? .listening : kind == \"working\" ? .working : nil"),
-                      "only the dictation's own kinds may be gated — a message's look must stay nil")
+        XCTAssertTrue(show.contains("verdict == .orderIn"),
+                      "the verdict is applied verbatim — an inverted branch orders the dictation pill out")
         XCTAssertTrue(show.contains("panel.orderOut(nil)"), "a refused show must take the pill down")
-        let changed = Self.overlayBody("func dictationPillSettingChanged() {")
-        XCTAssertTrue(changed.contains("!showingMessage"), "the switch must not kill a message that is up")
-        XCTAssertTrue(changed.contains("restoreDictationLook(look)"),
-                      "the switch must put the dictation look back through the gated shows")
-        let hide = Self.overlayBody("private func hide() {")
-        XCTAssertTrue(hide.contains("restoreDictationLook(look)"),
-                      "a refused hide restores through the gate, or a hidden pill re-shows")
+        let restore = Self.overlayBody("private func restoreDictationLook(_ look: PillDictationLook) {")
+        XCTAssertTrue(restore.contains("showListening(owner: .dictation)") && restore.contains("showWorking(owner: .dictation)"),
+                      "the restore is the dictation's own show — it must pass the gate")
         let app = Self.appDelegateSource
         XCTAssertTrue(app.contains("overlay.showsDictationPill = { DictationSettings.showPill(.standard) }"),
                       "the overlay lost its live read of the setting")
         XCTAssertTrue(app.contains("pillShownChanged: { [unowned self] in self.overlay.dictationPillSettingChanged() }"),
                       "flipping the switch no longer reaches the overlay")
+        XCTAssertEqual(app.components(separatedBy: "overlay.showListening(owner: .dictation)").count - 1, 2,
+                       "the dictation's listening shows (state change and pill restore) must declare their owner")
+        XCTAssertEqual(app.components(separatedBy: "overlay.showWorking(owner: .dictation)").count - 1, 2,
+                       "the dictation's working shows (state change and pill restore) must declare their owner")
+        XCTAssertEqual(app.components(separatedBy: "overlay.showWorking(owner: .task)").count - 1, 5,
+                       "install, handshake, studio, update-check and speak pills borrow the look as tasks")
+        XCTAssertFalse(app.contains("overlay.showListening()") || app.contains("overlay.showWorking()"),
+                       "a show without an owner is gated or freed by accident")
+    }
+
+    /// A task pill that is up is not the dictation's: the «Показывать пилюлю»
+    /// switch acts on a dictation-owned pill only — it never replaces a task
+    /// pill with the dictation look nor takes it down — and a refused hide
+    /// restores the dictation look over a dictation or transient pill only.
+    /// Mutations (Overlay.dictationPillSettingChanged): drop
+    /// `pillOwner == .dictation` -> RED (the switch replaces a task pill);
+    /// same in hide() -> RED (a stray hide takes a task pill down then shows
+    /// the dictation look over it).
+    func testTheToggleAndTheRestoresLeaveATaskPillAlone() {
+        let changed = Self.overlayBody("func dictationPillSettingChanged() {")
+        XCTAssertTrue(changed.contains("!showingMessage"), "the switch must not kill a message that is up")
+        XCTAssertTrue(changed.contains("pillOwner == .dictation"),
+                      "the switch acts on a dictation-owned pill only — a task pill stays up and unchanged")
+        XCTAssertTrue(changed.contains("restoreDictationLook(look)"),
+                      "the switch must put the dictation look back through the gated shows")
+        let hide = Self.overlayBody("private func hide() {")
+        XCTAssertTrue(hide.contains("pillOwner != .task"),
+                      "a refused hide restores over a pill that is not a task's — a task pill is taken down")
+        XCTAssertTrue(hide.contains("restoreDictationLook(look)"),
+                      "a refused hide restores through the gate, or a hidden pill re-shows")
+    }
+
+    /// While the pill is hidden by the setting the dictation's shows still
+    /// run — but nothing animates: the bars' 30 Hz timer and the spinner
+    /// start only when the show orders in, and they start again when a
+    /// restore orders the pill back in.
+    /// Mutations: `if show(owner: who) == .orderIn { bars.start() }` -> bare
+    /// `show(owner: who)` + `bars.start()` -> RED; same for the spinner -> RED.
+    func testASuppressedShowStartsNoAnimation() {
+        let listening = Self.overlayBody("func showListening(owner who: PillOwner) {")
+        XCTAssertTrue(listening.contains("if show(owner: who) == .orderIn { bars.start() }"),
+                      "the bars' timer must start only once the pill is ordered in")
+        let working = Self.overlayBody("func showWorking(owner who: PillOwner) {")
+        XCTAssertTrue(working.contains("if show(owner: who) == .orderIn { spinner.startAnimation(nil) }"),
+                      "the spinner must start only once the pill is ordered in")
     }
 
     /// The callers decide through those two functions. Mutation: AppDelegate, the streamer's `onText` closure without

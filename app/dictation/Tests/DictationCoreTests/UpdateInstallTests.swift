@@ -104,14 +104,14 @@ final class UpdateInstallTests: XCTestCase {
             return XCTFail("installUpdate lost the idle guard or the pill text")
         }
         XCTAssertLessThan(text.lowerBound, idle.lowerBound, "the pill text is set after the pill is shown")
-        XCTAssertFalse(body.contains("overlay.showWorking()"), "installUpdate shows the pill itself, past the idle guard")
+        XCTAssertFalse(body.contains("overlay.showWorking("), "installUpdate shows the pill itself, past the idle guard")
     }
 
     /// The helper both call sites share: it shows the install's own pill and
     /// captures the owner of what it just showed.
     func testTheInstallPillHelperShowsThePillAndCapturesItsOwner() throws {
         let body = try appDelegateBody("private func showInstallPill() {")
-        guard let show = body.range(of: "overlay.showWorking()"),
+        guard let show = body.range(of: "overlay.showWorking(owner: .task)"),
               let text = body.range(of: "overlay.setWorkingText(text)"),
               let owner = body.range(of: "beginPill(&installPill)") else {
             return XCTFail("showInstallPill lost the show, the text or the owner capture")
