@@ -32,7 +32,7 @@ func modelsServer(t *testing.T) (d *Daemon, base, models string) {
 	d.Cfg.NotesModel = filepath.Join(models, config.NotesModelFile)
 	d.Cfg.STTWhisperModel = filepath.Join(models, "ggml-large-v3-turbo.bin")
 	d.Cfg.VoxCPM2Model = filepath.Join(models, config.VoxCPM2ModelFile)
-	d.Cfg.STTModel = filepath.Join(models, "ggml-parakeet-tdt-0.6b-v3-q8_0.bin")
+	d.Cfg.STTModel = filepath.Join(models, config.STTModelFile)
 	return d, base, models
 }
 

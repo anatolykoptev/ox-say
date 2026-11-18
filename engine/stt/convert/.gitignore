@@ -1,0 +1,9 @@
+# Build outputs never enter git: the ggml bytes are published to the HF model repo
+# (PROVENANCE.md carries the SHA-256 of each published file). Run build.sh in a
+# scratch directory; this ignores its outputs if it was run in-tree anyway.
+*.nemo
+*.bin
+dl-*/
+ultra-extract/
+models/
+whisper.cpp/

@@ -71,6 +71,10 @@ const OneLargeEngineBelowGB = 24
 // keeps resolving to it after the catalog lands.
 const NotesModelFile = "Qwen3.5-4B-Q4_K_M.gguf"
 
+// STTModelFile is the one model filename fetch-models.sh and the default
+// OX_SAY_STT_MODEL path share (the q8_0 variant, chosen in the engine gate).
+const STTModelFile = "ggml-parakeet-ultra-q8_0.bin"
+
 // NotesModelBytes is that file's size. The download's progress and integrity
 // pin come from the catalog entry for the selected model.
 const NotesModelBytes = 2740937888
@@ -440,7 +444,7 @@ func loadSTT(c *Config, get func(string) string, engineDir string) error {
 		c.STTBin = filepath.Join(engineDir, "ox-stt")
 	}
 	if c.STTModel = get("OX_SAY_STT_MODEL"); c.STTModel == "" {
-		c.STTModel = filepath.Join(c.Home, "models", "ggml-parakeet-tdt-0.6b-v3-q8_0.bin")
+		c.STTModel = filepath.Join(c.Home, "models", STTModelFile)
 	}
 	if c.STTVADModel = get("OX_SAY_STT_VAD_MODEL"); c.STTVADModel == "" {
 		c.STTVADModel = filepath.Join(c.Home, "models", "ggml-silero-v5.1.2.bin")

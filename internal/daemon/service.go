@@ -902,6 +902,7 @@ func (d *Daemon) Status() statusSummary {
 			"stt_server":        d.Cfg.STTServer,
 			"stt_port":          d.Cfg.STTPort,
 			"stt_idle_stop_s":   d.Cfg.STTIdleStop.Seconds(),
+			"stt_model":         d.Cfg.STTModel,
 			"stt_vad_model":     d.Cfg.STTVADModel,
 			"tts_model":         d.Cfg.TTSModel,
 			// What a client uploading a file must stay inside: the per-transcription timeout and the upload cap,

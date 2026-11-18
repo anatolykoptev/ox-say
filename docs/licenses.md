@@ -23,12 +23,15 @@ publisher's license:
 - Qwen3-TTS 12 Hz talker and tokenizer: Apache-2.0 (Qwen team, Alibaba)
 - VoxCPM2 (optional): Apache-2.0 (OpenBMB); the GGUF conversion comes from audio.cpp. The model
   card forbids impersonation, fraud and disinformation and asks that AI-generated speech be labelled
-- Parakeet TDT 0.6B v3: CC-BY-4.0 (NVIDIA); attribute NVIDIA when you
-  redistribute the weights. ox-say uses the q8_0 conversion. On 300 Russian
-  and 300 English FLEURS test utterances its WER matched f16 (normalised:
-  Russian 5.17% against 5.27%, English 6.00% against 6.03%; with case kept:
-  6.81% against 6.84%, 8.13% against 8.15%) at about half the memory (669 MB
-  against 1229 MB resident). The other 23 languages were not measured
+- parakeet-ultra q8_0 (speech-to-text, default): CC-BY-4.0 — Moondream's
+  post-trained parakeet-tdt-0.6b-v3 (NVIDIA, same licence); attribute NVIDIA
+  and Moondream when you redistribute the weights. The ggml conversion is ours
+  (`engine/stt/convert/`, Apache-2.0; its PROVENANCE.md records the bytes),
+  published at Koptev/parakeet-ultra-ggml. On our evals it beat the previous
+  default, NVIDIA v3's q8_0 (CC-BY-4.0, the ggml-org conversion — still usable
+  through `OX_SAY_STT_MODEL`): accented-English WER 18.85% → 16.53%, native
+  5.03% → 4.89%, Russian 1.46% → 0.97%, at about the same speed and size
+  (669 MB)
 - Whisper large-v3-turbo (optional): MIT (OpenAI)
 - Qwen3.5-9B and Qwen3.5-4B Q4_K_M, the meeting-notes models (downloaded on first use of notes): Apache-2.0
   (Qwen team, Alibaba), the GGUF conversions by Unsloth
