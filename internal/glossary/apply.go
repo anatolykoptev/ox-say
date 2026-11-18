@@ -102,6 +102,9 @@ type compiled struct {
 	// stems[k] is nominalStem(heard[k]): "" when that word matches only itself.
 	stems []string
 	meant string
+	// homoglyph lets the heard form match a text word that mixes Latin and
+	// Cyrillic letters — a code-pack pair only (Pair.Pack).
+	homoglyph bool
 	// mkey is the folded meant minus its non-word edges; lead and trail are
 	// those edges folded (the "[" and "]" of "[foo]", the "++" of "C++") — a
 	// meant that is only words and whitespace has neither.
@@ -118,7 +121,7 @@ func compile(pairs []Pair) []compiled {
 			continue
 		}
 		if h := words(p.Heard); len(h) > 0 {
-			c := compiled{heard: h, stems: make([]string, len(h)), meant: p.Meant}
+			c := compiled{heard: h, stems: make([]string, len(h)), meant: p.Meant, homoglyph: p.Pack}
 			// A Cyrillic meant is a Russian word in a case of its own («Кролик», «Москва»): replacing «в маскве» by
 			// stem would write «в Москва». Only a meant in Latin letters stands for every case of the heard word.
 			if !hasCyrillic(p.Meant) {
@@ -253,7 +256,7 @@ func matchAt(toks []token, i int, c compiled, exact bool) (int, bool) {
 			}
 			j++
 		}
-		if j >= len(toks) || !toks[j].word || !sameWord(h, c.stem(k, exact), fold(toks[j].s)) {
+		if j >= len(toks) || !toks[j].word || !same(h, c, k, exact, fold(toks[j].s)) {
 			return 0, false
 		}
 		j++
@@ -267,6 +270,18 @@ func (c compiled) stem(k int, exact bool) string {
 		return ""
 	}
 	return c.stems[k]
+}
+
+// same reports whether folded text word w matches heard word h of pair c. A pack pair's heard form
+// also matches a token that mixes the two scripts — «Startс» for "starts" — once the Cyrillic
+// letters on both sides are transliterated to Latin. A pure-Latin or pure-Cyrillic w always takes
+// the ordinary path, so "starts" never meets an alias filed as «startс» and plain prose is
+// untouched.
+func same(h string, c compiled, k int, exact bool, w string) bool {
+	if c.homoglyph && mixedScript(w) {
+		return latinized(w) == latinized(h)
+	}
+	return sameWord(h, c.stem(k, exact), w)
 }
 
 // edges returns what surrounds the word characters of one recognised word.
@@ -380,7 +395,7 @@ func matchWordsAt(ws []stt.Word, i int, c compiled, exact bool) (int, bool) {
 	for k, h := range c.heard {
 		w := ws[i+k].W
 		pre, post := edges(w)
-		if !sameWord(h, c.stem(k, exact), key(w)) || (k < n-1 && post != "") ||
+		if !same(h, c, k, exact, key(w)) || (k < n-1 && post != "") ||
 			(k > 0 && (strings.TrimSpace(pre) != "" || strings.IndexByte(pre, '\n') >= 0)) {
 			return 0, false
 		}

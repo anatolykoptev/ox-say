@@ -138,10 +138,20 @@ the first decode.
 - **Decoder boost.** An enabled pack's written forms and its `safe` spoken forms are appended AFTER every owner line, in value
   order, with the same wire format and ordinary-word filter. A pack never joins an owner's group, never lengthens an owner
   line, and a pack line that names an owner's written or spoken form is dropped. The wire budget is unchanged (3072 B of JSON,
-  200 terms) and trims from the tail, so pack lines go first.
+  200 terms) and trims from the tail, so pack lines go first. A `safe` alias that holds a Cyrillic letter never reaches the
+  wire — it is post-pass only, so the decoder is never pushed towards Cyrillic and the boost budget sees none of these
+  aliases (a pack may carry far more terms than the ~80-term boost guide because of them).
 - **Post-pass.** A `safe` heard form must contain at least one token that is not an ordinary English or Russian dictionary
-  word (a spoken "dot" between two words also counts); this is checked when the packs load. It is rewritten like an active
-  glossary pair. Ordinary words and phrases are never rewritten (`chords`, `Tokyo`, `trace back`, `beautiful soup`, `go routine`).
-  The only joins are an explicit allow-list of code-only compounds: `type error`, `key error`, `value error`, `index error`,
-  `attribute error`, `not implemented error`, `stop iteration`, `data class`, `doc string`, `async IO`, `monkey patch`,
-  `wait group`. Any pack pair that shares a word with an owner pair is dropped, and a pack decoder line whose spoken form contains an owner spoken form is not sent: the owner's pair always wins. Packs are an explicit code mode, so the joins are intended there.
+  word (a spoken "dot" between two words also counts); this is checked when the packs load, in both languages: «пай тест»
+  and «матч» fail it just as "ice instance" does, while «пайтест» and «джойн» pass. A safe alias is rewritten like an active
+  glossary pair — `Аппент.` → `append.`, `реплейс,` → `replace,`. A token that mixes Latin and Cyrillic letters is a word of
+  neither dictionary, so aliases such as `startс with` pass too; while matching a pack pair only, a mixed-script token has its
+  Cyrillic letters transliterated to Latin, so `Stаrts with` meets `startс with` the same way. The fold never runs on a
+  pure-Latin or pure-Cyrillic word (`starts` stays "starts"), never on an owner pair, and text no alias matched is left
+  untouched. Ordinary
+  words and phrases are never rewritten (`chords`, `Tokyo`, `trace back`, `beautiful soup`, `go routine`, `сорт`, `матч`,
+  `карго`, `токио`). The only joins are an explicit allow-list of code-only compounds: `type error`, `key error`, `value error`,
+  `index error`, `attribute error`, `not implemented error`, `stop iteration`, `data class`, `doc string`, `async IO`,
+  `monkey patch`, `wait group`. Any pack pair that shares a word with an owner pair is dropped, and a pack decoder line whose
+  spoken form contains an owner spoken form is not sent: the owner's pair always wins. Packs are an explicit code mode, so the
+  joins are intended there.

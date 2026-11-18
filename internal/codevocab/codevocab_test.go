@@ -19,8 +19,11 @@ func TestPacksLoad(t *testing.T) {
 		if name == "review" {
 			continue // shared set rides on the language packs' budget, not its own ~80
 		}
-		if len(ts) > 85 {
-			t.Errorf("pack %s carries %d terms, over the ~80 budget", name, len(ts))
+		// The ~80-term guide was a decoder-boost budget; Cyrillic safe aliases are post-pass
+		// only and consume none of it, so a pack may grow past it. MaxBoostTerms stays the
+		// hard ceiling — a bigger pack could never boost its own anchors even alone.
+		if len(ts) > glossary.MaxBoostTerms {
+			t.Errorf("pack %s carries %d terms, over the %d-term wire cap", name, len(ts), glossary.MaxBoostTerms)
 		}
 	}
 }
@@ -277,7 +280,12 @@ func TestPackAliasesPassTheRule(t *testing.T) {
 
 func TestAliasRuleRejectsProse(t *testing.T) {
 	ck := wordlists.New()
-	for _, prose := range []string{"trace back", "ice instance", "beautiful soup", "under", "hash map", "dun domain", "go routine"} {
+	for _, prose := range []string{
+		"trace back", "ice instance", "beautiful soup", "under", "hash map", "dun domain", "go routine",
+		"пай тест", "матч", "сорт", "реверс", "лен", "тру", "карго", "район", "токио", "нил", "байт",
+		"чан", "йота", "руна", "интерфейс", "сплит", "лямбда", "генератор", "юнион", "питон", "го тест",
+		"го ран", "ре матч", "конф тест", "класс метод", "статик метод", "контекст менеджер",
+	} {
 		if AliasOK(ck, prose) {
 			t.Errorf("%q is prose and must not pass", prose)
 		}

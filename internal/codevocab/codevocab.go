@@ -47,6 +47,11 @@ const reviewPack = "review"
 // "type error" for TypeError), and it never becomes a wire alias: the
 // ordinary-word filter alone would keep "Tokyo" and "mutex" on the wire
 // because they are not dictionary words, and a wire alias is a rewrite.
+//
+// A safe alias written in Cyrillic («джойн» for join) or holding a Cyrillic
+// letter inside a Latin word («startс») is post-pass only: it is rewritten
+// like any safe alias but BoostPairs drops it, so the decoder is never pushed
+// towards Cyrillic. The script of the alias is the mark — no field is needed.
 type Term struct {
 	Written string   `json:"written"`
 	Safe    []string `json:"safe,omitempty"`
@@ -110,6 +115,8 @@ func filterAliases(ck *wordlists.Checker, in []string) []string {
 // AliasOK is the rule a safe alias must meet to be a rewrite: it contains at least one token that is not an ordinary
 // word of the English or Russian dictionary (a token with a digit counts as not ordinary). An alias made only of
 // ordinary words — "ice instance", "trace back", "under", "dun domain" — is prose, and prose is never rewritten.
+// The rule applies in both languages: «пай тест» and «матч» fail it just as "ice instance" does, and a token that
+// mixes scripts («startс») is a word of neither dictionary, so it satisfies the rule on its own.
 // Names (a person's or a product's) are not caught by a dictionary: those aliases are kept out of the data by hand,
 // and TestPackAliasesPassTheRule keeps ordinary-word ones out.
 func AliasOK(ck *wordlists.Checker, alias string) bool {
@@ -202,12 +209,20 @@ func BoostPairs(enabled []string) []glossary.Pair {
 		return time.Unix(0, int64(len(ts)*9-seq))
 	}
 	for _, t := range ts {
-		pairs = append(pairs, glossary.Pair{Meant: t.Written, Status: glossary.Active, Added: added()})
+		pairs = append(pairs, glossary.Pair{Meant: t.Written, Status: glossary.Active, Added: added(), Pack: true})
 		for _, a := range t.Safe {
-			pairs = append(pairs, glossary.Pair{Heard: a, Meant: t.Written, Status: glossary.Active, Added: added()})
+			if hasCyrillic(a) {
+				continue // a Cyrillic heard form is a post-pass rewrite, never a wire alias
+			}
+			pairs = append(pairs, glossary.Pair{Heard: a, Meant: t.Written, Status: glossary.Active, Added: added(), Pack: true})
 		}
 	}
 	return pairs
+}
+
+// hasCyrillic reports whether the alias holds a Cyrillic letter.
+func hasCyrillic(s string) bool {
+	return strings.IndexFunc(s, func(r rune) bool { return unicode.Is(unicode.Cyrillic, r) }) >= 0
 }
 
 // RewritePairs is the post-pass view: every safe alias rewrites to the
@@ -220,11 +235,11 @@ func RewritePairs(enabled []string) []glossary.Pair {
 	pairs := make([]glossary.Pair, 0, len(ts))
 	for _, t := range ts {
 		for _, a := range t.Safe {
-			pairs = append(pairs, glossary.Pair{Heard: a, Meant: t.Written, Status: glossary.Active})
+			pairs = append(pairs, glossary.Pair{Heard: a, Meant: t.Written, Status: glossary.Active, Pack: true})
 		}
 		for _, a := range t.Unsafe {
 			if joinable[t.Written] && fused(a, t.Written) {
-				pairs = append(pairs, glossary.Pair{Heard: a, Meant: t.Written, Status: glossary.Active})
+				pairs = append(pairs, glossary.Pair{Heard: a, Meant: t.Written, Status: glossary.Active, Pack: true})
 			}
 		}
 	}
