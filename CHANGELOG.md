@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.39](https://github.com/anatolykoptev/ox-say/compare/v0.1.38...v0.1.39) (2026-11-18)
+
+
+### Added
+
+* **app:** a setting to hide the dictation pill ([#649](https://github.com/anatolykoptev/ox-say/issues/649)) ([eae19e1](https://github.com/anatolykoptev/ox-say/commit/eae19e1e9549760bc95a8390ad84fd8a53b429a1))
+* **stt:** Cyrillic and mixed-script spoken forms in the code packs ([#651](https://github.com/anatolykoptev/ox-say/issues/651)) ([8dd830d](https://github.com/anatolykoptev/ox-say/commit/8dd830d501fa9d5da366b45dab972ff93fe71b00))
+* **stt:** default to the parakeet-ultra q8_0 weights ([#655](https://github.com/anatolykoptev/ox-say/issues/655)) ([7af8e8c](https://github.com/anatolykoptev/ox-say/commit/7af8e8c95f42194acd21e4f047d709ec5c2c9d1a))
+
 ## [0.1.38](https://github.com/anatolykoptev/ox-say/compare/v0.1.37...v0.1.38) (2026-11-18)
 
 
