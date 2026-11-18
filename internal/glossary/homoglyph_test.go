@@ -26,16 +26,16 @@ func TestPackPairMatchesMixedScriptToken(t *testing.T) {
 	}
 }
 
-// The fold runs only while the token's Latin letters outnumber its Cyrillic ones: a
-// mostly-Cyrillic token is Russian text, not a broken identifier.
-// Mutation: foldable drops `lat > cyr` -> RED («Quаrгс» latinizes to "quargs" and rewrites).
+// The fold runs only while the token's Latin letters outnumber its Cyrillic ones: a token at
+// parity or mostly Cyrillic is Russian text, not a broken identifier.
+// Mutation: foldable drops `lat > cyr` -> RED («Qуаrгs» latinizes to "quargs" and rewrites).
 func TestPackPairFoldNeedsLatinMajority(t *testing.T) {
 	pairs := append(append([]Pair{}, quargsPair...),
 		Pair{Heard: "replace", Meant: "putBack", Status: Active, Pack: true})
 	for _, prose := range []string{
-		"pass Quаrгс here",  // 2 Latin against 4 Cyrillic — latinizes to "quargs" but stays
-		"the rёплейс flag",  // one Latin letter: Russian text with a stray r, not "replace"
-		"call Quaргс to it", // Latin a is absent — Qu + аргс
+		"pass Qуаrгs here",  // 3 Latin against 3 Cyrillic — parity is no majority; it latinizes to "quargs"
+		"the rёплейс flag",  // one Latin letter: Russian text with a stray r, folds to "repleys" — never "replace"
+		"call Quaргс to it", // parity too — it latinizes to "quargs" and would rewrite without the gate
 	} {
 		if out, _ := Apply(prose, pairs); out != prose {
 			t.Errorf("prose %q rewritten to %q", prose, out)
