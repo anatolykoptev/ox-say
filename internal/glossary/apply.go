@@ -355,9 +355,10 @@ func (c compiled) stem(k int, exact bool) string {
 // pure-Latin heard word also matches a mixed-script token that transliterates to it —
 // «Quаrgs» meets "quargs" — and nothing else: the fold runs on the token alone, only when
 // its Latin letters are the majority, and only towards an alias word that is pure Latin.
-// A mostly-Cyrillic token keeps its letters («rёплейс» is not "replace", «Pиn» is not
-// "pin") and a Cyrillic or mixed alias word keeps its spelling, so "Stаrts" never meets
-// «startс».
+// A mostly-Cyrillic token keeps its letters («rёплейс» is not "replace"), while
+// Latin-majority «Pиn» latinizes to "pin" and would meet a "pin" alias — short prose forms
+// like that stay out of the safe list instead, by the loader rule. A Cyrillic or mixed
+// alias word keeps its spelling, so "Stаrts" never meets «startс».
 func same(h string, c compiled, k int, exact bool, w string) bool {
 	if c.homoglyph && !hasCyrillic(h) && foldable(w) {
 		return Latinized(w) == h
