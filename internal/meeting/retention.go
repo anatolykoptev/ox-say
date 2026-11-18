@@ -32,6 +32,9 @@ type Settings struct {
 	// which is on — a settings file written before the option existed gets the default every new install does,
 	// and only an explicit off keeps it off.
 	AEC string `json:"meeting_aec,omitempty"`
+	// CodeVocabulary is the enabled built-in code packs ("python", "go", "rust"); nil or empty is none. The
+	// setting lives here because this is the daemon's one settings file; it has nothing to do with meetings.
+	CodeVocabulary []string `json:"code_vocabulary,omitempty"`
 }
 
 // The values Settings.AEC accepts ("" stands for never chosen).

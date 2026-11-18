@@ -66,6 +66,11 @@ final class MainWindowSource {
     private var visible = false
     private var pollTask: Task<Void, Never>?
     private var clockTimer: Timer?
+    /// The code vocabulary switches: one save at a time, the latest choice last, the page shows the daemon's answer.
+    private lazy var codePackSync = CodePackSync(
+        put: { [unowned self] packs, unknown in try await self.host.client.setCodeVocabulary(packs, keeping: unknown) },
+        read: { [unowned self] in try await self.host.client.codeVocabularyAnswer() },
+        apply: { [unowned self] answer in self.model.data.codePacks = answer.packs })
     private var gate = RefreshGate()
     /// The poll of live captions of the chosen meeting while it is recorded (`LivePolling`); one at a time.
     private var liveTask: Task<Void, Never>?
@@ -351,6 +356,13 @@ final class MainWindowSource {
             self.host.setStartAtLogin(on)
             self.model.data.about.startAtLogin = self.host.startAtLogin()
         }
+        a.setCodePack = { [weak self] _, _ in
+            guard let self else { return }
+            // The model already holds the new set (the switch's binding wrote it); the sync sends the latest set one
+            // request at a time and then shows what the daemon confirms.
+            let packs = self.model.data.codePacks
+            Task { @MainActor in await self.codePackSync.choose(packs) }
+        }
         a.dismissNotice = { [weak self] in self?.model.data.notice = nil }
         a.searchTyped = { [weak self] text in self?.searchEvent(.typed(text)) }
         a.retrySearch = { [weak self] in self?.searchEvent(.retry) }
@@ -566,6 +578,12 @@ final class MainWindowSource {
         let stale = liveSaves.isStale(token)
         let liveCaptions = stale ? nil : daemon?.liveCaptions
         let notes = host.daemonStatus()?.notes
+        // The code packs ride the same read: a settings edit that began since it started is newer than the answer, and a
+        // pack save in flight is newer too (CodePackSync.isBusy).
+        if let answer = try? await host.client.codeVocabularyAnswer() {
+            codePackSync.learn(answer)
+            if !stale, !codePackSync.isBusy { model.data.codePacks = answer.packs }
+        }
         let loaded = pickedFolder.map {
             MeetingSettingsModel.folderPicked($0, defaults: host.defaults, daemonRetention: daemon?.retention,
                                               daemonLiveCaptions: liveCaptions, liveCaptionsDefault: daemon?.liveCaptionsDefault,

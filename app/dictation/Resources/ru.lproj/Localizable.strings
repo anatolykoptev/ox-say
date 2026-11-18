@@ -291,6 +291,8 @@
 "permission.state.unknown" = "Проверьте в Настройках";
 "permission.fix" = "Исправить";
 "permission.open_settings" = "Открыть настройки";
+"settings.code_vocab" = "Словарь для кода";
+"settings.code_vocab.hint" = "Помогает распознавать названия из кода. Включайте, когда диктуете про код: в обычной речи может принять слово за термин.";
 "settings.general" = "Основное";
 "settings.login" = "Запускать OxSay при входе в систему";
 "settings.check_updates" = "Проверить обновления…";

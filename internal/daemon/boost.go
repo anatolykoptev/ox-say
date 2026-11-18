@@ -13,37 +13,63 @@ import (
 	"github.com/anatolykoptev/ox-say/internal/wordlists"
 )
 
-// sttBoost is the decoder boost list for ONE request: the active glossary pairs as ox-stt term lines
-// (glossary.BoostTerms) with the configured strength (OX_SAY_STT_BOOST_ALPHA, 0 = off). The list is derived
-// from the glossary file only — there is no second store and no file copy — and cached per CONTENT of the
-// active (meant, heard) set, so a sighting of an existing pair (which rewrites the file and moves the pair
-// generation) does not derive again. It never blocks a request: while a new list is being derived, the request
-// goes out with the previous one, or with none before the first; the daemon derives once at start.
+// sttBoost is the decoder boost list for ONE request: the owner's active glossary pairs as ox-stt term lines
+// (glossary.BoostTerms) followed by the enabled code packs' lines, with the configured strength
+// (OX_SAY_STT_BOOST_ALPHA, 0 = off). The list is derived from the glossary file and the embedded packs only —
+// there is no second store and no file copy — and cached per CONTENT of the active (meant, heard) set AND the
+// enabled packs, so a sighting of an existing pair (which rewrites the file) does not derive again, while a pack
+// toggle, or packs that were saved before this process started, do. A glossary change never blocks a request: while a new
+// list is being derived, the request goes out with the previous one, or with none before the first; the daemon
+// derives once at start.
 func (d *Daemon) sttBoost() stt.Boost {
 	if d.Cfg.STTBoostAlpha <= 0 || d.Glossary == nil {
 		return stt.Boost{}
 	}
 	pairs, gen := d.glossaryPairsGen()
+	packs := d.codePacks()
+	packKey := strings.Join(packs, ",")
 	d.tbMu.Lock()
-	defer d.tbMu.Unlock()
 	if !d.tbKeyOK || d.tbSeenGen != gen {
-		d.tbSeenGen, d.tbCurKey, d.tbKeyOK = gen, boostKey(pairs), true
+		d.tbSeenGen, d.tbGlKey, d.tbKeyOK = gen, boostKey(pairs), true
 	}
-	if !(d.tbHave && d.tbKey == d.tbCurKey) && !d.tbBuilding {
+	key := d.tbGlKey + "|" + packKey
+	d.tbCurKey = key
+	if d.tbPacks != packKey {
+		// The enabled packs changed under the cached list (a PUT still publishing, a settings file edited, packs
+		// saved before this process started): never answer with the old packs' lines. Derive now and return the new
+		// list; a glossary-only change below stays asynchronous.
+		d.tbMu.Unlock()
+		d.deriveBoost(pairs, packs, key)
+		d.tbMu.Lock()
+		defer d.tbMu.Unlock()
+		return stt.Boost{Alpha: d.Cfg.STTBoostAlpha, Terms: d.tbTerms}
+	}
+	defer d.tbMu.Unlock()
+	if !(d.tbHave && d.tbKey == key) && !d.tbBuilding {
 		d.tbBuilding = true
-		go d.deriveBoost(pairs, d.tbCurKey)
+		go d.deriveBoost(pairs, packs, key)
 	}
 	return stt.Boost{Alpha: d.Cfg.STTBoostAlpha, Terms: d.tbTerms}
 }
 
-// refreshBoost derives the list for the current glossary now, on the caller's goroutine (tests, the eval).
+// refreshBoost derives the list for the current glossary and packs now, on the caller's goroutine (the
+// settings change handler, daemon start with packs saved, tests, the eval).
 func (d *Daemon) refreshBoost() {
 	pairs, gen := d.glossaryPairsGen()
+	packs := d.codePacks()
 	d.tbMu.Lock()
-	key := boostKey(pairs)
-	d.tbSeenGen, d.tbCurKey, d.tbKeyOK = gen, key, true
+	d.tbSeenGen, d.tbGlKey, d.tbKeyOK = gen, boostKey(pairs), true
+	d.tbCurKey = d.tbGlKey + "|" + strings.Join(packs, ",")
+	key := d.tbCurKey
 	d.tbMu.Unlock()
-	d.deriveBoost(pairs, key)
+	d.deriveBoost(pairs, packs, key)
+}
+
+// boostTermsLen is the current derived list's size for /status (0 before the first derive).
+func (d *Daemon) boostTermsLen() int {
+	d.tbMu.Lock()
+	defer d.tbMu.Unlock()
+	return len(d.tbTerms)
 }
 
 // boostKey identifies what the boost list depends on: every active pair's meant and heard form. A sighting
@@ -59,9 +85,9 @@ func boostKey(pairs []glossary.Pair) string {
 }
 
 // deriveBoost builds the term lines for one key and stores them, unless a newer key has been seen meanwhile.
-func (d *Daemon) deriveBoost(pairs []glossary.Pair, key string) {
+func (d *Daemon) deriveBoost(pairs []glossary.Pair, packs []string, key string) {
 	d.tbDerives.Add(1)
-	terms := d.boostTermsFor(pairs)
+	terms := d.withPackTerms(d.boostTermsFor(pairs), packs)
 	// Only the leading terms that fit the wire budget ever reach ox-stt; say how many did not (a count: the
 	// terms are the user's glossary text).
 	if n := (stt.Boost{Alpha: d.Cfg.STTBoostAlpha, Terms: terms}).Dropped(); n > 0 {
@@ -69,7 +95,7 @@ func (d *Daemon) deriveBoost(pairs []glossary.Pair, key string) {
 	}
 	d.tbMu.Lock()
 	if !d.tbHave || key == d.tbCurKey {
-		d.tbHave, d.tbKey, d.tbTerms = true, key, terms
+		d.tbHave, d.tbKey, d.tbTerms, d.tbPacks = true, key, terms, strings.Join(packs, ",")
 	}
 	d.tbBuilding = false
 	d.tbMu.Unlock()

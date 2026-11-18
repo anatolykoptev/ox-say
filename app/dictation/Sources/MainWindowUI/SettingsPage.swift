@@ -13,6 +13,7 @@ struct SettingsPage: View {
             meetings
             if model.data.meetingSettings.enabled { callApps }
             permissions
+            codeVocabulary
             general
         }
         .formStyle(.grouped)
@@ -140,6 +141,20 @@ struct SettingsPage: View {
             Text(L10nKey.settingsPermissions.text)
         } footer: {
             Text(L10nKey.settingsPermissionsFooter.text)
+        }
+    }
+
+    // MARK: Code vocabulary
+
+    private var codeVocabulary: some View {
+        Section {
+            ForEach(CodePack.allCases, id: \.self) { pack in
+                Toggle(pack.title, isOn: model.codePack(pack))
+            }
+        } header: {
+            Text(L10nKey.settingsCodeVocab.text)
+        } footer: {
+            Text(L10nKey.settingsCodeVocabHint.text)
         }
     }
 

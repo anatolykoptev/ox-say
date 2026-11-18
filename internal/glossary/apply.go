@@ -65,7 +65,11 @@ func words(s string) []string {
 	return out
 }
 
-func key(s string) string { return strings.Join(words(s), " ") }
+// Key is the folded word identity of s — what a correction matches on:
+// lowercased, NFC, punctuation dropped, words joined by one space.
+func Key(s string) string { return strings.Join(words(s), " ") }
+
+func key(s string) string { return Key(s) }
 
 func hasLetter(s string) bool {
 	for _, r := range s {

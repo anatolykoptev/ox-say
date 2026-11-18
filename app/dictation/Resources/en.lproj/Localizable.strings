@@ -297,6 +297,8 @@
 "permission.state.unknown" = "Check in Settings";
 "permission.fix" = "Fix";
 "permission.open_settings" = "Open Settings";
+"settings.code_vocab" = "Code vocabulary";
+"settings.code_vocab.hint" = "Helps recognize names from code. Turn it on when you dictate about code: in ordinary speech it may take a word for a term.";
 "settings.general" = "General";
 "settings.login" = "Start OxSay when I log in";
 "settings.check_updates" = "Check for Updates…";
