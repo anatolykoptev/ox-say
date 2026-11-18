@@ -5,44 +5,43 @@ import (
 	"unicode"
 )
 
-// cyrToLat transliterates Cyrillic letters to their Latin sounds (а→a, с→s, р→r, н→n). Parakeet
-// picks an alphabet per utterance and, inside Russian speech, may write single sounds of a Latin
-// identifier in Cyrillic («Startс» for "Starts"). Folding those letters back to their sounds
-// recovers the intended Latin spelling — a lookalike map would not, since с is a lookalike of c
-// but was written for the 's' sound. Letters without a one-to-one Latin sound keep a digraph
-// (ш→sh); the soft signs vanish. The map is consulted only while matching a code-pack pair and
-// only on a token that already mixes the two scripts — never on a pure-Cyrillic or a pure-Latin
-// word, so it can neither invent nor destroy a real word of either language.
-var cyrToLat = map[rune]string{
-	'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'е': "e", 'ж': "zh", 'з': "z",
+// cyrToLatin transliterates a Russian Cyrillic letter to its Latin sound. Parakeet picks an
+// alphabet per utterance and, inside Russian speech, may write single sounds of a Latin
+// identifier in Cyrillic («Quаrgs» for "Quargs", а for the 'a' sound — not for lookalike a,
+// since a lookalike map would miss ё→e). Letters without a one-to-one Latin sound keep a digraph
+// (ш→sh); the soft signs vanish. The map covers the Russian alphabet only: a letter outside it
+// (і, є, ѕ) is not a plausible Parakeet slip and stays untransliterated.
+var cyrToLatin = map[rune]string{
+	'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'е': "e", 'ё': "e", 'ж': "zh", 'з': "z",
 	'и': "i", 'й': "y", 'к': "k", 'л': "l", 'м': "m", 'н': "n", 'о': "o", 'п': "p",
 	'р': "r", 'с': "s", 'т': "t", 'у': "u", 'ф': "f", 'х': "h", 'ц': "ts", 'ч': "ch",
 	'ш': "sh", 'щ': "shch", 'ъ': "", 'ы': "y", 'ь': "", 'э': "e", 'ю': "yu", 'я': "ya",
-	'і': "i", 'ї': "yi", 'є': "ye", 'ґ': "g", 'ѕ': "z", 'ј': "y", 'ԁ': "d", 'ԍ': "g",
-	'һ': "h",
 }
 
-// mixedScript reports whether s holds both Cyrillic and Latin letters. The check runs on folded
-// text, so the transliteration map needs only the lowercase forms.
-func mixedScript(s string) bool {
-	var cyr, lat bool
+// foldable reports whether a folded text token may take the mixed-script fold: it holds both
+// Latin and Cyrillic letters and the Latin ones are the majority. A mostly-Cyrillic word is
+// Russian text — «rёплейс» is not the identifier "replace" — so its letters never fold; a
+// pure-Latin or pure-Cyrillic word has nothing to fold from.
+func foldable(s string) bool {
+	var lat, cyr int
 	for _, r := range s {
 		switch {
 		case unicode.Is(unicode.Cyrillic, r):
-			cyr = true
+			cyr++
 		case unicode.Is(unicode.Latin, r):
-			lat = true
+			lat++
 		}
 	}
-	return cyr && lat
+	return cyr > 0 && lat > cyr
 }
 
-// latinized is s with each Cyrillic letter replaced by its Latin sound; Latin letters and other
-// runes pass through.
-func latinized(s string) string {
+// Latinized is s with each Russian Cyrillic letter replaced by its Latin sound; every other rune
+// passes through. Matching folds the text token only, never the filed alias: a pure-Latin alias
+// may meet a folded token («Quаrgs» -> "quargs"), a Cyrillic or a mixed-script one may not.
+func Latinized(s string) string {
 	var b strings.Builder
 	for _, r := range s {
-		if l, ok := cyrToLat[r]; ok {
+		if l, ok := cyrToLatin[r]; ok {
 			b.WriteString(l)
 			continue
 		}

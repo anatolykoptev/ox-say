@@ -323,7 +323,9 @@ func TestProseIsNeverRewritten(t *testing.T) {
 	}
 }
 
-// An owner pair beats a pack pair that overlaps it, a longer pack phrase included.
+// An owner pair beats a pack pair that overlaps it, a longer pack phrase included — and the
+// comparison is the matcher's own Latin fold, so a mixed-script owner form («Stаrts» with a
+// Cyrillic а) owns the same word the pack alias «startс» spells.
 // Mutation: DropOwned returning `pack` unchanged -> RED ("beautiful soup" outbids the owner's "beautiful").
 func TestOwnerPairBeatsOverlappingPackPair(t *testing.T) {
 	owner := []glossary.Pair{{Heard: "beautiful", Meant: "Lovely", Status: glossary.Active}}
@@ -334,6 +336,15 @@ func TestOwnerPairBeatsOverlappingPackPair(t *testing.T) {
 	}
 	if out, _ := glossary.Apply("Quargs", all); out != "kwargs" {
 		t.Errorf("an unrelated pack pair must survive, got %q", out)
+	}
+	ownerM := []glossary.Pair{{Heard: "Stаrts", Meant: "MyBrand", Status: glossary.Active}}
+	packM := []glossary.Pair{{Heard: "startс with", Meant: "startswith", Status: glossary.Active}}
+	if left := DropOwned(packM, ownerM); len(left) != 0 {
+		t.Fatalf("the mixed-script owner must own the folded word: %d pack pairs left", len(left))
+	}
+	all = append(append([]glossary.Pair{}, ownerM...), DropOwned(packM, ownerM)...)
+	if out, _ := glossary.Apply("Stаrts with care", all); out != "MyBrand with care" {
+		t.Errorf("got %q, want the owner's rewrite", out)
 	}
 }
 

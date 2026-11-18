@@ -285,12 +285,14 @@ var joinable = map[string]bool{
 
 // DropOwned removes every pack pair that shares a word with an owner pair's heard or meant form: where the owner
 // has said anything about a word, the pack says nothing, so an owner pair beats a pack pair even when the pack
-// phrase is longer ("beautiful" -> Lovely against "beautiful soup" -> BeautifulSoup).
+// phrase is longer ("beautiful" -> Lovely against "beautiful soup" -> BeautifulSoup). The comparison is the
+// matcher's own normalisation — the folded word identity transliterated to Latin — so an owner pair written in
+// Cyrillic or in a script mix («Stаrts» -> MyBrand) owns the same spoken word the pack alias «startс» does.
 func DropOwned(pack, owner []glossary.Pair) []glossary.Pair {
 	owned := map[string]bool{}
 	for _, o := range owner {
 		for _, f := range []string{o.Heard, o.Meant} {
-			for _, w := range strings.Fields(glossary.Key(f)) {
+			for _, w := range strings.Fields(glossary.Latinized(glossary.Key(f))) {
 				owned[w] = true
 			}
 		}
@@ -298,7 +300,7 @@ func DropOwned(pack, owner []glossary.Pair) []glossary.Pair {
 	out := make([]glossary.Pair, 0, len(pack))
 	for _, p := range pack {
 		hit := false
-		for _, w := range strings.Fields(glossary.Key(p.Heard)) {
+		for _, w := range strings.Fields(glossary.Latinized(glossary.Key(p.Heard))) {
 			hit = hit || owned[w]
 		}
 		if !hit {
