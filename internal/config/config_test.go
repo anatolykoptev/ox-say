@@ -1131,6 +1131,29 @@ func TestCleanPinsAgreeAcrossLanguages(t *testing.T) {
 	}
 }
 
+// The default speech-to-text weights are named in two places: STTModelFile here and the entry fetch-models.sh downloads
+// from the $parakeet base URL in its models=(...) list. A rename in one would leave every fresh install without the file
+// the daemon opens, so the entry is read out of the script's real list and compared.
+// Mutation: scripts/fetch-models.sh, change the filename of the "$parakeet" models entry to
+// ggml-parakeet-ultra-q8_0x.bin -> RED; config.go, change STTModelFile the same way -> RED.
+func TestSTTModelFileMatchesFetchModels(t *testing.T) {
+	sh, err := os.ReadFile("../../scripts/fetch-models.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := regexp.MustCompile(`(?ms)^models=\(\n(.*?)^\)$`).FindSubmatch(sh)
+	if list == nil {
+		t.Fatal("fetch-models.sh has no models=( ... ) list")
+	}
+	entry := regexp.MustCompile(`(?m)^\s*"(\S+) [0-9a-f]{64} \$parakeet"$`).FindAllSubmatch(list[1], -1)
+	if len(entry) != 1 {
+		t.Fatalf("fetch-models.sh models list has %d $parakeet entries, want 1", len(entry))
+	}
+	if got := string(entry[0][1]); got != STTModelFile {
+		t.Fatalf("fetch-models.sh downloads %q, config.STTModelFile is %q", got, STTModelFile)
+	}
+}
+
 // Ready means the marker fetch-models.sh writes last names the pinned revision; a stale or missing marker is not ready.
 // Mutation: config.go, make CleanModelsReady return true -> RED.
 func TestCleanModelsReadyNeedsTheMatchingMarker(t *testing.T) {

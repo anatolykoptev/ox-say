@@ -24,6 +24,8 @@ const (
 	sttBin        = "ox-stt"
 	httpTimeout   = 10 * time.Minute // covers the 300 s clip and 1.7B synthesis
 	parakeetFile  = config.STTModelFile
+	ggmlPrefix    = "ggml-"
+	ggmlSuffix    = ".bin"
 	vadFile       = "ggml-silero-v5.1.2.bin"
 	probeClip     = 30 // s: the first-call and under-load clip
 	idleClip      = 60 // s: the after-idle and daemon-path clip (the streaming plan's 60 s dictation)

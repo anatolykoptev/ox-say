@@ -111,7 +111,7 @@ func TestModelsListReportsInstalledAndSizes(t *testing.T) {
 	if w := find(list, "whisper"); w == nil || w.Installed || w.Bytes <= 0 || !w.Optional || w.Default {
 		t.Fatalf("whisper row: %+v", w)
 	}
-	if p := find(list, "parakeet"); p == nil || p.Optional || p.Kind != "transcribe" || !p.Default {
+	if p := find(list, "parakeet"); p == nil || p.Optional || p.Kind != "transcribe" || !p.Default || p.Name != "Parakeet Ultra TDT 0.6B" {
 		t.Fatalf("parakeet row: %+v", p)
 	}
 	if c := find(list, "voice_cleanup"); c == nil || c.Optional || c.Kind != "cleanup" {

@@ -20,7 +20,7 @@ gate reorder is applied there, so nothing has to be undone besides the names.
 We do not regex-invert. We apply the forward mapping to every key of the reference v3 NeMo
 checkpoint, which gives a dict nemo_key -> hf_key, check it is injective, and invert THAT dict.
 
-usage: hf2nemo.py --ref-nemo v3.nemo --hf model.safetensors --out out.nemo [--compare-ref]
+usage: hf2nemo.py --ref-nemo v3.nemo --hf model.safetensors --out out.nemo --workdir new-empty-dir
 """
 import argparse, io, os, re, sys, tarfile, tempfile
 import torch

@@ -432,7 +432,7 @@ fi
 # note above: name it, never delete it, -ef stays silent while OX_SAY_STT_MODEL names it.
 old="$dest/ggml-parakeet-tdt-0.6b-v3-q8_0.bin"
 if [ -f "$old" ] && ! [ "${OX_SAY_STT_MODEL:-}" -ef "$old" ]; then
-    echo "note    $old (638 MB) is no longer the default; unless OX_SAY_STT_MODEL in your LaunchAgent names it, delete it to free the space"
+    echo "note    $old (669 MB) is no longer the default; unless OX_SAY_STT_MODEL in your LaunchAgent names it, delete it to free the space"
 fi
 # The community-1 speaker models (pyannote, 22 MB) belonged to the speaker engine that Nemotron replaced and nothing reads
 # them now. Name a leftover folder, never delete it here: it is the user's disk, and the marker inside is not ours to judge.
