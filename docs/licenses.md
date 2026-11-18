@@ -32,6 +32,11 @@ publisher's license:
   through `OX_SAY_STT_MODEL`): accented-English WER 18.85% → 16.53%, native
   5.03% → 4.89%, Russian 1.46% → 0.97%, at about the same speed and size
   (669 MB)
+- parakeet-ultra f16 (speech-to-text, optional): the same model and licence as the q8_0 file above, unquantised
+  (1.26 GB), published in the same repo. Opt in with `OX_SAY_STT_MODEL` or
+  `scripts/fetch-models.sh --with-parakeet-f16` (see [Configuration](configuration.md#parakeet-ultra-f16)). On our
+  synthetic Russian-accented English set its WER is 15.67% against 16.53% for q8_0 (paired bootstrap −0.86 points,
+  95% interval −1.57 to −0.26); native English and Russian are unchanged, and it is about twice as slow per clip
 - Whisper large-v3-turbo (optional): MIT (OpenAI)
 - Qwen3.5-9B and Qwen3.5-4B Q4_K_M, the meeting-notes models (downloaded on first use of notes): Apache-2.0
   (Qwen team, Alibaba), the GGUF conversions by Unsloth
