@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.38](https://github.com/anatolykoptev/ox-say/compare/v0.1.37...v0.1.38) (2026-11-18)
+
+
+### Added
+
+* **app:** live captions — Settings toggle, plate opens the live page, last line in the recording row ([#611](https://github.com/anatolykoptev/ox-say/issues/611), [#612](https://github.com/anatolykoptev/ox-say/issues/612)) ([#642](https://github.com/anatolykoptev/ox-say/issues/642)) ([af48cea](https://github.com/anatolykoptev/ox-say/commit/af48cea8fe7925074f3fb8bc86e8c935b6ddcd4d))
+* **stt:** code vocabulary packs for Python, Go and Rust ([#647](https://github.com/anatolykoptev/ox-say/issues/647)) ([afe2c9c](https://github.com/anatolykoptev/ox-say/commit/afe2c9cfe25d7451ac34accf1b26334b07bb5f1d))
+
 ## [0.1.37](https://github.com/anatolykoptev/ox-say/compare/v0.1.36...v0.1.37) (2026-11-17)
 
 
