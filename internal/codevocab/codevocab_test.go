@@ -285,12 +285,28 @@ func TestAliasRuleRejectsProse(t *testing.T) {
 		"пай тест", "матч", "сорт", "реверс", "лен", "тру", "карго", "район", "токио", "нил", "байт",
 		"чан", "йота", "руна", "интерфейс", "сплит", "лямбда", "генератор", "юнион", "питон", "го тест",
 		"го ран", "ре матч", "конф тест", "класс метод", "статик метод", "контекст менеджер",
+		// every form the review flagged as prose, a name or a brand
+		"ок", "о кей", "фанк", "функ", "рун", "нан", "пин", "джойн", "дефер", "принт",
+		"крейт", "дроп", "арк", "аксум", "серде", "горан", "элиф", "гил", "джанго",
+		"джупитер", "рафф", "руф", "арси", "рейндж", "рендж", "рейз", "синк", "трейт",
+		"тайпинг", "селери", "апи",
+		// the name-shape and length edges of the rule
+		"Пин", "аргс", "бул", "дикт", "тапл", "тупл", "селф", "венв", "мап", "мэп",
+		"инам", "енам", "импл", "опшн", "сенд", "фолс", "труе", "трай", "йилд",
+		// multi-token aliases whose words all fail
+		"старт свиз", "го вет", "вейт груп", "манки патч", "фаст апи", "хэш мап",
+		"саб агент", "эм си пи", "раст фмт", "би три мэп", "карго дот томл",
 	} {
 		if AliasOK(ck, prose) {
 			t.Errorf("%q is prose and must not pass", prose)
 		}
 	}
-	for _, code := range []string{"Quargs", "dunder init", "re dot match", "sync dot once", "itar tools", "DunderInit"} {
+	for _, code := range []string{
+		"Quargs", "dunder init", "re dot match", "sync dot once", "itar tools", "DunderInit",
+		// the boundary and the surviving forms: exactly five letters qualifies; a blocklisted
+		// word inside a phrase does not sink it when another word qualifies
+		"слайс", "стрип", "синк дот мьютекс", "эф стринг", "хешмап", "startс with",
+	} {
 		if !AliasOK(ck, code) {
 			t.Errorf("%q is code-shaped and must pass", code)
 		}
@@ -309,6 +325,9 @@ func TestProseIsNeverRewritten(t *testing.T) {
 		"under EQ conditions", "the macro rules of the house", "a unit test and a class method", "this error is fine",
 		"We need a fast API", "Check the ITAR tools before export", "Позвони Savek и спроси", "Sir Dee called", "the ENEM exam",
 		"Augs said hello", "the SRD document", "an IMPLA team", "a VNV meeting", "Jupy the dog",
+		// the review-flagged phrases whose spoken form swallowed an ordinary word
+		"I ran a Py test yesterday", "the SQL alchemy lecture helped", "the Golem CI link broke",
+		"a Golem CI Lint config", "Pyproject.tom will decide", "Элиф ушёл домой", "Пин был тут",
 	} {
 		out, _ := glossary.Apply(prose, pairs)
 		if out != prose {

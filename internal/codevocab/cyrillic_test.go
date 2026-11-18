@@ -6,20 +6,19 @@ import (
 	"unicode"
 
 	"github.com/anatolykoptev/ox-say/internal/glossary"
-	"github.com/anatolykoptev/ox-say/internal/wordlists"
 )
 
 var allPacks = []string{"python", "go", "rust"}
 
-// TestCyrillicRowsRewrite: every heard form the task's table made safe — and the Cyrillic
-// renderings of the packs' identifiers — rewrites to the Latin written form through the REAL
-// post-pass, trailing punctuation included.
+// TestCyrillicRowsRewrite: every heard form the packs still carry — a Cyrillic rendering long
+// enough to pass the alias rule, or a mixed-script spelling Parakeet actually emits — rewrites to
+// the written form through the REAL post-pass, trailing punctuation included. The short and
+// prose-reading rows the pack once had live in TestUnsafeRowsNeverRewrite now.
 func TestCyrillicRowsRewrite(t *testing.T) {
 	pairs := RewritePairs(allPacks)
 	for in, want := range map[string]string{
 		// the recognition table
 		"Пайтест":       "pytest",
-		"Py test":       "pytest",
 		"Из инстанс":    "isinstance",
 		"Изинстанс":     "isinstance",
 		"asis instance": "isinstance",
@@ -27,14 +26,12 @@ func TestCyrillicRowsRewrite(t *testing.T) {
 		"Аппент":        "append",
 		"Аппент.":       "append.",
 		"Эрстрип":       "rstrip",
-		"Джойн":         "join",
 		"реплейс":       "replace",
 		"реплейс,":      "replace,",
 		"Startс with":   "startswith",
+		"Endс with":     "endswith",
 		"Регулер экспрессионс": "regular expressions",
 		"Сортед": "sorted",
-		"Элиф":   "elif",
-		"É liv":  "elif",
 		// builtins and methods
 		"Аппенд":      "append",
 		"Экстенд":     "extend",
@@ -43,36 +40,18 @@ func TestCyrillicRowsRewrite(t *testing.T) {
 		"Эндсвиз":     "endswith",
 		"Реверст":     "reversed",
 		"Лямда":       "lambda",
-		"Йилд":        "yield",
 		"Асинк":       "async",
 		"Авейт":       "await",
-		"Дикт":        "dict",
-		"Тапл":        "tuple",
-		"Рейндж":      "range",
-		"Принт":       "print",
-		"Селф":        "self",
-		"Нан":         "None",
-		"Труе":        "True",
-		"Фолс":        "False",
-		"Трай":        "try",
 		"Эксепт":      "except",
-		"Рейз":        "raise",
 		"Кваргс":      "kwargs",
-		"Аргс":        "args",
 		"Дандер инит": "__init__",
 		"Пайтон":      "Python",
 		// go and rust
 		"Горутина":  "goroutine",
-		"Дефер":     "defer",
 		"Готест":    "go test",
-		"Горан":     "go run",
 		"Голанг":    "Go",
-		"Мьютекс":   "Mutex", // filed under both go's "mutex" and rust's "Mutex"; rust's pair wins
-		"Серде":     "serde",
 		"Анврап":    "unwrap",
 		"Карготест": "cargo test",
-		"Ок":        "Ok",
-		"Инам":      "enum",
 		"Резалт":    "Result",
 		"Трейсбек":  "traceback",
 		"Сабагент":  "subagent",
@@ -83,8 +62,12 @@ func TestCyrillicRowsRewrite(t *testing.T) {
 	}
 }
 
-// TestUnsafeRowsNeverRewrite: the table rows and spellings that failed the dictionary rule stay
-// put — they carry the decoder boost through the written form and never become a rewrite.
+// TestUnsafeRowsNeverRewrite: the forms filed unsafe and every alias the loader rule or the
+// review pruned out of `safe` stay put — a prose, name or brand reading owns them. The review's
+// flagged set (принт, джойн, ок, о кей, фанк, рун, нан, пин, дефер, крейт, дроп, арк, аксум,
+// серде, горан, элиф, гил, джанго, джупитер, рафф, руф, арси, рейндж, рендж, рейз, синк, трейт,
+// тайпинг, селери, Py test, É liv), the conflicting мьютекс/мутекс pair, and every sub-five-letter
+// token the length floor dropped.
 func TestUnsafeRowsNeverRewrite(t *testing.T) {
 	pairs := RewritePairs(allPacks)
 	for _, in := range []string{
@@ -96,6 +79,26 @@ func TestUnsafeRowsNeverRewrite(t *testing.T) {
 		"го тест", "го ран", "го мод", "ре матч", "рематч", "мок", "питон", "юнион",
 		"генератор", "май пай", "нам пай", "пай пи ай", "класс метод", "статик метод",
 		"конф тест", "контекст менеджер", "Full Moss",
+		// the review-flagged prose, name and brand readings, now unsafe or gone
+		"ок", "о кей", "фанк", "функ", "рун", "нан", "пин", "джойн", "дефер", "принт",
+		"крейт", "дроп", "арк", "аксум", "серде", "горан", "элиф", "гил", "джанго",
+		"джупитер", "рафф", "руф", "арси", "рейндж", "рендж", "рейз", "синк", "трейт",
+		"тайпинг", "селери", "Py test", "É liv", "SQL alchemy", "Pyproject.tom will",
+		"Golem CI link", "Golem CI Lint", "апи",
+		// aliases one pack spelled one way and another spelled another way
+		"мьютекс", "мутекс",
+		// every sub-five-letter Cyrillic token the length floor removed
+		"аргс", "бул", "дикт", "тапл", "тупл", "фолс", "фалс", "фолз", "труе", "трю",
+		"трай", "селф", "йилд", "илд", "венв", "мап", "мэп", "инам", "енам", "импл",
+		"опшн", "сенд",
+		// multi-token aliases no single word of which qualifies any more
+		"старт свиз", "го вет", "го фмт", "вейт груп", "контекст туду", "го билд",
+		"го дот сум", "синк дот ванс", "синк дот вейт груп", "го ланг", "манки патч",
+		"фаст апи", "фанк тулз", "итер тулз", "лру кэш", "эл ар ю кеш", "пай торч",
+		"ре дот мэтч", "ре мэтч", "юнит тест", "раст фмт", "ар дабл ю лок", "би три мэп",
+		"карго билд", "карго фмт", "карго дот лок", "карго дот томл", "хэш мап", "хеш мап",
+		"хэш сет", "хеш сет", "эм си пи", "эл джи ти эм", "саб агент", "гет аттр",
+		"джи ар пи си",
 	} {
 		if out, _ := glossary.Apply(in, pairs); out != in {
 			t.Errorf("unsafe form %q rewritten to %q", in, out)
@@ -121,7 +124,9 @@ func TestBoostPairsDropCyrillic(t *testing.T) {
 	}
 }
 
-// russianNeutral is 40 ordinary Russian sentences with the task's trap words worked in.
+// russianNeutral is 57 ordinary Russian sentences with the task's trap words worked in: the names
+// and loanwords the pruned aliases collided with, and the inflected forms a stemming pack pair
+// would once have rewritten.
 var russianNeutral = []string{
 	"Мы выбрали сорт яблок с кислинкой.",
 	"У него погасла лампа реверса.",
@@ -163,74 +168,133 @@ var russianNeutral = []string{
 	"На столе лежали деньги.",
 	"Они спели любимую песню.",
 	"Рыбак тянул сеть.",
-}
-
-// justifiedCodeTokens is the explicit list of non-dictionary tokens that may change inside
-// Russian prose — each is a Cyrillic transliteration of a code term, so the collision is the
-// feature's known cost, not a leak. A change outside this list fails the test.
-var justifiedCodeTokens = map[string]string{
-	"джойн": "transliteration of join(); required table row",
-	"дефер": "transliteration of go's defer; not a Russian word",
-	"принт": "transliteration of print(); «принт» as a noun is jargon Hunspell lacks",
-	"крейт": "transliteration of rust's crate; gaming jargon Hunspell lacks",
+	// the inflected forms a stemming pack pair once rewrote — exact-only now, all unchanged
+	"Принтами украсили всю обложку альбома.",
+	"На футболках были яркие принты.",
+	"Футболка с принтом лежала на стуле.",
+	"Обложку с принтами показали на выставке.",
+	"Мы позвали Джойна на вечеринку.",
+	"Открытку подписали Джойну.",
+	"Книга Дефера стоит на полке.",
+	"Цвета стрипа на форме отличались.",
+	"Для съёмки подготовили новые фикстуры.",
+	"Дженерики продаются без рецепта.",
+	"Заказали роллы и слайсы с лососем.",
+	"Реквесты на песни принимали до полуночи.",
+	"Фьючеры на нефть подорожали.",
+	"Я из инстансов ничего не получил.",
+	// the names the short aliases collided with
+	"Пин вышел из комнаты.",
+	"Ок приехал из Сеула на конференцию.",
+	"Фанк записал статью для журнала.",
 }
 
 // TestRussianNeutralSet runs every sentence through the real post-pass with all packs on and with
-// no packs. With packs off nothing may change. With packs on a word may change only when it is not
-// a Russian dictionary word and sits in justifiedCodeTokens — every such change is logged for the
-// report.
+// no packs, and asserts the EXACT set of changed tokens — the expected set is empty: the pruning
+// and the exact-only pack matching leave ordinary Russian untouched. A change anywhere fails with
+// the full diff list, case-sensitively, so a case-only substitution counts too.
 func TestRussianNeutralSet(t *testing.T) {
-	if len(russianNeutral) != 40 {
-		t.Fatalf("the neutral set must hold 40 sentences, holds %d", len(russianNeutral))
+	if len(russianNeutral) != 57 {
+		t.Fatalf("the neutral set must hold 57 sentences, holds %d", len(russianNeutral))
 	}
-	ck := wordlists.New()
 	pairs := RewritePairs(allPacks)
-	changes := 0
+	var changed []string
 	for _, in := range russianNeutral {
 		if off, _ := glossary.Apply(in, nil); off != in {
 			t.Fatalf("packs off rewrote %q to %q", in, off)
 		}
-		out, _ := glossary.Apply(in, pairs)
-		if out == in {
-			continue
-		}
-		changes++
-		for _, w := range removedWords(in, out) {
-			if ck.Common(w) {
-				t.Errorf("%q: the ordinary word %q was rewritten", in, w)
-				continue
-			}
-			why, ok := justifiedCodeTokens[strings.ToLower(w)]
-			if !ok {
-				t.Errorf("%q: %q changed but is not a justified code-only token", in, w)
-				continue
-			}
-			t.Logf("changed %q -> %q (word %q: %s)", in, out, w, why)
+		if out, _ := glossary.Apply(in, pairs); out != in {
+			changed = append(changed, in+" -> "+out)
 		}
 	}
-	t.Logf("%d of %d neutral sentences changed", changes, len(russianNeutral))
+	if len(changed) != 0 {
+		t.Errorf("%d neutral sentences changed (want 0): %q", len(changed), changed)
+	}
 }
 
-// removedWords lists the folded words of `in` that no longer appear in `out`.
-func removedWords(in, out string) []string {
-	count := map[string]int{}
-	for _, w := range words(in) {
-		count[w]++
+// TestNoAliasMapsToTwoTargets derives the rewrite surface from the real loaded packs and requires
+// one folded heard form to name one written form only: «мьютекс» must not map to go's "mutex" in
+// one pack and rust's "Mutex" in another — whichever sorted first would win silently.
+// Mutation: the dropConflicting call in packs() removed -> RED (the raw packs carry it nowhere,
+// so the test also asserts the loaded safe aliases directly).
+func TestNoAliasMapsToTwoTargets(t *testing.T) {
+	heard := map[string]string{}
+	for _, p := range RewritePairs(allPacks) {
+		k := glossary.Key(p.Heard)
+		if w, ok := heard[k]; ok && w != p.Meant {
+			t.Errorf("heard %q maps to both %q and %q", k, w, p.Meant)
+		}
+		heard[k] = p.Meant
 	}
-	for _, w := range words(out) {
-		if count[w] > 0 {
-			count[w]--
+	for name, ts := range PackTerms() {
+		for _, term := range ts {
+			for _, a := range term.Safe {
+				if a == "мьютекс" || a == "мутекс" {
+					t.Errorf("%s %s: conflicting alias %q survived the loader", name, term.Written, a)
+				}
+			}
 		}
 	}
-	var gone []string
-	for w, n := range count {
-		for ; n > 0; n-- {
-			gone = append(gone, w)
-		}
-	}
-	return gone
 }
 
-func words(s string) []string {
-	return strings.FieldsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+// TestDropConflicting drives the loader's check itself on a synthetic conflict: the same folded
+// heard form filed under two written forms is dropped from BOTH terms, while an alias that maps to
+// one target everywhere stays.
+// Mutation: dropConflicting returning early, or comparing raw strings instead of glossary.Key ->
+// RED (the map below exercises folded-key equality via case).
+func TestDropConflicting(t *testing.T) {
+	packs := map[string][]Term{
+		"go":   {{Written: "mutex", Safe: []string{"Мьютекс", "мьютекс2"}}},
+		"rust": {{Written: "Mutex", Safe: []string{"мьютекс", "мьютексы"}}},
+	}
+	dropConflicting(packs)
+	for name, ts := range packs {
+		for _, a := range ts[0].Safe {
+			if glossary.Key(a) == "мьютекс" {
+				t.Errorf("%s kept conflicting alias %q", name, a)
+			}
+		}
+		if len(ts[0].Safe) != 1 {
+			t.Errorf("%s safe = %v, want the single non-conflicting alias kept", name, ts[0].Safe)
+		}
+	}
+}
+
+// TestLatinAliasesSurviveTheFold proves the mixed-script fold cannot equate two different Latin
+// aliases: for every pure-Latin safe alias word in the real packs the fold is the identity — the
+// map only ever rewrites the Cyrillic half of a mixed token, so no alias folds onto another one.
+func TestLatinAliasesSurviveTheFold(t *testing.T) {
+	n := 0
+	for _, ts := range PackTerms() {
+		for _, term := range ts {
+			for _, a := range term.Safe {
+				for _, w := range strings.Fields(a) {
+					if !pureLatin(w) {
+						continue
+					}
+					n++
+					if got := glossary.Latinized(w); got != w {
+						t.Errorf("%s: pure-Latin alias word %q folds to %q", term.Written, w, got)
+					}
+				}
+			}
+		}
+	}
+	if n < 50 {
+		t.Fatalf("only %d pure-Latin alias words checked", n)
+	}
+}
+
+// pureLatin reports whether every letter of s is Latin.
+func pureLatin(s string) bool {
+	seen := false
+	for _, r := range s {
+		switch {
+		case unicode.Is(unicode.Cyrillic, r):
+			return false
+		case unicode.Is(unicode.Latin, r):
+			seen = true
+		}
+	}
+	return seen
 }

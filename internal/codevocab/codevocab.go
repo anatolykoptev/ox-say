@@ -19,6 +19,7 @@ import (
 	"embed"
 	"encoding/json"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -93,6 +94,7 @@ func packs() map[string][]Term {
 			}
 			packsData[n] = ts
 		}
+		dropConflicting(packsData)
 		if ck.Err() == nil {
 			debug.FreeOSMemory()
 		}
@@ -112,20 +114,116 @@ func filterAliases(ck *wordlists.Checker, in []string) []string {
 	return out
 }
 
-// AliasOK is the rule a safe alias must meet to be a rewrite: it contains at least one token that is not an ordinary
-// word of the English or Russian dictionary (a token with a digit counts as not ordinary). An alias made only of
-// ordinary words — "ice instance", "trace back", "under", "dun domain" — is prose, and prose is never rewritten.
-// The rule applies in both languages: «пай тест» and «матч» fail it just as "ice instance" does, and a token that
-// mixes scripts («startс») is a word of neither dictionary, so it satisfies the rule on its own.
-// Names (a person's or a product's) are not caught by a dictionary: those aliases are kept out of the data by hand,
-// and TestPackAliasesPassTheRule keeps ordinary-word ones out.
+// dropConflicting removes every safe alias that names two different written forms: one folded
+// spoken form must not map to go's "mutex" and rust's "Mutex" — whichever term sorted first would
+// win silently. The alias is dropped from every term that carries it, so neither pack keeps it.
+func dropConflicting(packs map[string][]Term) {
+	target := map[string]string{}
+	conflict := map[string]bool{}
+	for _, ts := range packs {
+		for _, t := range ts {
+			for _, a := range t.Safe {
+				k := glossary.Key(a)
+				if w, ok := target[k]; ok && w != t.Written {
+					conflict[k] = true
+					continue
+				}
+				target[k] = t.Written
+			}
+		}
+	}
+	if len(conflict) == 0 {
+		return
+	}
+	for n, ts := range packs {
+		for i := range ts {
+			ts[i].Safe = slices.DeleteFunc(ts[i].Safe, func(a string) bool { return conflict[glossary.Key(a)] })
+		}
+		packs[n] = ts
+	}
+}
+
+// AliasOK is the rule a safe alias must meet to be a rewrite: it contains at least one token that is
+// not an ordinary word of the English or Russian dictionary, and a purely-Cyrillic token only
+// qualifies when it is at least minAliasLetters long, is not spelled like a capitalised name and is
+// not a common loanword the dictionaries miss (proseAliases). A lone token faces the same length
+// floor in any script — a two-to-four-letter heard form is a name or a prose word too often («ок»,
+// "arc"). An alias made only of ordinary words is prose, and prose is never rewritten. The rule
+// applies in both languages: «пай тест» and «матч» fail it just as "ice instance" does, and a
+// token that mixes scripts («startс») is a word of neither dictionary, so it satisfies the rule on
+// its own.
 func AliasOK(ck *wordlists.Checker, alias string) bool {
 	toks := strings.FieldsFunc(alias, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
 	for i, t := range toks {
 		// "sync dot once", "re dot match": a spoken dot between two words is how code is dictated, not prose
-		if (i > 0 && i < len(toks)-1 && strings.EqualFold(t, "dot")) || !ck.Common(t) {
+		if (i > 0 && i < len(toks)-1 && strings.EqualFold(t, "dot")) || aliasTokenOK(ck, t, len(toks) == 1) {
 			return true
 		}
+	}
+	return false
+}
+
+// minAliasLetters is the shortest token a safe alias may be carried by: a shorter spelling is a
+// name or a prose word too often — «ок», «нан», «Пин», "arc".
+const minAliasLetters = 5
+
+// proseAliases are the Cyrillic heard forms a safe alias may never carry: spellings ordinary
+// speech owns but the dictionaries do not — common loanwords («принт» on a shirt, «крейт» a
+// crate), product and pet names («Джойн» a DJ, «Горан») and words a code pack borrowed («серде»
+// for serde). The set is the forms review found rewriting real prose; a folded form is the key.
+var proseAliases = map[string]bool{
+	"арк": true, "арси": true, "аксум": true, "горан": true, "гил": true, "дефер": true,
+	"джанго": true, "джойн": true, "джупитер": true, "дроп": true, "крейт": true, "нан": true,
+	"ок": true, "пин": true, "принт": true, "рафф": true, "рейз": true, "рейндж": true,
+	"рендж": true, "рун": true, "руф": true, "селери": true, "серде": true, "синк": true,
+	"тайпинг": true, "трейт": true, "фанк": true, "элиф": true,
+}
+
+// aliasTokenOK reports whether one token can carry a safe alias: it is not an ordinary dictionary
+// word, and a purely-Cyrillic token is also at least minAliasLetters long, is not spelled like a
+// capitalised name («Пин») and is not a proseAliases word — a loanword Hunspell does not know is
+// still prose. lone marks the whole-alias case, where the length floor applies whatever the
+// script ("arc" is not safer than «арк»).
+func aliasTokenOK(ck *wordlists.Checker, t string, lone bool) bool {
+	if pureCyrillic(t) {
+		if letters(t) < minAliasLetters || startsUpper(t) || proseAliases[glossary.Key(t)] {
+			return false
+		}
+	} else if lone && letters(t) < minAliasLetters {
+		return false
+	}
+	return !ck.Common(t)
+}
+
+// pureCyrillic reports whether s holds at least one Cyrillic letter and no Latin one.
+func pureCyrillic(s string) bool {
+	seen := false
+	for _, r := range s {
+		switch {
+		case unicode.Is(unicode.Latin, r):
+			return false
+		case unicode.Is(unicode.Cyrillic, r):
+			seen = true
+		}
+	}
+	return seen
+}
+
+// letters counts the letters of s — digits and marks do not make an alias longer.
+func letters(s string) int {
+	n := 0
+	for _, r := range s {
+		if unicode.IsLetter(r) {
+			n++
+		}
+	}
+	return n
+}
+
+// startsUpper reports whether s opens with an uppercase letter — the shape of a filed name.
+func startsUpper(s string) bool {
+	for _, r := range s {
+		return unicode.IsUpper(r)
 	}
 	return false
 }
