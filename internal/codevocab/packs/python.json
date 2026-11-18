@@ -15,7 +15,7 @@
     {"written": "__exit__", "safe": ["dunder exit"]},
     {"written": "__post_init__", "safe": ["dunder post init"]},
     {"written": "__slots__", "safe": ["dunder slots"]},
-    {"written": "args", "safe": ["Augs"], "value": 1},
+    {"written": "args", "value": 1},
     {"written": "async", "value": 2},
     {"written": "AttributeError", "unsafe": ["attribute error"], "value": 2},
     {"written": "bool", "unsafe": ["bull"], "value": 1},
@@ -46,7 +46,7 @@
     {"written": "contextmanager", "value": 2},
     {"written": "CPython"},
     {"written": "Django"},
-    {"written": "FastAPI", "safe": ["Fast API"], "value": 2},
+    {"written": "FastAPI", "value": 2},
     {"written": "fixture"},
     {"written": "Flask"},
     {"written": "functools", "safe": ["FunkTools"], "unsafe": ["Funk Tools"], "value": 1},
@@ -54,8 +54,8 @@
     {"written": "GIL", "unsafe": ["gill"], "value": 1},
     {"written": "httpx", "value": 2},
     {"written": "Iterable", "value": 2},
-    {"written": "itertools", "safe": ["itar tools"], "unsafe": ["ITA tools"], "value": 1},
-    {"written": "Jupyter", "safe": ["Jupy"], "unsafe": ["jupiter"], "value": 1},
+    {"written": "itertools", "unsafe": ["ITA tools"], "value": 1},
+    {"written": "Jupyter", "unsafe": ["jupiter"], "value": 1},
     {"written": "lru_cache", "unsafe": ["LRU cache"], "value": 2},
     {"written": "mock"},
     {"written": "monkeypatch", "unsafe": ["monkey patch"], "value": 2},
@@ -80,6 +80,6 @@
     {"written": "Union", "value": 2},
     {"written": "unittest", "value": 2},
     {"written": "uvicorn", "safe": ["you vee corn"], "unsafe": ["UV Corn"], "value": 1},
-    {"written": "venv", "safe": ["VNV", "vee env", "v env"], "value": 1}
+    {"written": "venv", "safe": ["vee env", "v env"], "value": 1}
   ]
 }

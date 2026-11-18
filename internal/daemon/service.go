@@ -87,6 +87,7 @@ type Daemon struct {
 	tbMu       sync.Mutex
 	tbHave     bool
 	tbKey      string // content key of tbTerms
+	tbPacks    string // the enabled packs tbTerms was derived for ("" = none)
 	tbSeenGen  uint64 // the glGen tbCurKey was computed for
 	tbGlKey    string // boostKey of the glossary pairs at tbSeenGen
 	tbCurKey   string // content key of the current glossary

@@ -299,12 +299,10 @@ func TestProseIsNeverRewritten(t *testing.T) {
 		"Can you trace back the payment?", "That was a beautiful soup.", "Please go routine by routine.",
 		"Мне нравится beautiful soup.", "That's a lovely hash map of the city", "the sub agent reports to me",
 		"under EQ conditions", "the macro rules of the house", "a unit test and a class method", "this error is fine",
-		"the key error rate is low", // "key error" is a join only inside the allow-list; see below
+		"We need a fast API", "Check the ITAR tools before export", "Позвони Savek и спроси", "Sir Dee called", "the ENEM exam",
+		"Augs said hello", "the SRD document", "an IMPLA team", "a VNV meeting", "Jupy the dog",
 	} {
 		out, _ := glossary.Apply(prose, pairs)
-		if prose == "the key error rate is low" {
-			continue // a documented join: key error -> KeyError
-		}
 		if out != prose {
 			t.Errorf("prose %q rewritten to %q", prose, out)
 		}

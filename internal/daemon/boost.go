@@ -18,7 +18,7 @@ import (
 // (OX_SAY_STT_BOOST_ALPHA, 0 = off). The list is derived from the glossary file and the embedded packs only —
 // there is no second store and no file copy — and cached per CONTENT of the active (meant, heard) set AND the
 // enabled packs, so a sighting of an existing pair (which rewrites the file) does not derive again, while a pack
-// toggle, or packs that were saved before this process started, do. It never blocks a request: while a new
+// toggle, or packs that were saved before this process started, do. A glossary change never blocks a request: while a new
 // list is being derived, the request goes out with the previous one, or with none before the first; the daemon
 // derives once at start.
 func (d *Daemon) sttBoost() stt.Boost {
@@ -27,15 +27,27 @@ func (d *Daemon) sttBoost() stt.Boost {
 	}
 	pairs, gen := d.glossaryPairsGen()
 	packs := d.codePacks()
+	packKey := strings.Join(packs, ",")
 	d.tbMu.Lock()
-	defer d.tbMu.Unlock()
 	if !d.tbKeyOK || d.tbSeenGen != gen {
 		d.tbSeenGen, d.tbGlKey, d.tbKeyOK = gen, boostKey(pairs), true
 	}
-	d.tbCurKey = d.tbGlKey + "|" + strings.Join(packs, ",")
-	if !(d.tbHave && d.tbKey == d.tbCurKey) && !d.tbBuilding {
+	key := d.tbGlKey + "|" + packKey
+	d.tbCurKey = key
+	if d.tbPacks != packKey {
+		// The enabled packs changed under the cached list (a PUT still publishing, a settings file edited, packs
+		// saved before this process started): never answer with the old packs' lines. Derive now and return the new
+		// list; a glossary-only change below stays asynchronous.
+		d.tbMu.Unlock()
+		d.deriveBoost(pairs, packs, key)
+		d.tbMu.Lock()
+		defer d.tbMu.Unlock()
+		return stt.Boost{Alpha: d.Cfg.STTBoostAlpha, Terms: d.tbTerms}
+	}
+	defer d.tbMu.Unlock()
+	if !(d.tbHave && d.tbKey == key) && !d.tbBuilding {
 		d.tbBuilding = true
-		go d.deriveBoost(pairs, packs, d.tbCurKey)
+		go d.deriveBoost(pairs, packs, key)
 	}
 	return stt.Boost{Alpha: d.Cfg.STTBoostAlpha, Terms: d.tbTerms}
 }
@@ -83,7 +95,7 @@ func (d *Daemon) deriveBoost(pairs []glossary.Pair, packs []string, key string) 
 	}
 	d.tbMu.Lock()
 	if !d.tbHave || key == d.tbCurKey {
-		d.tbHave, d.tbKey, d.tbTerms = true, key, terms
+		d.tbHave, d.tbKey, d.tbTerms, d.tbPacks = true, key, terms, strings.Join(packs, ",")
 	}
 	d.tbBuilding = false
 	d.tbMu.Unlock()

@@ -144,4 +144,4 @@ the first decode.
   glossary pair. Ordinary words and phrases are never rewritten (`chords`, `Tokyo`, `trace back`, `beautiful soup`, `go routine`).
   The only joins are an explicit allow-list of code-only compounds: `type error`, `key error`, `value error`, `index error`,
   `attribute error`, `not implemented error`, `stop iteration`, `data class`, `doc string`, `async IO`, `monkey patch`,
-  `wait group`. Any pack pair that shares a word with an owner pair is dropped: the owner's pair always wins.
+  `wait group`. Any pack pair that shares a word with an owner pair is dropped, and a pack decoder line whose spoken form contains an owner spoken form is not sent: the owner's pair always wins. Packs are an explicit code mode, so the joins are intended there.

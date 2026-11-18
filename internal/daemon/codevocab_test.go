@@ -267,3 +267,64 @@ func TestPackChangeWithoutRefreshIsSeen(t *testing.T) {
 	}
 	t.Fatal("a pack enabled behind the handler's back never reached the boost list")
 }
+
+// An owner correction is not swallowed in the decoder: the engine tries the longest spoken form first, so a pack line
+// whose spoken form CONTAINS an owner's form ("dunder init" vs the owner's "dunder") is not sent at all, and the
+// post-pass keeps the owner's rewrite.
+// Mutation: codevocab.go withPackTerms, drop the `containsOwnerForm` check -> RED (the __init__ line is on the wire).
+func TestPackLineContainingAnOwnerFormIsNotSent(t *testing.T) {
+	d, _ := boostDaemon(t, map[string]string{"dunder": "Dundar"})
+	mux := http.NewServeMux()
+	d.Routes(mux)
+	if code := putPacks(t, mux, `{"code_vocabulary":["python"]}`); code != http.StatusOK {
+		t.Fatalf("PUT = %d", code)
+	}
+	for _, l := range d.sttBoost().Terms {
+		if strings.HasPrefix(l, "__init__\t") || strings.Contains(l, "\tdunder init") {
+			t.Fatalf("a pack line that contains the owner's form reached the wire: %q", l)
+		}
+	}
+	if out := d.corrector()("call dunder init now"); out != "call Dundar init now" {
+		t.Fatalf("post-pass = %q, want the owner's rewrite", out)
+	}
+}
+
+// Packs disabled behind the handler's back (the settings file edited) between two requests: the second request
+// carries no pack lines, never the old list. And the rebuild it does is cheap; the time is logged.
+// Mutation: boost.go sttBoost, return the cached list on a key change (drop the `d.tbPacks != packKey` branch) -> RED.
+func TestDisabledPacksAreGoneOnTheNextRequest(t *testing.T) {
+	d, _ := boostDaemon(t, map[string]string{"оксей": "OxSay"})
+	m := http.NewServeMux()
+	d.Routes(m)
+	hasPack := func() bool {
+		for _, l := range d.sttBoost().Terms {
+			if strings.HasPrefix(l, "kwargs\t") {
+				return true
+			}
+		}
+		return false
+	}
+	if code := putPacks(t, m, `{"code_vocabulary":["python"]}`); code != http.StatusOK || !hasPack() {
+		t.Fatalf("packs on: PUT %d, pack line present %v", code, hasPack())
+	}
+	set := func(packs []string) {
+		if err := d.Meet.Store.UpdateSettings(func(cur meeting.Settings, _ error) (meeting.Settings, error) {
+			cur.CodeVocabulary = packs
+			return cur, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set(nil) // the settings file changes behind the handler's back
+	start := time.Now()
+	if hasPack() {
+		t.Fatal("the request after the change still carried the old pack lines")
+	}
+	t.Logf("rebuild on the request after a pack change: %v", time.Since(start))
+	set([]string{"python"})
+	start = time.Now()
+	if !hasPack() {
+		t.Fatal("the request after enabling carried no pack lines")
+	}
+	t.Logf("rebuild with packs on: %v", time.Since(start))
+}

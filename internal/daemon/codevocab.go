@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/anatolykoptev/ox-say/internal/codevocab"
@@ -27,10 +28,16 @@ func (d *Daemon) withPackTerms(owner []string, packs []string) []string {
 		return owner
 	}
 	taken := map[string]bool{}
+	var ownerSpoken [][]string
 	for _, l := range owner {
 		for i, f := range strings.Split(l, "\t") {
 			if i != 1 { // field 1 is the weight
 				taken[glossary.Key(f)] = true
+			}
+			if i >= 2 {
+				if w := strings.Fields(glossary.Key(f)); len(w) > 0 {
+					ownerSpoken = append(ownerSpoken, w)
+				}
 			}
 		}
 	}
@@ -39,6 +46,11 @@ func (d *Daemon) withPackTerms(owner []string, packs []string) []string {
 		clash := false
 		for i, f := range strings.Split(l, "\t") {
 			if i != 1 && taken[glossary.Key(f)] {
+				clash = true
+			}
+			// the engine tries the longest spoken form first: "dunder init" would decode as __init__ and the owner's
+			// "dunder" -> Dundar would never see it, so a pack form that contains an owner form is not sent
+			if i >= 2 && containsOwnerForm(strings.Fields(glossary.Key(f)), ownerSpoken) {
 				clash = true
 			}
 		}
@@ -54,4 +66,16 @@ func (d *Daemon) withPackTerms(owner []string, packs []string) []string {
 // longer overlapping pack phrase included.
 func (d *Daemon) packFixPairs(owner []glossary.Pair) []glossary.Pair {
 	return codevocab.DropOwned(codevocab.RewritePairs(d.codePacks()), owner)
+}
+
+// containsOwnerForm reports whether any owner spoken form occurs in words as a whole-word run.
+func containsOwnerForm(words []string, owner [][]string) bool {
+	for _, o := range owner {
+		for i := 0; i+len(o) <= len(words); i++ {
+			if slices.Equal(words[i:i+len(o)], o) {
+				return true
+			}
+		}
+	}
+	return false
 }
