@@ -30,6 +30,11 @@ func TestCyrillicRowsRewrite(t *testing.T) {
 		"реплейс,":      "replace,",
 		"Startс with":   "startswith",
 		"Endс with":     "endswith",
+		"enдs with":     "endswith", // the spelled-out mix Parakeet emits for it
+		"Ченнал":        "channel",
+		"Комрехеншин":   "comprehension",
+		"Компрехеншн":   "comprehension",
+		"Дэйсон Лодс":   "json.loads",
 		"Регулер экспрессионс": "regular expressions",
 		"Сортед": "sorted",
 		// builtins and methods

@@ -328,6 +328,8 @@ func TestProseIsNeverRewritten(t *testing.T) {
 		// the review-flagged phrases whose spoken form swallowed an ordinary word
 		"I ran a Py test yesterday", "the SQL alchemy lecture helped", "the Golem CI link broke",
 		"a Golem CI Lint config", "Pyproject.tom will decide", "Элиф ушёл домой", "Пин был тут",
+		// "ends with" is prose — only its mixed-script spelling «enдs» is a safe alias
+		"the story ends with a twist", "it ends with a question",
 	} {
 		out, _ := glossary.Apply(prose, pairs)
 		if out != prose {

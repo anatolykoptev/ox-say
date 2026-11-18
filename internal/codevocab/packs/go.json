@@ -1,7 +1,7 @@
 {
   "name": "go",
   "terms": [
-    {"written": "channel", "safe": ["ченнел", "чанел"]},
+    {"written": "channel", "safe": ["ченнел", "чанел", "ченнал"]},
     {"written": "context.Context", "safe": ["context dot context"], "unsafe": ["контекст дот контекст", "контекст"], "value": 2},
     {"written": "defer", "unsafe": ["дефер"]},
     {"written": "errgroup", "safe": ["еррор груп", "ерроргруп"], "value": 1},
