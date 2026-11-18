@@ -842,7 +842,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.mainWindow.source?.recordingChanged()
             },
             daemonStatus: { [unowned self] in self.serviceStatus },
-            updateInstalling: { [unowned self] in self.updateInstalling }))
+            updateInstalling: { [unowned self] in self.updateInstalling },
+            openRoute: { [unowned self] route in self.mainWindow.show(route) }))
     }
 
     /// The meetings switch changed in the main window: the feature, its menu item and the icon follow at once.

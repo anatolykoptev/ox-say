@@ -75,6 +75,14 @@ final class MainWindowSource {
     /// The poll of live captions of the chosen meeting while it is recorded (`LivePolling`); one at a time.
     private var liveTask: Task<Void, Never>?
     private var liveMeeting: String?
+    /// The meetings `/live` said are over: never targeted again (`LiveTargeting`).
+    private var liveTargeting = LiveTargeting()
+    /// Saves of the live-captions switch: one at a time, newest intent last.
+    private lazy var liveSaves = LiveCaptionsSaveQueue(
+        send: { [unowned self] on in
+            await MeetingSettingsApplier(defaults: self.host.defaults, client: self.host.client).apply(.liveCaptions(on))
+        },
+        finished: { [weak self] outcome in self?.liveSaveFinished(outcome) })
     private let audio = MeetingAudioPlayer()
     private var voiceSource: VoiceSource!
     private var speakSource: SpeakSource!
@@ -226,7 +234,7 @@ final class MainWindowSource {
     func apply(_ route: MainRoute) {
         let route = route.resolved(visible: MainWindowSpec.sections(advanced: model.advanced))
         model.section = route.section
-        if let id = route.meetingID { model.selectedMeeting = id }
+        model.selectedMeeting = route.selection(current: model.selectedMeeting)
         if let id = route.speakID { speakSource.showProject(id) }
     }
 
@@ -462,10 +470,13 @@ final class MainWindowSource {
     // MARK: live captions
 
     /// Starts or stops the live poll to match the window: only while it is visible, on the Meetings page, with a
-    /// meeting that is being recorded chosen. Called after every refresh pass and every route change.
+    /// meeting being recorded (the chosen one, else the one in the list). Called after every refresh pass and every route change.
     private func syncLive() {
         let selected = model.selectedMeeting.flatMap { id in model.data.meetings.first { $0.id == id } }
-        guard model.section == .meetings, LivePolling.needed(visible: visible, selected: selected), let id = selected?.id else {
+        // The recording is read even while another meeting is open: its row in the list shows the last line.
+        guard model.section == .meetings,
+              let id = liveTargeting.target(visible: visible, selected: selected, meetings: model.data.meetings,
+                                            recordingID: host.meetings()?.recordingID) else {
             stopLive()
             return
         }
@@ -497,6 +508,8 @@ final class MainWindowSource {
             feed.apply(answer)
             if model.data.live[id] != feed { model.data.live[id] = feed }
             if !answer.state.recording {
+                // Never targeted again, even if the list read behind this fails and the row keeps saying "recording".
+                liveTargeting.reportedStopped(id)
                 stopLive()
                 refresh()
                 return false
@@ -559,18 +572,27 @@ final class MainWindowSource {
     /// read back through the model's one step after the reply, so the iCloud answer is the new folder's own.
     private func reloadSettingsAsync(pickedFolder: URL? = nil) async {
         if let pickedFolder { MeetingSettings.setFolder(pickedFolder, host.defaults) }
+        let token = liveSaves.beginRead()
         let daemon = try? await host.client.meetingDaemonSettings()
+        // An edit of the switch that ran or began since the read started is newer than what the daemon answered.
+        let stale = liveSaves.isStale(token)
+        let liveCaptions = stale ? nil : daemon?.liveCaptions
         let notes = host.daemonStatus()?.notes
+        // The code packs ride the same read: a settings edit that began since it started is newer than the answer, and a
+        // pack save in flight is newer too (CodePackSync.isBusy).
         if let answer = try? await host.client.codeVocabularyAnswer() {
             codePackSync.learn(answer)
-            if !codePackSync.isBusy { model.data.codePacks = answer.packs }
+            if !stale, !codePackSync.isBusy { model.data.codePacks = answer.packs }
         }
-        model.data.meetingSettings = pickedFolder.map {
+        let loaded = pickedFolder.map {
             MeetingSettingsModel.folderPicked($0, defaults: host.defaults, daemonRetention: daemon?.retention,
+                                              daemonLiveCaptions: liveCaptions, liveCaptionsDefault: daemon?.liveCaptionsDefault,
                                               notesWriter: NotesWriterState.of(notes), fullName: NSFullUserName())
         } ?? MeetingSettingsModel.load(
-            defaults: host.defaults, daemonRetention: daemon?.retention, notesWriter: NotesWriterState.of(notes),
+            defaults: host.defaults, daemonRetention: daemon?.retention, daemonLiveCaptions: liveCaptions,
+            liveCaptionsDefault: daemon?.liveCaptionsDefault, notesWriter: NotesWriterState.of(notes),
             fullName: NSFullUserName())
+        model.data.meetingSettings = stale ? MeetingSettingsModel.keepingPendingEdit(loaded, current: model.data.meetingSettings) : loaded
     }
 
     /// Stamps and sets the microphone and Accessibility rows at once, and starts the notification read unless one is
@@ -830,6 +852,10 @@ final class MainWindowSource {
     private func apply(_ change: MeetingSettingsModel.Change) {
         // Switching meetings off ends the audio at once, whatever the save then says.
         if case .enabled(false) = change { stopPlayback() }
+        if case .liveCaptions(let on) = change {
+            liveSaves.submit(on)
+            return
+        }
         Task { @MainActor in
             let applier = MeetingSettingsApplier(defaults: host.defaults, client: host.client)
             if let failure = await applier.apply(change) {
@@ -841,10 +867,24 @@ final class MainWindowSource {
             case .enabled: host.meetingsEnabledChanged()
             case .callMode: host.meetings()?.settingsChanged()
             case .retention, .mode, .name: break
+            case .liveCaptions: break // saved through `liveSaves` above; unreachable here
             }
             if case .retention = change { model.data.meetingSettings.retentionVerified = true }
             // A name is typed letter by letter: only a change that alters other parts of the page reads it all again.
             if change.needsRefresh { refresh() }
+        }
+    }
+
+    /// The last save of the switch ended: the page shows what the daemon took last; a refused one is said, and the page reads
+    /// the stored value again.
+    private func liveSaveFinished(_ outcome: LiveCaptionsSaveQueue.Outcome) {
+        switch outcome {
+        case .saved(let on):
+            model.data.meetingSettings.liveCaptions = on
+            model.data.meetingSettings.liveCaptionsVerified = true
+        case .failed(let sentence):
+            model.data.notice = sentence
+            Task { @MainActor in await reloadSettingsAsync() }
         }
     }
 

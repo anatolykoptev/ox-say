@@ -7,11 +7,21 @@ public struct MainRoute: Equatable {
     public var meetingID: String?
     /// The voiceover project that is open on Озвучка (a notification's click points here).
     public var speakID: String?
+    /// The list with no meeting chosen. A route without a meeting otherwise leaves the open one alone; this one says "none".
+    public var clearsSelection: Bool
 
-    public init(section: MainSection = MainWindowSpec.firstRunSection, meetingID: String? = nil, speakID: String? = nil) {
+    public init(section: MainSection = MainWindowSpec.firstRunSection, meetingID: String? = nil, speakID: String? = nil,
+                clearsSelection: Bool = false) {
         self.section = section
         self.meetingID = meetingID
         self.speakID = speakID
+        self.clearsSelection = clearsSelection
+    }
+
+    /// The chosen meeting after this route: cleared, the route's own, or the one already open.
+    public func selection(current: String?) -> String? {
+        if clearsSelection { return nil }
+        return meetingID ?? current
     }
 
     /// The first-run section, nothing open: Voiceover once it is live, the Meetings list until then.
@@ -22,7 +32,7 @@ public struct MainRoute: Equatable {
     public func resolved(visible: [MainSection] = MainWindowSpec.sections(advanced: true)) -> MainRoute {
         guard visible.contains(section) else { return .default }
         return MainRoute(section: section, meetingID: meetingID.flatMap { $0.isEmpty ? nil : $0 },
-                         speakID: speakID.flatMap { $0.isEmpty ? nil : $0 })
+                         speakID: speakID.flatMap { $0.isEmpty ? nil : $0 }, clearsSelection: clearsSelection)
     }
 
     /// The route against the meetings that exist: an id that is not among them is dropped, so the list shows
@@ -30,14 +40,14 @@ public struct MainRoute: Equatable {
     /// up — so it is left for a list with rows to judge.
     public func pruned(knownMeetingIDs: [String]) -> MainRoute {
         guard let id = meetingID, !knownMeetingIDs.isEmpty, !knownMeetingIDs.contains(id) else { return self }
-        return MainRoute(section: section, meetingID: nil, speakID: speakID)
+        return MainRoute(section: section, meetingID: nil, speakID: speakID, clearsSelection: clearsSelection)
     }
 
     /// The same for the voiceover: a project the daemon no longer lists is dropped, so the page shows its list. An empty
     /// list says nothing yet and keeps the id.
     public func pruned(knownSpeakIDs: [String]) -> MainRoute {
         guard let id = speakID, !knownSpeakIDs.isEmpty, !knownSpeakIDs.contains(id) else { return self }
-        return MainRoute(section: section, meetingID: meetingID, speakID: nil)
+        return MainRoute(section: section, meetingID: meetingID, speakID: nil, clearsSelection: clearsSelection)
     }
 }
 

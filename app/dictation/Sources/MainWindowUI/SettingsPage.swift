@@ -47,6 +47,10 @@ struct SettingsPage: View {
                     }
                     .labelsHidden().fixedSize()
                 }
+                // A refused save is said here, on the page that made it (the notice bar of the other pages is not on Settings).
+                if let notice = model.data.notice { NoticeBar(text: notice) { model.actions.dismissNotice() } }
+                ToggleRow(title: L10nKey.settingsLiveCaptions.text, hint: liveCaptionsHint, isOn: s.liveCaptions)
+                    .disabled(!s.wrappedValue.liveCaptionsVerified)
                 HintedRow(title: L10nKey.settingsName.text) {
                     NameField(saved: s.wrappedValue.yourName, fallback: s.wrappedValue.yourNameFallback) { s.yourName.wrappedValue = $0 }
                 }
@@ -55,6 +59,15 @@ struct SettingsPage: View {
         } header: {
             Text(L10nKey.sectionMeetings.text)
         }
+    }
+
+    /// The footer, with what this Mac does by default when the daemon said; the unchecked sentence when it could not be asked.
+    private var liveCaptionsHint: String {
+        let v = s.wrappedValue
+        if !v.liveCaptionsVerified { return L10nKey.settingsKeepUnchecked.text }
+        guard let on = v.liveCaptionsDefault else { return L10nKey.settingsLiveCaptionsFooter.text }
+        let tail = on ? L10nKey.settingsLiveCaptionsDefaultOn : L10nKey.settingsLiveCaptionsDefaultOff
+        return L10nKey.settingsLiveCaptionsFooter.text + " " + tail.text
     }
 
     private var notesWriter: some View {
@@ -183,7 +196,7 @@ private struct ToggleRow: View {
                 Text(hint).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 12)
-            Toggle("", isOn: $isOn).labelsHidden()
+            Toggle("", isOn: $isOn).labelsHidden().accessibilityLabel(title).accessibilityHint(hint)
         }
     }
 }
