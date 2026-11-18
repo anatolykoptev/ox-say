@@ -41,6 +41,9 @@ final class Overlay {
     /// mid-dictation (a stray finish, a message timeout, a playback ending)
     /// does not take it down — the dictation look is put back instead.
     var dictationState: (() -> DictationState)?
+    /// «Показывать пилюлю при диктовке», read live at every show: off keeps the
+    /// dictation's own looks ordered out — messages and playback are not gated.
+    var showsDictationPill: (() -> Bool)?
     private let playPauseButton = NSButton()
     private let stopButton = NSButton()
     /// True while the pill shows playback controls — the only state where it
@@ -233,6 +236,16 @@ final class Overlay {
         if !showingMessage { hide() }
     }
 
+    /// «Показывать пилюлю при диктовке» moved in Settings: while a dictation
+    /// runs its look is put back — through the same gate as every show, so a
+    /// pill that is up comes down at once and an allowed one comes back. While
+    /// nothing dictates there is nothing of the dictation's up, and a message
+    /// keeps its few seconds.
+    func dictationPillSettingChanged() {
+        guard !showingMessage, let state = dictationState?(), let look = PillDictationLook(dictation: state) else { return }
+        restoreDictationLook(look)
+    }
+
     /// Speaking: the pill turns into playback controls — a pause/resume button,
     /// the position counter and a stop button. This is the only state that
     /// takes mouse events; dictation keeps passing clicks through.
@@ -398,10 +411,7 @@ final class Overlay {
             // back instead of fading out — before anything is wiped, so the
             // words decoded so far do not flicker away and back.
             overlayLog.error("overlay hide during dictation: re-showing kind=\(String(describing: look), privacy: .public) owner=\(self.owner, privacy: .public)")
-            switch look {
-            case .listening: showListening()
-            case .working: showWorking()
-            }
+            restoreDictationLook(look)
             return
         }
         leavePlaying()
@@ -424,6 +434,15 @@ final class Overlay {
         })
     }
 
+    /// The dictation's look put back — the way a refused hide and the
+    /// «Показывать пилюлю» flip restore it.
+    private func restoreDictationLook(_ look: PillDictationLook) {
+        switch look {
+        case .listening: showListening()
+        case .working: showWorking()
+        }
+    }
+
     /// From the microphone, any thread.
     nonisolated func setLevels(_ levels: [Float]) {
         DispatchQueue.main.async { [bars] in bars.target(levels) }
@@ -441,6 +460,20 @@ final class Overlay {
 
     private func show() {
         shown += 1
+        // «Показывать пилюлю при диктовке» gates only the dictation's own
+        // shows: the install, handshake, studio and "Speaking…" pills borrow
+        // the working look but come up only while no dictation runs, so the
+        // dictation state keeps them out of the gate — as it does messages and
+        // playback, which are never gated anyway.
+        let look: PillDictationLook? = kind == "listening" ? .listening : kind == "working" ? .working : nil
+        guard PillOwnership.mayOrderIn(look: look, pillShown: showsDictationPill?() ?? true,
+                                       dictation: dictationState?() ?? .idle) else {
+            wantsVisible = false
+            panel.orderOut(nil)
+            watch = PlateWatch()
+            overlayLog.notice("overlay show suppressed: pill hidden kind=\(self.kind, privacy: .public) owner=\(self.owner, privacy: .public)")
+            return
+        }
         wantsVisible = true
         recentre()
         // Deterministic: an alpha animation still in flight (a fade-out that a

@@ -263,4 +263,14 @@ public enum DictationSettings {
     public static func mode(_ d: UserDefaults) -> HotkeyMode { d.string(forKey: modeKey).flatMap(HotkeyMode.init(rawValue:)) ?? .hold }
 
     public static func setMode(_ mode: HotkeyMode, _ d: UserDefaults) { d.set(mode.rawValue, forKey: modeKey) }
+
+    /// «Показывать пилюлю при диктовке»: whether the pill's listening and
+    /// working looks appear while a dictation runs. Read live at every show,
+    /// so the switch needs no restart. Missing key (an install that never
+    /// opened Settings) reads as on.
+    public static let showPillKey = "showDictationPill"
+
+    public static func showPill(_ d: UserDefaults) -> Bool { (d.object(forKey: showPillKey) as? Bool) ?? true }
+
+    public static func setShowPill(_ on: Bool, _ d: UserDefaults) { d.set(on, forKey: showPillKey) }
 }

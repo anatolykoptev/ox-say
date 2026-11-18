@@ -6,13 +6,16 @@ public struct DictationValues: Equatable {
     public var keyTitle: String?
     public var mode: HotkeyMode
     public var sound: SoundWhileDictating
+    /// «Показывать пилюлю при диктовке»: whether the pill appears while a dictation runs.
+    public var pillShown: Bool
     /// The last dictations, newest first (memory only, as `DictationHistory` keeps them).
     public var recent: [String]
 
-    public init(keyTitle: String?, mode: HotkeyMode, sound: SoundWhileDictating, recent: [String]) {
+    public init(keyTitle: String?, mode: HotkeyMode, sound: SoundWhileDictating, pillShown: Bool, recent: [String]) {
         self.keyTitle = keyTitle
         self.mode = mode
         self.sound = sound
+        self.pillShown = pillShown
         self.recent = recent
     }
 }
@@ -212,6 +215,8 @@ public struct MainWindowActions {
     public var downloadNotesWriter: () -> Void = {}
     public var checkForUpdates: () -> Void = {}
     public var setSound: (SoundWhileDictating) -> Void = { _ in }
+    /// «Показывать пилюлю при диктовке» moved: the app stores it and tells the overlay.
+    public var setShowPill: (Bool) -> Void = { _ in }
     public var setHotkeyMode: (HotkeyMode) -> Void = { _ in }
     public var pickVoice: (VoiceSlot, String?) -> Void = { _, _ in }
     /// The Voices page: read the library again, play a voice's sample (one at a time), stop it, rename (id, new label),

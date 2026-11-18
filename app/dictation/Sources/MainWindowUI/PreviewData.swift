@@ -50,7 +50,7 @@ public enum PreviewData {
                 yourName: "", yourNameFallback: ru ? "Алексей Морозов" : "Alex Morgan", notesWriter: .ready),
             permissions: PermissionModel.items(microphone: .authorized, accessibility: true, notifications: .denied),
             dictation: DictationValues(
-                keyTitle: "⌃Space", mode: .hold, sound: .lowerAllSound,
+                keyTitle: "⌃Space", mode: .hold, sound: .lowerAllSound, pillShown: true,
                 recent: ru
                     ? ["Напомни, пожалуйста, что созвон с Анной перенесли на четверг, на три часа дня.",
                        "Добавь в список покупок: молоко, хлеб и батарейки для пульта.",

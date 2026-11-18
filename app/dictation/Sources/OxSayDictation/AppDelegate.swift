@@ -280,6 +280,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // While a dictation runs the pill belongs to it: the overlay asks the
         // controller's state before letting any hide take it down.
         overlay.dictationState = { [weak self] in self?.controller?.state ?? .idle }
+        // «Показывать пилюлю при диктовке», read at every show so the Settings
+        // switch needs no restart; off gates the listening/working looks only.
+        overlay.showsDictationPill = { DictationSettings.showPill(.standard) }
         streamer.onText = { [weak self] text in
             guard let self, PillOwnership.acceptsLiveText(dictation: self.controller.state) else { return }
             self.overlay.setLiveText(text)
@@ -882,6 +885,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             knownVoices: { [unowned self] in self.knownVoices ?? [] },
             setHotkeyMode: { [unowned self] mode in self.applyHotkeyMode(mode) },
             soundChanged: { [unowned self] in self.syncSoundModeItems() },
+            pillShownChanged: { [unowned self] in self.overlay.dictationPillSettingChanged() },
             pickVoice: { [unowned self] slot, voice in
                 self.applyVoicePick(key: slot == .russian ? self.speakVoiceRUKey : self.speakVoiceENKey, voice: voice)
             },

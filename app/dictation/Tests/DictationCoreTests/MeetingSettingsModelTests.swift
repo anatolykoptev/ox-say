@@ -166,6 +166,20 @@ final class DictationSettingsTests: XCTestCase {
         XCTAssertEqual(DictationSettings.mode(d), .toggle)
         XCTAssertEqual(d.string(forKey: DictationSettings.modeKey), "toggle")
     }
+
+    /// «Показывать пилюлю при диктовке» defaults to on — a missing key (an
+    /// install that never opened Settings) still shows the pill — and the
+    /// switch round-trips through the ordinary Bool store.
+    /// Mutation: MeetingSettingsModel.showPill, `?? true` -> `?? false` -> RED.
+    func testThePillSwitchRoundTripsAndDefaultsToOn() {
+        let d = suite()
+        XCTAssertTrue(DictationSettings.showPill(d), "missing key must read as on")
+        DictationSettings.setShowPill(false, d)
+        XCTAssertFalse(DictationSettings.showPill(d))
+        XCTAssertEqual(d.object(forKey: DictationSettings.showPillKey) as? Bool, false)
+        DictationSettings.setShowPill(true, d)
+        XCTAssertTrue(DictationSettings.showPill(d))
+    }
 }
 
 /// The permission rows.

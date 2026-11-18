@@ -20,6 +20,17 @@ public enum PillOwnership {
         dictation == .idle
     }
 
+    /// Whether the show that just ran may put the panel on screen. `look` is
+    /// the dictation look the show put up — `.listening` or `.working`; nil for
+    /// a message or playback, which are never gated. While «Показывать пилюлю
+    /// при диктовке» is off (`pillShown`), the dictation's own looks stay
+    /// ordered out — and only while a dictation runs: the install, handshake,
+    /// studio and "Speaking…" pills borrow the working look but come up only
+    /// while it is idle, so the dictation state keeps them out of the gate.
+    public static func mayOrderIn(look: PillDictationLook?, pillShown: Bool, dictation: DictationState) -> Bool {
+        pillShown || look == nil || PillDictationLook(dictation: dictation) == nil
+    }
+
     /// `owner` is the overlay's owner count captured right after the task's
     /// show (nil when the task never showed one); `current` is that count now;
     /// `dictation` is the controller's state.

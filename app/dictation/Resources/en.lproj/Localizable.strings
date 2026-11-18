@@ -312,6 +312,8 @@
 "dictation.mode.toggle" = "Press once to start, again to stop";
 "dictation.recent.empty" = "Nothing yet. Your latest dictations will appear here.";
 "dictation.recent.footer" = "Kept in memory only. They disappear when you quit OxSay.";
+"dictation.pill" = "Show the dictation pill";
+"dictation.pill.footer" = "When off, nothing appears on screen while you dictate; errors are still shown.";
 "voices.read_aloud" = "Read aloud";
 "voices.read_aloud.footer" = "Select text in any app, press the key, and OxSay reads it aloud.";
 "voices.russian" = "Voice for Russian text";

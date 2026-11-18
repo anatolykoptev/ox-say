@@ -154,6 +154,10 @@ public final class MainWindowModel: ObservableObject {
         Binding(get: { self.data.dictation.sound }, set: { self.data.dictation.sound = $0; self.actions.setSound($0) })
     }
 
+    var showPill: Binding<Bool> {
+        Binding(get: { self.data.dictation.pillShown }, set: { self.data.dictation.pillShown = $0; self.actions.setShowPill($0) })
+    }
+
     var hotkeyMode: Binding<HotkeyMode> {
         Binding(get: { self.data.dictation.mode }, set: { self.data.dictation.mode = $0; self.actions.setHotkeyMode($0) })
     }

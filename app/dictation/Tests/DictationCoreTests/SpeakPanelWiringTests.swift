@@ -243,6 +243,7 @@ final class SpeakPanelWiringTests: XCTestCase {
             ("var speakLoudness: Binding<LoudnessTarget?> {", "self.actions.speakLoudness($0)"),
             ("var speakVoice: Binding<String?> {", "self.actions.speakVoiceChanged($0)"),
             ("var sound: Binding<SoundWhileDictating> {", "self.actions.setSound($0)"),
+            ("var showPill: Binding<Bool> {", "self.actions.setShowPill($0)"),
             ("var hotkeyMode: Binding<HotkeyMode> {", "self.actions.setHotkeyMode($0)"),
             ("func voice(_ slot: VoiceSlot) -> Binding<String?> {", "self.actions.pickVoice(slot, $0)"),
             ("var startAtLogin: Binding<Bool> {", "self.actions.setStartAtLogin($0)"),
