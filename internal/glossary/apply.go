@@ -121,33 +121,54 @@ func compile(pairs []Pair) []compiled {
 			continue
 		}
 		if h := words(p.Heard); len(h) > 0 {
-			c := compiled{heard: h, stems: make([]string, len(h)), meant: p.Meant, homoglyph: p.Pack}
-			// A Cyrillic meant is a Russian word in a case of its own («Кролик», «Москва»): replacing «в маскве» by
-			// stem would write «в Москва». Only a meant in Latin letters stands for every case of the heard word.
-			if !hasCyrillic(p.Meant) {
-				for k, w := range h {
-					c.stems[k] = nominalStem(w)
-				}
-			}
-			mt := tokenize(p.Meant)
-			if len(mt) > 0 && !mt[0].word {
-				c.lead = fold(mt[0].s)
-				mt = mt[1:]
-			}
-			if len(mt) > 0 && !mt[len(mt)-1].word {
-				c.trail = fold(mt[len(mt)-1].s)
-				mt = mt[:len(mt)-1]
-			}
-			var mid strings.Builder
-			for _, t := range mt {
-				mid.WriteString(t.s)
-			}
-			c.mkey = fold(mid.String())
-			cs = append(cs, c)
+			cs = append(cs, compilePair(p, h))
 		}
 	}
 	sort.SliceStable(cs, func(i, j int) bool { return len(cs[i].heard) > len(cs[j].heard) })
 	return cs
+}
+
+// compilePair builds one pair's matcher: the folded heard words, the stems they
+// may match by, and the meant's folded middle and edges.
+func compilePair(p Pair, h []string) compiled {
+	c := compiled{heard: h, stems: stemsFor(p, h), meant: p.Meant, homoglyph: p.Pack}
+	c.mkey, c.lead, c.trail = meantEdges(p.Meant)
+	return c
+}
+
+// stemsFor is the stem each heard word may match by — "" when it matches only
+// itself. A Cyrillic meant is a Russian word in a case of its own («Кролик»,
+// «Москва»): replacing «в маскве» by stem would write «в Москва», so only a
+// meant in Latin letters stands for every case of the heard word.
+func stemsFor(p Pair, h []string) []string {
+	stems := make([]string, len(h))
+	if hasCyrillic(p.Meant) {
+		return stems
+	}
+	for k, w := range h {
+		stems[k] = nominalStem(w)
+	}
+	return stems
+}
+
+// meantEdges splits a meant form into its folded word part and the folded
+// non-word edges it may carry: the "[" and "]" of "[foo]", the "++" of "C++".
+// A meant of plain words and whitespace has neither edge.
+func meantEdges(meant string) (mkey, lead, trail string) {
+	mt := tokenize(meant)
+	if len(mt) > 0 && !mt[0].word {
+		lead = fold(mt[0].s)
+		mt = mt[1:]
+	}
+	if len(mt) > 0 && !mt[len(mt)-1].word {
+		trail = fold(mt[len(mt)-1].s)
+		mt = mt[:len(mt)-1]
+	}
+	var mid strings.Builder
+	for _, t := range mt {
+		mid.WriteString(t.s)
+	}
+	return fold(mid.String()), lead, trail
 }
 
 // Apply replaces every whole-word match of an active pair in text. It returns
