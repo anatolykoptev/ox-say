@@ -337,17 +337,7 @@ final class MainWindowSource {
         }
         a.downloadNotesWriter = { [weak self] in self?.downloadNotesWriter() }
         a.checkForUpdates = { [weak self] in self?.host.checkForUpdates() }
-        a.setSound = { [weak self] mode in
-            guard let self else { return }
-            DictationSettings.setSound(mode, self.host.defaults)
-            self.host.soundChanged()
-        }
-        a.setShowPill = { [weak self] on in
-            guard let self else { return }
-            DictationSettings.setShowPill(on, self.host.defaults)
-            self.host.pillShownChanged()
-        }
-        a.setHotkeyMode = { [weak self] mode in self?.host.setHotkeyMode(mode) }
+        dictationActions(&a)
         a.pickVoice = { [weak self] slot, voice in self?.host.pickVoice(slot, voice) }
         a.reloadVoices = { [weak self] in self?.voiceSource.reload() }
         a.previewVoice = { [weak self] id in self?.speakSource.stopClip(); self?.cleanSource.stopPlayback(); self?.voiceSource.preview(id) }
@@ -414,6 +404,23 @@ final class MainWindowSource {
         a.cleanSide = { [weak self] side in self?.cleanSource.choose(side) }
         a.cleanSeek = { [weak self] seconds in self?.cleanSource.seek(seconds) }
         return a
+    }
+
+    /// The dictation section's settings writes: each stores the pick through
+    /// DictationSettings and tells the app — the menu's check marks for the
+    /// sound, the overlay's gate for the pill.
+    private func dictationActions(_ a: inout MainWindowActions) {
+        a.setSound = { [weak self] mode in
+            guard let self else { return }
+            DictationSettings.setSound(mode, self.host.defaults)
+            self.host.soundChanged()
+        }
+        a.setShowPill = { [weak self] on in
+            guard let self else { return }
+            DictationSettings.setShowPill(on, self.host.defaults)
+            self.host.pillShownChanged()
+        }
+        a.setHotkeyMode = { [weak self] mode in self?.host.setHotkeyMode(mode) }
     }
 
     /// Reads everything the window shows. The list and the settings come from the daemon, so they are awaited; a failed
