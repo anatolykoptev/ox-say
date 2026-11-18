@@ -302,6 +302,8 @@ public enum L10nKey: String, CaseIterable {
     case dictationModeToggle = "dictation.mode.toggle"
     case dictationRecentEmpty = "dictation.recent.empty"
     case dictationRecentFooter = "dictation.recent.footer"
+    case dictationPill = "dictation.pill"
+    case dictationPillFooter = "dictation.pill.footer"
     case voicesReadAloud = "voices.read_aloud"
     case voicesReadAloudFooter = "voices.read_aloud.footer"
     case voicesRussian = "voices.russian"

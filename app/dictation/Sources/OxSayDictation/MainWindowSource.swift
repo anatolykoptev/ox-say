@@ -23,6 +23,8 @@ struct MainWindowHost {
     var setHotkeyMode: (HotkeyMode) -> Void
     /// The sound pick was saved: the menu's check marks follow it.
     var soundChanged: () -> Void
+    /// «Показывать пилюлю при диктовке» was saved: the overlay takes a dictation pill that is up down or puts it back.
+    var pillShownChanged: () -> Void
     var pickVoice: (VoiceSlot, String?) -> Void
     /// The voice library changed (a voice was deleted or renamed, or the list was read): the menu's voice list and
     /// its read-aloud checkmarks follow.
@@ -335,12 +337,7 @@ final class MainWindowSource {
         }
         a.downloadNotesWriter = { [weak self] in self?.downloadNotesWriter() }
         a.checkForUpdates = { [weak self] in self?.host.checkForUpdates() }
-        a.setSound = { [weak self] mode in
-            guard let self else { return }
-            DictationSettings.setSound(mode, self.host.defaults)
-            self.host.soundChanged()
-        }
-        a.setHotkeyMode = { [weak self] mode in self?.host.setHotkeyMode(mode) }
+        dictationActions(&a)
         a.pickVoice = { [weak self] slot, voice in self?.host.pickVoice(slot, voice) }
         a.reloadVoices = { [weak self] in self?.voiceSource.reload() }
         a.previewVoice = { [weak self] id in self?.speakSource.stopClip(); self?.cleanSource.stopPlayback(); self?.voiceSource.preview(id) }
@@ -407,6 +404,23 @@ final class MainWindowSource {
         a.cleanSide = { [weak self] side in self?.cleanSource.choose(side) }
         a.cleanSeek = { [weak self] seconds in self?.cleanSource.seek(seconds) }
         return a
+    }
+
+    /// The dictation section's settings writes: each stores the pick through
+    /// DictationSettings and tells the app — the menu's check marks for the
+    /// sound, the overlay's gate for the pill.
+    private func dictationActions(_ a: inout MainWindowActions) {
+        a.setSound = { [weak self] mode in
+            guard let self else { return }
+            DictationSettings.setSound(mode, self.host.defaults)
+            self.host.soundChanged()
+        }
+        a.setShowPill = { [weak self] on in
+            guard let self else { return }
+            DictationSettings.setShowPill(on, self.host.defaults)
+            self.host.pillShownChanged()
+        }
+        a.setHotkeyMode = { [weak self] mode in self?.host.setHotkeyMode(mode) }
     }
 
     /// Reads everything the window shows. The list and the settings come from the daemon, so they are awaited; a failed
@@ -548,7 +562,8 @@ final class MainWindowSource {
     private func loadSimpleSections() {
         let d = host.defaults
         model.data.dictation = DictationValues(keyTitle: host.dictationKeyTitle(), mode: DictationSettings.mode(d),
-                                               sound: DictationSettings.sound(d), recent: host.recentDictations())
+                                               sound: DictationSettings.sound(d), pillShown: DictationSettings.showPill(d),
+                                               recent: host.recentDictations())
         // The library itself (entries, playing) belongs to VoiceSource; only the ids are borrowed from the menu's list
         // until its first read lands.
         model.data.voices.russianVoice = d.string(forKey: DictationSettings.speakVoiceRUKey)
@@ -897,7 +912,8 @@ final class MainWindowSource {
             meetingSettings: MeetingSettingsModel.load(defaults: host.defaults, daemonRetention: nil, notesWriter: .unavailable(.meetingErrDaemonDown),
                                                        fullName: NSFullUserName()),
             permissions: [],
-            dictation: DictationValues(keyTitle: nil, mode: DictationSettings.mode(host.defaults), sound: DictationSettings.sound(host.defaults), recent: []),
+            dictation: DictationValues(keyTitle: nil, mode: DictationSettings.mode(host.defaults),
+                                       sound: DictationSettings.sound(host.defaults), pillShown: DictationSettings.showPill(host.defaults), recent: []),
             voices: VoicesValues(voices: [], russianVoice: nil, englishVoice: nil),
             about: AboutValues(version: AboutPanel.appVersion, engineRunning: false, startAtLogin: false))
     }
