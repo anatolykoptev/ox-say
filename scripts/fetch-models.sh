@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Download the pinned model weights into the models dir, SHA-256 verified:
 #   Qwen3-TTS talker + tokenizer (Apache-2.0)     text-to-speech
-#   Parakeet TDT 0.6B v3 q8_0 (CC-BY-4.0)        speech-to-text, 25 European languages
+#   parakeet-ultra q8_0 (CC-BY-4.0)              speech-to-text, 25 European languages
+#   parakeet-ultra f16 (CC-BY-4.0), --with-parakeet-f16
+#                                                 the same model unquantised (1.26 GB): slightly lower WER on accented
+#                                                 English, about twice as slow. Also fetched, with no flag, when
+#                                                 OX_SAY_STT_MODEL names a file called ggml-parakeet-ultra-f16.bin, so an
+#                                                 update keeps it. The q8_0 file above is always fetched too (default, fallback).
 #   Silero VAD v5.1.2 (MIT)                      ox-stt --serve --vad streaming sessions
 #   Whisper large-v3-turbo (MIT), --with-whisper  speech-to-text, 99 languages (1.6 GB)
 #   VoxCPM2 Q8_0 (Apache-2.0), --with-voxcpm2    quality text-to-speech, Apple Silicon only (3.0 GB)
@@ -18,7 +23,7 @@
 #                                                 the daemon runs --clean-only on the user's first use of cleanup. Apple Silicon
 #                                                 and Intel alike (no hardware test here; the daemon decides what runs).
 #
-# Usage: scripts/fetch-models.sh [--with-whisper] [--with-voxcpm2] [--notes <file> <sha256> <url>] [--diar-only] [--nemotron-only] [--clean-only] [dest]   (any order)
+# Usage: scripts/fetch-models.sh [--with-whisper] [--with-voxcpm2] [--with-parakeet-f16] [--notes <file> <sha256> <url>] [--diar-only] [--nemotron-only] [--clean-only] [dest]   (any order)
 #   dest defaults to "$OX_SAY_HOME/models" (OX_SAY_HOME defaults to
 #   ~/Library/Application Support/ox-say).
 #   OX_SAY_MODELS_FROM=<dir> copies matching files from a local dir instead of
@@ -27,6 +32,7 @@ set -euo pipefail
 
 with_whisper=0
 with_voxcpm2=0
+with_parakeet_f16=0
 notes_only=0
 notes_file=
 notes_sha=
@@ -39,6 +45,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --with-whisper) with_whisper=1 ;;
         --with-voxcpm2) with_voxcpm2=1 ;;
+        --with-parakeet-f16) with_parakeet_f16=1 ;;
         --notes)
             if [ "$notes_only" = 1 ]; then
                 echo "--notes may be given once" >&2
@@ -74,8 +81,8 @@ if [ $((notes_only + diar_only + nemotron_only + clean_only)) -gt 1 ]; then
     exit 2
 fi
 if [ "$notes_only" = 1 ] || [ "$diar_only" = 1 ] || [ "$nemotron_only" = 1 ] || [ "$clean_only" = 1 ]; then
-    if [ "$with_whisper" = 1 ] || [ "$with_voxcpm2" = 1 ]; then
-        echo "--with-whisper and --with-voxcpm2 do not combine with --notes, --diar-only, --nemotron-only or --clean-only: those fetch one set and nothing else" >&2
+    if [ "$with_whisper" = 1 ] || [ "$with_voxcpm2" = 1 ] || [ "$with_parakeet_f16" = 1 ]; then
+        echo "--with-whisper, --with-voxcpm2 and --with-parakeet-f16 do not combine with --notes, --diar-only, --nemotron-only or --clean-only: those fetch one set and nothing else" >&2
         exit 2
     fi
 fi
@@ -118,9 +125,13 @@ dest=${dest:-"$home/models"}
 # Pinned to the commit each repo's main resolved to on 2026-11-05 (x-repo-commit of a HEAD on the file URL), so a user
 # installs the bytes we tested even when upstream moves main. At each commit the LFS SHA-256 (x-linked-etag) of every file
 # below equals the hash in the list, and so does x-linked-size at main. A bump means new hashes. A test fails if a
-# floating-branch URL comes back.
+# floating-branch URL comes back. The parakeet-ultra pin (2026-11-18) is the revision the file was published at:
+# x-repo-commit matched, x-linked-etag is the SHA-256 below and x-linked-size is 668757119.
 qwen=https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/b7ee2e8c7459c3bea99da23e3d178125a7d1713c
-parakeet=https://huggingface.co/ggml-org/parakeet-GGUF/resolve/35156454d1a39de06863303dd209fd2bed6ee079
+parakeet=https://huggingface.co/Koptev/parakeet-ultra-ggml/resolve/376105ac643ed20ac1e6cb54c2c04c454294c5a9
+# The f16 file was published later, at its own revision (x-repo-commit, x-linked-etag = the SHA-256 below and
+# x-linked-size = 1255897319, checked 2026-11-18). The q8_0 bytes are unchanged at the revision above, so that pin stays.
+parakeet_f16=https://huggingface.co/Koptev/parakeet-ultra-ggml/resolve/2d1259722b0a0ee0d525aaaadcd648de58641dc0
 whisper=https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1
 whisper_vad=https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b
 
@@ -128,9 +139,18 @@ whisper_vad=https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413d
 models=(
     "qwen-talker-0.6b-base-Q8_0.gguf d54dbaf10591421fa764ed630d764efa717ae40cd959bd48c66d4eb1af226426 $qwen"
     "qwen-tokenizer-12hz-F32.gguf b16b95557c7c7340a121757bd6855b9609e1cf4ad3fad0778b89393293ae5f3d $qwen"
-    "ggml-parakeet-tdt-0.6b-v3-q8_0.bin 4d64e9e96c2792186d072fde0034df0ad670cf680a2f53069052ead827fd600e $parakeet"
+    "ggml-parakeet-ultra-q8_0.bin fa28ec8c6afd9893da9829ec9f2fa908a60bc0fbebd37fd60bbd2f0953076fb2 $parakeet"
     "ggml-silero-v5.1.2.bin 29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf $whisper_vad"
 )
+# parakeet-ultra f16, 1.26 GB: --with-parakeet-f16, or OX_SAY_STT_MODEL naming it. The installer exports the agent's
+# OX_SAY_STT_MODEL (oxs_settings) before it runs this script, so an update by get.sh keeps a verified f16 file in place
+# for the agent that points at it, with no flag. The match is the file name, not the directory.
+case ${OX_SAY_STT_MODEL:-} in
+    ggml-parakeet-ultra-f16.bin | */ggml-parakeet-ultra-f16.bin) with_parakeet_f16=1 ;;
+esac
+if [ "$with_parakeet_f16" = 1 ]; then
+    models+=("ggml-parakeet-ultra-f16.bin ee42f83ae751d7b3f9c435543df92ea6926f2d73df3129186a1ab58a8c7b6150 $parakeet_f16")
+fi
 if [ "$with_whisper" = 1 ]; then
     models+=("ggml-large-v3-turbo.bin 1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69 $whisper")
 fi
@@ -425,6 +445,13 @@ if [ "$notes_only" = 1 ] || [ "$diar_only" = 1 ] || [ "$nemotron_only" = 1 ]; th
 old="$dest/ggml-parakeet-tdt-0.6b-v3-f16.bin"
 if [ -f "$old" ] && ! [ "${OX_SAY_STT_MODEL:-}" -ef "$old" ]; then
     echo "note    $old (1.3 GB) is no longer the default; unless OX_SAY_STT_MODEL in your LaunchAgent names it, delete it to free the space"
+fi
+# The v3 q8_0 weights were the default until parakeet-ultra replaced them (lower
+# WER on the same architecture and tokenizer). Same leftover rules as the f16
+# note above: name it, never delete it, -ef stays silent while OX_SAY_STT_MODEL names it.
+old="$dest/ggml-parakeet-tdt-0.6b-v3-q8_0.bin"
+if [ -f "$old" ] && ! [ "${OX_SAY_STT_MODEL:-}" -ef "$old" ]; then
+    echo "note    $old (669 MB) is no longer the default; unless OX_SAY_STT_MODEL in your LaunchAgent names it, delete it to free the space"
 fi
 # The community-1 speaker models (pyannote, 22 MB) belonged to the speaker engine that Nemotron replaced and nothing reads
 # them now. Name a leftover folder, never delete it here: it is the user's disk, and the marker inside is not ours to judge.

@@ -32,7 +32,7 @@ func modelsServer(t *testing.T) (d *Daemon, base, models string) {
 	d.Cfg.NotesModel = filepath.Join(models, config.NotesModelFile)
 	d.Cfg.STTWhisperModel = filepath.Join(models, "ggml-large-v3-turbo.bin")
 	d.Cfg.VoxCPM2Model = filepath.Join(models, config.VoxCPM2ModelFile)
-	d.Cfg.STTModel = filepath.Join(models, "ggml-parakeet-tdt-0.6b-v3-q8_0.bin")
+	d.Cfg.STTModel = filepath.Join(models, config.STTModelFile)
 	return d, base, models
 }
 
@@ -111,7 +111,7 @@ func TestModelsListReportsInstalledAndSizes(t *testing.T) {
 	if w := find(list, "whisper"); w == nil || w.Installed || w.Bytes <= 0 || !w.Optional || w.Default {
 		t.Fatalf("whisper row: %+v", w)
 	}
-	if p := find(list, "parakeet"); p == nil || p.Optional || p.Kind != "transcribe" || !p.Default {
+	if p := find(list, "parakeet"); p == nil || p.Optional || p.Kind != "transcribe" || !p.Default || p.Name != "Parakeet Ultra TDT 0.6B" {
 		t.Fatalf("parakeet row: %+v", p)
 	}
 	if c := find(list, "voice_cleanup"); c == nil || c.Optional || c.Kind != "cleanup" {

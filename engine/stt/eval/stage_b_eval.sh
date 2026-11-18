@@ -13,7 +13,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../../.." && pwd)
 WORK=${WORK:-$HOME/tmp/ox-say-boost-spike}
 OXSTT=${OXSTT:?set OXSTT to the ox-stt built from this tree}
-MODEL=${MODEL:-$WORK/models/ggml-parakeet-tdt-0.6b-v3-q8_0.bin}
+MODEL=${MODEL:-$WORK/models/ggml-parakeet-ultra-q8_0.bin}
 OUT=${OUT:-$WORK/stage-b-results.jsonl}
 ALPHA=${ALPHA:-2}
 

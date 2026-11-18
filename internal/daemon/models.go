@@ -238,7 +238,7 @@ func (d *Daemon) cleanModelEntry() modelEntry {
 func (d *Daemon) parakeetModelEntry() modelEntry {
 	size, ok := fileSize(d.Cfg.STTModel)
 	return modelEntry{
-		ID: "parakeet", Kind: "transcribe", Name: "Parakeet TDT 0.6B v3",
+		ID: "parakeet", Kind: "transcribe", Name: "Parakeet Ultra TDT 0.6B",
 		Bytes: size, Installed: ok, Default: true, Supported: true,
 	}
 }

@@ -15,7 +15,7 @@
 #           acoustic-veto arms and the self-checks
 #
 # Env: WORK (default ~/tmp/ox-say-boost-spike; all audio and outputs live there, never in the repo),
-#      OXSTT (ox-stt binary built with engine/patches/whisper), MODEL (ggml-parakeet-tdt-0.6b-v3-q8_0.bin),
+#      OXSTT (ox-stt binary built with engine/patches/whisper), MODEL (ggml-parakeet-ultra-q8_0.bin),
 #      STOP_AT (epoch seconds; synth/decode stop cleanly after it).
 # Mac safety: one heavy job at a time. Before every 25th file the script checks `pmset -g therm` and waits
 # while another Swift build/test runs; a thermal or performance warning stops it.
@@ -25,7 +25,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../../.." && pwd)
 WORK=${WORK:-$HOME/tmp/ox-say-boost-spike}
 OXSTT=${OXSTT:-$WORK/build/out/ox-stt}
-MODEL=${MODEL:-$WORK/models/ggml-parakeet-tdt-0.6b-v3-q8_0.bin}
+MODEL=${MODEL:-$WORK/models/ggml-parakeet-ultra-q8_0.bin}
 STOP_AT=${STOP_AT:-0}
 SEED=20261114
 TERMS="OxSay Hormozi Devin GitHub vaelor Dropbox Sonnet Haiku Fable Codex krolik pillow kisol dozor Glossa Claude Parakeet Brave Opus Hugging_Face"

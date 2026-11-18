@@ -36,7 +36,7 @@ root=$(cd "$(dirname "$0")/.." && pwd -P)
 data="$root/engine/stt/testdata/edges"
 models="$HOME/Library/Application Support/ox-say/models"
 bin=${OX_STT_BIN:-"$root/build/engine/out/ox-stt"}
-model=${OX_STT_MODEL:-"$models/ggml-parakeet-tdt-0.6b-v3-q8_0.bin"}
+model=${OX_STT_MODEL:-"$models/ggml-parakeet-ultra-q8_0.bin"}
 vad=${OX_STT_VAD:-"$models/ggml-silero-v5.1.2.bin"}
 
 # Drift guard: runs everywhere, model or not.
