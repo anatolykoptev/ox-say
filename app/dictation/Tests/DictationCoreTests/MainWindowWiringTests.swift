@@ -158,11 +158,12 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertTrue(refresh.contains("export(info)"), "the copy in the notes folder follows the new title through the ledger")
     }
 
-    /// The only clipboard write of the window is Copy as Markdown, from the user's click.
+    /// The window's clipboard writes are Copy as Markdown and the endpoint's copyText, each only from
+    /// the user's click. The page views still hold no pasteboard code — they call model.actions.
     /// Mutation: add any other `NSPasteboard` use to MainWindowSource -> RED.
     func testCopyAsMarkdownIsTheOnlyClipboardWrite() throws {
         let text = try window()
-        XCTAssertEqual(text.components(separatedBy: "NSPasteboard").count - 1, 2, "clearContents and setString of the one copy")
+        XCTAssertEqual(text.components(separatedBy: "NSPasteboard").count - 1, 4, "clearContents and setString of the two copies")
         let copy = try body(text, of: "private func copyNotes(_ id: String) {")
         XCTAssertTrue(copy.contains("NSPasteboard.general.setString(markdown, forType: .string)"))
         XCTAssertTrue(copy.contains("model.data.details[id]?.info.notesMD"))

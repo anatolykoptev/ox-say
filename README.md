@@ -150,6 +150,30 @@ rejected tombstone) are owner-only, and the app's Glossary page does the same fo
 (mode 0600), and `ox-say vocab ok|rm|edit|purge` asks a person at a terminal — it refuses to run piped, shows the
 pair, and only a bare `y` proceeds. This keeps an agent from settling a pair by mistake; it is not a
 defense against a hostile local process, which could read the token file anyway.
+The daemon can also serve the meeting-notes model itself to other local apps, so a coding agent
+or a chat UI reuses the one loaded copy instead of starting its own llama-server on a second ~21 GB
+file. It is off by default; Settings → "Model access for other apps" turns it on and shows the URL,
+the key and copy buttons. The surface is OpenAI-compatible on the same loopback listener —
+`GET /v1/models`, `POST /v1/chat/completions` (streaming and tools included) — gated by a per-install
+bearer the daemon writes at `$OX_SAY_HOME/run/llm-endpoint.key`. Only the model is served: tools,
+meetings, glossary and MCP are not reachable through it. Dictation and a meeting recording keep
+priority — a request that would wait for them, or that arrives while a meeting's notes are being
+written, gets a bounded 503; at most two requests queue behind the one running. The key and turning
+the endpoint on are the owner's: they need the same `owner.token` bearer as the glossary routes. OpenCode, for
+example, points its OpenAI-compatible provider at it:
+
+```json
+{
+  "provider": {
+    "oxsay": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:8094/v1", "apiKey": "<key from Settings>" },
+      "models": { "qwen3.8-27b-uncensored": { "name": "OxSay notes model" } }
+    }
+  }
+}
+```
+
 Reference: [docs/mcp.md](docs/mcp.md), [docs/http-api.md](docs/http-api.md),
 [docs/usage.md](docs/usage.md) for the `ox-say` command line.
 

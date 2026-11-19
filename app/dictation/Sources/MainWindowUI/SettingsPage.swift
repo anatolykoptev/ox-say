@@ -12,6 +12,7 @@ struct SettingsPage: View {
         Form {
             meetings
             if model.data.meetingSettings.enabled { callApps }
+            llmEndpoint
             permissions
             codeVocabulary
             general
@@ -128,6 +129,33 @@ struct SettingsPage: View {
             }
         }
         .disabled(model.data.meetingSettings.callMode == .off)
+    }
+
+    // MARK: Model for other apps
+
+    /// The OpenAI-compatible endpoint (#537): other local apps reach the notes model the daemon already runs.
+    /// The toggle and the values are the daemon's answer — while it could not be asked the section says nothing
+    /// it cannot back.
+    private var llmEndpoint: some View {
+        let ep = s.wrappedValue.llmEndpoint
+        return Section {
+            ToggleRow(title: L10nKey.settingsLLMEndpoint.text, hint: L10nKey.settingsLLMEndpointFooter.text,
+                      isOn: s.llmEndpoint.on)
+            .disabled(!ep.verified)
+            if ep.on && ep.verified {
+                HintedRow(title: L10nKey.settingsLLMEndpointURL.text, hint: ep.url) {
+                    Button(L10nKey.settingsLLMEndpointCopyEndpoint.text) { model.actions.copyText(ep.url) }
+                }
+                HintedRow(title: L10nKey.settingsLLMEndpointKey.text,
+                          hint: ep.keyUnavailable ? L10nKey.settingsLLMEndpointKeyUnavailable.text : ep.key) {
+                    Button(L10nKey.settingsLLMEndpointCopyKey.text) { model.actions.copyText(ep.key) }
+                        .disabled(ep.key.isEmpty)
+                    Button(L10nKey.settingsLLMEndpointRegen.text) { model.actions.regenerateLLMKey() }
+                }
+                Text(ep.contextLine())
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        }
     }
 
     // MARK: Permissions

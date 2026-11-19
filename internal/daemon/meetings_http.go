@@ -396,57 +396,152 @@ type meetingSettingsAnswer struct {
 	LiveCaptionsDefault bool     `json:"live_captions_default"`
 	AEC                 string   `json:"meeting_aec"`
 	CodeVocabulary      []string `json:"code_vocabulary"`
+	// LLMEndpoint is the effective llm_endpoint choice, "on" or "off" (a setting never made reads as off).
+	// LLMEndpointCtx is the context the settings ASK for (stored, or the default); LLMEndpointCtxEffective is
+	// what the notes child runs with — or would on its next start — after the fit and the model's own limit,
+	// read-only. LLMEndpointURL is the loopback base. The per-install key is NOT here: it is served only to the
+	// owner, at GET /v1/meetings/llm-endpoint/key.
+	LLMEndpoint             string `json:"llm_endpoint"`
+	LLMEndpointCtx          int    `json:"llm_endpoint_ctx"`
+	LLMEndpointCtxEffective int    `json:"llm_endpoint_ctx_effective"`
+	LLMEndpointMaxS         int    `json:"llm_endpoint_max_s"`
+	LLMEndpointURL          string `json:"llm_endpoint_url"`
 }
 
 func (d *Daemon) settingsAnswer() meetingSettingsAnswer {
-	aec := meeting.AECOff
-	if d.Meet.Store.Settings().AECEnabled() {
+	st := d.Meet.Store.Settings()
+	aec, ep := meeting.AECOff, meeting.LLMEndpointOff
+	if st.AECEnabled() {
 		aec = meeting.AECOn
 	}
+	if st.LLMEndpointEnabled() {
+		ep = meeting.LLMEndpointOn
+	}
 	return meetingSettingsAnswer{
-		RetentionDays:       d.Meet.Store.Settings().RetentionDays,
-		LiveCaptions:        d.liveEnabled(),
-		LiveCaptionsDefault: d.liveDefault(),
-		AEC:                 aec,
-		CodeVocabulary:      d.codePacks(),
+		RetentionDays:           st.RetentionDays,
+		LiveCaptions:            d.liveEnabled(),
+		LiveCaptionsDefault:     d.liveDefault(),
+		AEC:                     aec,
+		CodeVocabulary:          d.codePacks(),
+		LLMEndpoint:             ep,
+		LLMEndpointCtx:          st.LLMEndpointCtxTokens(),
+		LLMEndpointCtxEffective: d.notesCtxEffective(),
+		LLMEndpointMaxS:         st.LLMEndpointMaxSeconds(),
+		LLMEndpointURL:          d.llmEndpointURL(),
 	}
 }
 
 func (d *Daemon) handleMeetingSettings(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, d.settingsAnswer())
+	d.writeLLMJSON(w, http.StatusOK, d.settingsAnswer())
 }
 
-// handleMeetingSettingsSet changes the fields it is given and keeps the rest. Pointers: an absent retention_days
-// must not read as 0, which is "never delete", and an absent live_captions must not read as "off".
-func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		RetentionDays  *int      `json:"retention_days"`
-		LiveCaptions   *bool     `json:"live_captions"`
-		AEC            *string   `json:"meeting_aec"`
-		CodeVocabulary *[]string `json:"code_vocabulary"`
-		// What GET answers beside the settings: a client that sends the answer back is not refused. Read, never stored.
-		LiveCaptionsDefault *bool `json:"live_captions_default"`
-	}
-	if err := decodeStrict(r, &in); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if in.RetentionDays == nil && in.LiveCaptions == nil && in.AEC == nil && in.CodeVocabulary == nil {
-		writeErr(w, http.StatusBadRequest, "retention_days, live_captions, meeting_aec or code_vocabulary is required")
-		return
-	}
+// meetingSettingsIn is the body of PUT /v1/meetings/settings. Pointers: an absent retention_days must not read as
+// 0, which is "never delete", and an absent live_captions must not read as "off".
+type meetingSettingsIn struct {
+	RetentionDays   *int      `json:"retention_days"`
+	LiveCaptions    *bool     `json:"live_captions"`
+	AEC             *string   `json:"meeting_aec"`
+	CodeVocabulary  *[]string `json:"code_vocabulary"`
+	LLMEndpoint     *string   `json:"llm_endpoint"`
+	LLMEndpointCtx  *int      `json:"llm_endpoint_ctx"`
+	LLMEndpointMaxS *int      `json:"llm_endpoint_max_s"`
+	// What GET answers beside the settings: a client that sends the answer back is not refused as long as it
+	// changes nothing the owner guards (changesOwnerFields). Read, never stored.
+	LiveCaptionsDefault     *bool   `json:"live_captions_default"`
+	LLMEndpointURL          *string `json:"llm_endpoint_url"`
+	LLMEndpointCtxEffective *int    `json:"llm_endpoint_ctx_effective"`
+}
+
+func (in *meetingSettingsIn) empty() bool {
+	return in.RetentionDays == nil && in.LiveCaptions == nil && in.AEC == nil && in.CodeVocabulary == nil &&
+		in.LLMEndpoint == nil && in.LLMEndpointCtx == nil && in.LLMEndpointMaxS == nil
+}
+
+// errOwnerRequired is a settings change that only the owner may make.
+var errOwnerRequired = errors.New("the owner token is required for this change")
+
+// changesOwnerFields reports whether applying the request to cur would open the endpoint or resize what it may
+// take from the Mac — the owner's calls. Turning it off needs nobody (that only closes a door), and a value equal
+// to the stored one changes nothing, so a client that echoes the GET answer back is not refused. (Gating ctx and
+// max_s goes beyond the key itself: an unauthenticated process could otherwise ask for a 1 Mi context.)
+func (in *meetingSettingsIn) changesOwnerFields(cur meeting.Settings) bool {
+	return (in.LLMEndpoint != nil && *in.LLMEndpoint == meeting.LLMEndpointOn && !cur.LLMEndpointEnabled()) ||
+		(in.LLMEndpointCtx != nil && *in.LLMEndpointCtx != cur.LLMEndpointCtxTokens()) ||
+		(in.LLMEndpointMaxS != nil && *in.LLMEndpointMaxS != cur.LLMEndpointMaxSeconds())
+}
+
+// validate refuses a value outside what the setting means, with the sentence the client reads, and normalizes
+// llm_endpoint_ctx to a multiple of 4096 (rounded down). "" is valid.
+func (in *meetingSettingsIn) validate() string {
 	if in.AEC != nil && *in.AEC != meeting.AECOn && *in.AEC != meeting.AECOff {
-		writeErr(w, http.StatusBadRequest, "meeting_aec must be \"on\" or \"off\"")
-		return
+		return "meeting_aec must be \"on\" or \"off\""
 	}
 	if in.CodeVocabulary != nil {
 		for _, name := range *in.CodeVocabulary {
 			if !codevocab.ValidName(name) {
-				writeErr(w, http.StatusBadRequest, fmt.Sprintf("code_vocabulary %q is not one of %v", name, codevocab.Names))
-				return
+				return fmt.Sprintf("code_vocabulary %q is not one of %v", name, codevocab.Names)
 			}
 		}
 	}
+	if in.LLMEndpoint != nil && *in.LLMEndpoint != meeting.LLMEndpointOn && *in.LLMEndpoint != meeting.LLMEndpointOff {
+		return "llm_endpoint must be \"on\" or \"off\""
+	}
+	if c := in.LLMEndpointCtx; c != nil {
+		if *c < meeting.NotesContextTokens() || *c > meeting.LLMEndpointMaxCtx {
+			return fmt.Sprintf("llm_endpoint_ctx must be between %d and %d tokens", meeting.NotesContextTokens(), meeting.LLMEndpointMaxCtx)
+		}
+		// Rounded down to llama.cpp's allocation step, but never under the notes context itself (which is not
+		// a multiple of it): that floor is a valid ask, and the lowest one.
+		*c = max(*c/meeting.LLMEndpointCtxStep*meeting.LLMEndpointCtxStep, meeting.NotesContextTokens())
+	}
+	if m := in.LLMEndpointMaxS; m != nil && (*m < meeting.LLMEndpointMinMaxS || *m > meeting.LLMEndpointMaxMaxS) {
+		return fmt.Sprintf("llm_endpoint_max_s must be between %d and %d seconds", meeting.LLMEndpointMinMaxS, meeting.LLMEndpointMaxMaxS)
+	}
+	return ""
+}
+
+// applyTo sets the fields the request carries on cur.
+func (in *meetingSettingsIn) applyTo(cur meeting.Settings) meeting.Settings {
+	if in.RetentionDays != nil {
+		cur.RetentionDays = *in.RetentionDays
+	}
+	if in.LiveCaptions != nil {
+		cur.LiveCaptions = in.LiveCaptions
+	}
+	if in.AEC != nil {
+		cur.AEC = *in.AEC
+	}
+	if in.CodeVocabulary != nil {
+		cur.CodeVocabulary = codevocab.Enabled(*in.CodeVocabulary)
+	}
+	if in.LLMEndpoint != nil {
+		cur.LLMEndpoint = *in.LLMEndpoint
+	}
+	if in.LLMEndpointCtx != nil {
+		cur.LLMEndpointCtx = *in.LLMEndpointCtx
+	}
+	if in.LLMEndpointMaxS != nil {
+		cur.LLMEndpointMaxS = *in.LLMEndpointMaxS
+	}
+	return cur
+}
+
+// handleMeetingSettingsSet changes the fields it is given and keeps the rest.
+func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request) {
+	var in meetingSettingsIn
+	if err := decodeStrict(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if in.empty() {
+		writeErr(w, http.StatusBadRequest, "retention_days, live_captions, meeting_aec, code_vocabulary, llm_endpoint, llm_endpoint_ctx or llm_endpoint_max_s is required")
+		return
+	}
+	if msg := in.validate(); msg != "" {
+		writeErr(w, http.StatusBadRequest, msg)
+		return
+	}
+	owner := d.ownerOK(r)
 	// One read-modify-write (UpdateSettings): the base is the file as stored, not Settings(), which shows the default
 	// when the file is unusable — writing that back would restart a retention sweep that is paused on purpose — and a
 	// concurrent request for the other field cannot be overwritten by what this one read.
@@ -459,20 +554,16 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 			}
 			cur = meeting.Settings{}
 		}
-		if in.RetentionDays != nil {
-			cur.RetentionDays = *in.RetentionDays
+		// Judged against the settings as stored, under the store's own lock: no race between the check and the write.
+		if !owner && in.changesOwnerFields(cur) {
+			return cur, errOwnerRequired
 		}
-		if in.LiveCaptions != nil {
-			cur.LiveCaptions = in.LiveCaptions
-		}
-		if in.AEC != nil {
-			cur.AEC = *in.AEC
-		}
-		if in.CodeVocabulary != nil {
-			cur.CodeVocabulary = codevocab.Enabled(*in.CodeVocabulary)
-		}
-		return cur, nil
+		return in.applyTo(cur), nil
 	})
+	if errors.Is(err, errOwnerRequired) {
+		d.requireOwner(w, r) // answers 401
+		return
+	}
 	if err != nil {
 		if errors.Is(err, os.ErrInvalid) {
 			writeErr(w, http.StatusBadRequest, "retention_days must be one of 0, 7, 30, 90")
@@ -487,7 +578,10 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 		d.refreshBoost()
 	}
 	d.live.reconcile()
-	writeJSON(w, http.StatusOK, d.settingsAnswer())
+	if in.LLMEndpoint != nil && *in.LLMEndpoint == meeting.LLMEndpointOff {
+		go d.llmEndpointOffRecycle() // the large-context child ends at the next safe point, not at its idle stop
+	}
+	d.writeLLMJSON(w, http.StatusOK, d.settingsAnswer())
 }
 
 // handleNotesModelInstall starts the download of a notes model. The app's

@@ -377,7 +377,18 @@ func (d *Daemon) modelRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/models/{id}", d.handleModelDelete)
 }
 
-func (d *Daemon) handleModelsList(w http.ResponseWriter, _ *http.Request) {
+// handleModelsList shares GET /v1/models between two surfaces: a request
+// carrying an Authorization header is an OpenAI client's (every OpenAI SDK
+// sends Bearer), answered by the llm-endpoint handler with the single notes
+// model — or a 404 while that feature is off; a bearer-less request is the
+// app's own and gets the internal catalog as before.
+func (d *Daemon) handleModelsList(w http.ResponseWriter, r *http.Request) {
+	// Presence, not content: an empty or whitespace Authorization header is still an
+	// OpenAI client's attempt, answered by the endpoint (401 or 404), never the internal catalog.
+	if len(r.Header.Values("Authorization")) > 0 {
+		d.handleLLMModels(w, r)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": d.modelEntries()})
 }
 
