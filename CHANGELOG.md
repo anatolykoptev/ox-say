@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.40](https://github.com/anatolykoptev/ox-say/compare/v0.1.39...v0.1.40) (2026-11-19)
+
+
+### Added
+
+* **app:** a setting to hide OxSay overlays from screen sharing and recordings ([#659](https://github.com/anatolykoptev/ox-say/issues/659)) ([8b7a3c0](https://github.com/anatolykoptev/ox-say/commit/8b7a3c0c9bcd868a6069e94234af5ba4cd61f427))
+* **daemon:** serve the notes model over an OpenAI-compatible endpoint ([#537](https://github.com/anatolykoptev/ox-say/issues/537)) ([#643](https://github.com/anatolykoptev/ox-say/issues/643)) ([de46dfd](https://github.com/anatolykoptev/ox-say/commit/de46dfd309920cb243736b61e2ee0046f54d9b25))
+* **glossary:** a recurring misrecognition in dictation counts as a sighting ([#645](https://github.com/anatolykoptev/ox-say/issues/645)) ([d046158](https://github.com/anatolykoptev/ox-say/commit/d046158c72483344aa5e8601d842d9aef6b1f287))
+* **mcp:** meeting_live, the live transcript of the call being recorded ([#657](https://github.com/anatolykoptev/ox-say/issues/657)) ([291dea0](https://github.com/anatolykoptev/ox-say/commit/291dea0361b319de8f436762e767c35530aaf507))
+
+
+### Documentation
+
+* publish speech recognition accuracy before/after parakeet-ultra ([#665](https://github.com/anatolykoptev/ox-say/issues/665)) ([c704734](https://github.com/anatolykoptev/ox-say/commit/c70473471ac6ce2641b0df176d898beb54f16394))
+
 ## [0.1.39](https://github.com/anatolykoptev/ox-say/compare/v0.1.38...v0.1.39) (2026-11-18)
 
 
