@@ -145,26 +145,36 @@ func parseLive(raw []byte) []LiveSegment {
 // end in a newline are read, so a line being written is never half-served: the next poll gets it whole. A meeting
 // with no live file has no captions, not an error.
 func ReadLive(dir string, after, limit int) ([]LiveSegment, int, error) {
+	segs, next, _, err := ReadLiveMax(dir, after, limit)
+	return segs, next, err
+}
+
+// ReadLiveMax is ReadLive plus the highest Seq in the file (0 when there is none), read in the same pass: a caller
+// whose cursor is above it knows the cursor did not come from this meeting.
+func ReadLiveMax(dir string, after, limit int) (segs []LiveSegment, next, highest int, err error) {
 	raw, err := os.ReadFile(filepath.Join(dir, LiveJSONL))
 	if errors.Is(err, os.ErrNotExist) {
-		return []LiveSegment{}, after, nil
+		return []LiveSegment{}, after, 0, nil
 	}
 	if err != nil {
-		return nil, after, fmt.Errorf("meeting: live captions: %w", err)
+		return nil, after, 0, fmt.Errorf("meeting: live captions: %w", err)
 	}
 	out := []LiveSegment{}
-	next := after
+	next = after
+	full := false
 	for _, seg := range parseLive(raw[:bytes.LastIndexByte(raw, '\n')+1]) {
-		if seg.Seq <= after {
+		highest = max(highest, seg.Seq)
+		if seg.Seq <= after || full {
 			continue
 		}
 		if limit > 0 && len(out) >= limit {
-			break
+			full = true // keep scanning for the highest Seq only
+			continue
 		}
 		out = append(out, seg)
 		next = seg.Seq
 	}
-	return out, next, nil
+	return out, next, highest, nil
 }
 
 // The chunker: where a stretch of speech ends, found on the same 100 ms RMS windows and the same silentRMS floor

@@ -303,6 +303,10 @@ type liveAnswer struct {
 	// Next is the cursor: ask again with after=Next.
 	Next  int       `json:"next"`
 	State liveState `json:"state"`
+	// highest is the largest seq in the meeting's captions, and ahead that the cursor asked for was above it
+	// (set by meeting_live); neither is on the wire.
+	highest int
+	ahead   bool
 }
 
 const (
@@ -321,12 +325,12 @@ func (d *Daemon) Live(id string, after, limit int) (liveAnswer, error) {
 	if err != nil {
 		return liveAnswer{}, err
 	}
-	segs, next, err := meeting.ReadLive(dir, after, limit)
+	segs, next, highest, err := meeting.ReadLiveMax(dir, after, limit)
 	if err != nil {
 		return liveAnswer{}, err
 	}
 	st, active := d.live.state(id)
-	return liveAnswer{ID: id, Segments: segs, Next: next, State: liveState{
+	return liveAnswer{ID: id, Segments: segs, Next: next, highest: highest, State: liveState{
 		Enabled:   d.liveEnabled(),
 		Recording: mf.Status == meeting.StatusRecording,
 		Active:    active,
