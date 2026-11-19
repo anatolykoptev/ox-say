@@ -164,6 +164,8 @@ public struct MainWindowData: Equatable {
     public var clean: CleanValues
     /// The live captions of the meeting being recorded, by meeting id (`LiveFeed`: what the window holds and the cursor).
     public var live: [String: LiveFeed]
+    /// «Hide OxSay overlays from screen sharing and recordings» (Settings, General).
+    public var hideOverlaysFromShare: Bool
 
     public init(meetings: [MeetingInfo], meetingsLoad: MeetingsLoad = .loaded, details: [String: MeetingDetail],
                 detailLoading: Set<String> = [], detailError: [String: String] = [:], recordingElapsed: TimeInterval? = nil,
@@ -171,7 +173,7 @@ public struct MainWindowData: Equatable {
                 meetingSettings: MeetingSettingsValues, permissions: [PermissionItem],
                 dictation: DictationValues, voices: VoicesValues, about: AboutValues, speak: SpeakValues = SpeakValues(),
                 transcribe: TranscribeValues = TranscribeValues(), clean: CleanValues = CleanValues(),
-                live: [String: LiveFeed] = [:], codePacks: Set<CodePack> = []) {
+                live: [String: LiveFeed] = [:], codePacks: Set<CodePack> = [], hideOverlaysFromShare: Bool = false) {
         self.meetings = meetings
         self.meetingsLoad = meetingsLoad
         self.details = details
@@ -191,6 +193,7 @@ public struct MainWindowData: Equatable {
         self.clean = clean
         self.live = live
         self.codePacks = codePacks
+        self.hideOverlaysFromShare = hideOverlaysFromShare
     }
 }
 
@@ -237,6 +240,8 @@ public struct MainWindowActions {
     /// «Скачать студийный голос»: the app's own studio voice install, with its confirmation.
     public var installStudioVoice: () -> Void = {}
     public var setStartAtLogin: (Bool) -> Void = { _ in }
+    /// «Hide OxSay overlays from screen sharing and recordings» moved: the app stores it and re-applies it to the panels on screen.
+    public var setHideOverlaysFromShare: (Bool) -> Void = { _ in }
     /// A code vocabulary switch: the pack and whether it is now on (the app tells the daemon).
     public var setCodePack: (CodePack, Bool) -> Void = { _, _ in }
     public var dismissNotice: () -> Void = {}

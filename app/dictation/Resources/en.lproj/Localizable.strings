@@ -301,6 +301,8 @@
 "settings.code_vocab.hint" = "Helps recognize names from code. Turn it on when you dictate about code: in ordinary speech it may take a word for a term.";
 "settings.general" = "General";
 "settings.login" = "Start OxSay when I log in";
+"settings.hide_share" = "Hide OxSay overlays from screen sharing and recordings";
+"settings.hide_share.footer" = "Best effort: OxSay asks macOS to leave its floating panels (recording plate, dictation pill) out of screen shares and recordings. On macOS 15.4 and later screen capture can still include them, so test with your own call app before you rely on it.";
 "settings.check_updates" = "Check for Updates…";
 "settings.version" = "Version %@";
 "settings.engine" = "Voice engine";

@@ -175,6 +175,11 @@ public final class MainWindowModel: ObservableObject {
                 set: { self.data.codePacks = CodeVocabulary.toggled(self.data.codePacks, pack, on: $0); self.actions.setCodePack(pack, $0) })
     }
 
+    var hideOverlaysFromShare: Binding<Bool> {
+        Binding(get: { self.data.hideOverlaysFromShare },
+                set: { self.data.hideOverlaysFromShare = $0; self.actions.setHideOverlaysFromShare($0) })
+    }
+
     var startAtLogin: Binding<Bool> {
         Binding(get: { self.data.about.startAtLogin }, set: { self.data.about.startAtLogin = $0; self.actions.setStartAtLogin($0) })
     }

@@ -291,6 +291,8 @@ public enum L10nKey: String, CaseIterable {
     case settingsCodeVocabHint = "settings.code_vocab.hint"
     case settingsGeneral = "settings.general"
     case settingsLogin = "settings.login"
+    case settingsHideShare = "settings.hide_share"
+    case settingsHideShareFooter = "settings.hide_share.footer"
     case settingsCheckUpdates = "settings.check_updates"
     case settingsVersion = "settings.version"
     case settingsEngine = "settings.engine"
