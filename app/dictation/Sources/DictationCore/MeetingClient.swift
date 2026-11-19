@@ -110,6 +110,49 @@ extension StudioClient {
         _ = try await succeed(request)
     }
 
+    /// PUT /v1/meetings/settings: `llm_endpoint` on/off — whether other local apps may reach the notes model
+    /// through the daemon's OpenAI-compatible surface. Turning it ON is the owner's call: the daemon wants the owner
+    /// bearer (`owner.token`, read by the caller at this moment and kept nowhere) and answers 401 without it. Off
+    /// needs nobody, so a missing token does not stop it.
+    public func setLLMEndpoint(on: Bool, ownerToken: String?) async throws {
+        if on, ownerToken == nil { throw LLMEndpointOwnerError.tokenMissing }
+        let body = try JSONSerialization.data(withJSONObject: ["llm_endpoint": on ? "on" : "off"])
+        var request = post("v1/meetings/settings", body: body, timeout: Self.quickTimeout)
+        request.httpMethod = "PUT"
+        if let ownerToken { request.setValue("Bearer \(ownerToken)", forHTTPHeaderField: "Authorization") }
+        _ = try await ownerRequest(request)
+    }
+
+    /// GET /v1/meetings/llm-endpoint/key: the per-install bearer other apps send, for the owner only.
+    public func llmEndpointKey(ownerToken: String?) async throws -> String {
+        try decodeKey(await ownerRequest(try ownerAuthorized(get("v1/meetings/llm-endpoint/key"), ownerToken)))
+    }
+
+    /// POST /v1/meetings/llm-endpoint/key: a fresh per-install bearer for the endpoint, for the owner only; the old
+    /// one stops working the moment the daemon answers.
+    public func regenerateLLMEndpointKey(ownerToken: String?) async throws -> String {
+        let request = post("v1/meetings/llm-endpoint/key", body: nil, timeout: Self.quickTimeout)
+        return try decodeKey(await ownerRequest(try ownerAuthorized(request, ownerToken)))
+    }
+
+    private func ownerAuthorized(_ request: URLRequest, _ ownerToken: String?) throws -> URLRequest {
+        guard let ownerToken else { throw LLMEndpointOwnerError.tokenMissing }
+        var request = request
+        request.setValue("Bearer \(ownerToken)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    /// `succeed`, with the daemon's 401 for a missing or wrong owner bearer named as such.
+    private func ownerRequest(_ request: URLRequest) async throws -> Data {
+        do { return try await succeed(request) } catch StudioError.refused(401, _) { throw LLMEndpointOwnerError.denied }
+    }
+
+    private func decodeKey(_ data: Data) throws -> String {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let key = obj["llm_endpoint_key"] as? String, !key.isEmpty else { throw StudioError.badResponse }
+        return key
+    }
+
     /// PUT /v1/meetings/settings: live captions on or off. Only this field is sent; a PUT keeps the rest.
     public func setMeetingLiveCaptions(_ on: Bool) async throws {
         let body = try JSONSerialization.data(withJSONObject: ["live_captions": on])

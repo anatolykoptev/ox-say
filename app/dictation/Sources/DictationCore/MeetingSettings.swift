@@ -21,29 +21,56 @@ public enum MeetingRetention: Int, CaseIterable, Equatable {
     }
 }
 
-/// The settings the daemon keeps for meetings (`GET /v1/meetings/settings`): today only how long audio stays.
+/// The settings the daemon keeps for meetings (`GET /v1/meetings/settings`): how long audio stays, and the
+/// OpenAI-compatible endpoint other local apps reach the notes model through (`llm_endpoint`, off until the user
+/// turns it on). The endpoint's key is NOT in this answer: the daemon serves it only to the owner, on its own route
+/// (`StudioClient.llmEndpointKey`).
 public struct MeetingDaemonSettings: Equatable {
     public var retentionDays: Int
+    public var llmEndpointOn: Bool
+    /// Whether the answer carried the endpoint fields at all: a daemon that predates the feature does not, and its
+    /// absent `llm_endpoint` must not read as an "off" the user could switch on.
+    public var llmEndpointAnswered: Bool
+    /// The context the settings ASK for (`llm_endpoint_ctx`, tokens; 0 when the daemon did not say).
+    public var llmEndpointCtx: Int
+    /// The context the notes model actually runs with, or would on its next start (`llm_endpoint_ctx_effective`):
+    /// read-only, after the daemon's fit and the model's own limit.
+    public var llmEndpointCtxEffective: Int
+    public var llmEndpointURL: String
     /// Live captions are on in the daemon; nil from a daemon that predates the field (never read as "off").
     public var liveCaptions: Bool?
     /// What the daemon picks without a choice (`live_captions_default`: on for Apple Silicon, off for Intel).
     public var liveCaptionsDefault: Bool?
 
-    public init(retentionDays: Int, liveCaptions: Bool? = nil, liveCaptionsDefault: Bool? = nil) {
+    public init(retentionDays: Int, liveCaptions: Bool? = nil, liveCaptionsDefault: Bool? = nil,
+                llmEndpointOn: Bool = false, llmEndpointAnswered: Bool = false,
+                llmEndpointCtx: Int = 0, llmEndpointCtxEffective: Int = 0, llmEndpointURL: String = "") {
         self.retentionDays = retentionDays
         self.liveCaptions = liveCaptions
         self.liveCaptionsDefault = liveCaptionsDefault
+        self.llmEndpointOn = llmEndpointOn
+        self.llmEndpointAnswered = llmEndpointAnswered
+        self.llmEndpointCtx = llmEndpointCtx
+        self.llmEndpointCtxEffective = llmEndpointCtxEffective
+        self.llmEndpointURL = llmEndpointURL
     }
 
     public var retention: MeetingRetention { MeetingRetention(rawValue: retentionDays) ?? .month }
 
     /// nil for an answer without a period, or with one that is not a choice: a guess could show "30 days" over a
-    /// "never" the user picked.
+    /// "never" the user picked. The endpoint fields are optional on top: an older daemon's answer still decodes.
     public static func decode(_ data: Data) -> MeetingDaemonSettings? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let days = obj["retention_days"] as? Int, MeetingRetention(rawValue: days) != nil else { return nil }
-        return MeetingDaemonSettings(retentionDays: days, liveCaptions: obj["live_captions"] as? Bool,
-                                     liveCaptionsDefault: obj["live_captions_default"] as? Bool)
+        return MeetingDaemonSettings(
+            retentionDays: days,
+            liveCaptions: obj["live_captions"] as? Bool,
+            liveCaptionsDefault: obj["live_captions_default"] as? Bool,
+            llmEndpointOn: obj["llm_endpoint"] as? String == "on",
+            llmEndpointAnswered: obj["llm_endpoint"] is String && obj["llm_endpoint_url"] is String,
+            llmEndpointCtx: obj["llm_endpoint_ctx"] as? Int ?? 0,
+            llmEndpointCtxEffective: obj["llm_endpoint_ctx_effective"] as? Int ?? 0,
+            llmEndpointURL: obj["llm_endpoint_url"] as? String ?? "")
     }
 }
 

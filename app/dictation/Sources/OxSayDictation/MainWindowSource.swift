@@ -86,6 +86,13 @@ final class MainWindowSource {
         },
         finished: { [weak self] outcome in self?.liveSaveFinished(outcome) })
     private let audio = MeetingAudioPlayer()
+    /// "New key" taps of the model-access section, one rotation at a time (see `LLMEndpointKeyQueue`).
+    private lazy var llmKeys = LLMEndpointKeyQueue(
+        send: { [weak self] in
+            guard let self else { throw StudioError.daemonUnreachable }
+            return try await self.host.client.regenerateLLMEndpointKey(ownerToken: OwnerToken.read(home: DaemonHome.current()))
+        },
+        finished: { [weak self] in self?.llmKeyRotated($0) })
     private var voiceSource: VoiceSource!
     private var speakSource: SpeakSource!
     private var transcribeSource: TranscribeSource!
@@ -336,6 +343,11 @@ final class MainWindowSource {
             NotesFolder.open(self.host.defaults)
         }
         a.downloadNotesWriter = { [weak self] in self?.downloadNotesWriter() }
+        a.copyText = { text in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        }
+        a.regenerateLLMKey = { [weak self] in self?.regenerateLLMKey() }
         a.checkForUpdates = { [weak self] in self?.host.checkForUpdates() }
         dictationActions(&a)
         a.pickVoice = { [weak self] slot, voice in self?.host.pickVoice(slot, voice) }
@@ -593,6 +605,7 @@ final class MainWindowSource {
     /// read back through the model's one step after the reply, so the iCloud answer is the new folder's own.
     private func reloadSettingsAsync(pickedFolder: URL? = nil) async {
         if let pickedFolder { MeetingSettings.setFolder(pickedFolder, host.defaults) }
+        let keyRead = llmKeys.beginRead()
         let token = liveSaves.beginRead()
         let daemon = try? await host.client.meetingDaemonSettings()
         // An edit of the switch that ran or began since the read started is newer than what the daemon answered.
@@ -605,15 +618,37 @@ final class MainWindowSource {
             codePackSync.learn(answer)
             if !stale, !codePackSync.isBusy { model.data.codePacks = answer.packs }
         }
+        // Read after the last await, with no suspension before the assignment: a rotation that finished while the
+        // settings request was in flight is in here, so the key the page already shows survives the reload.
+        let shown = model.data.meetingSettings.llmEndpoint
+        let endpoint = LLMEndpointValues.of(daemon)
         let loaded = pickedFolder.map {
             MeetingSettingsModel.folderPicked($0, defaults: host.defaults, daemonRetention: daemon?.retention,
                                               daemonLiveCaptions: liveCaptions, liveCaptionsDefault: daemon?.liveCaptionsDefault,
-                                              notesWriter: NotesWriterState.of(notes), fullName: NSFullUserName())
+                                              llmEndpoint: endpoint, notesWriter: NotesWriterState.of(notes),
+                                              fullName: NSFullUserName())
         } ?? MeetingSettingsModel.load(
             defaults: host.defaults, daemonRetention: daemon?.retention, daemonLiveCaptions: liveCaptions,
-            liveCaptionsDefault: daemon?.liveCaptionsDefault, notesWriter: NotesWriterState.of(notes),
+            liveCaptionsDefault: daemon?.liveCaptionsDefault, llmEndpoint: endpoint, notesWriter: NotesWriterState.of(notes),
             fullName: NSFullUserName())
         model.data.meetingSettings = stale ? MeetingSettingsModel.keepingPendingEdit(loaded, current: model.data.meetingSettings) : loaded
+        if shown.on, model.data.meetingSettings.llmEndpoint.on {
+            model.data.meetingSettings.llmEndpoint.key = shown.key
+            model.data.meetingSettings.llmEndpoint.keyUnavailable = shown.keyUnavailable
+        }
+        await loadLLMKey(after: keyRead)
+    }
+
+    /// The endpoint's key, from the owner-only route: asked only while the endpoint is on, with the owner token read
+    /// now. A failure is shown as "not readable", never as a stale or empty key; an answer that a rotation has
+    /// overtaken since the read began is dropped, so the page keeps the newer key.
+    private func loadLLMKey(after token: LLMEndpointKeyQueue.ReadToken) async {
+        let ep = model.data.meetingSettings.llmEndpoint
+        guard ep.on, ep.verified else { return }
+        let key = try? await host.client.llmEndpointKey(ownerToken: OwnerToken.read(home: DaemonHome.current()))
+        guard !llmKeys.isStale(token), model.data.meetingSettings.llmEndpoint.on else { return }
+        model.data.meetingSettings.llmEndpoint.key = key ?? ""
+        model.data.meetingSettings.llmEndpoint.keyUnavailable = key == nil
     }
 
     /// Stamps and sets the microphone and Accessibility rows at once, and starts the notification read unless one is
@@ -867,6 +902,21 @@ final class MainWindowSource {
         }
     }
 
+    /// A fresh endpoint bearer, rotated through the owner-only route. Taps are serialized (`llmKeys`): the key shown is
+    /// the answer of the last rotation, never a late answer to an earlier one.
+    private func regenerateLLMKey() { llmKeys.regenerate() }
+
+    private func llmKeyRotated(_ result: Result<String, Error>) {
+        switch result {
+        case .success(let key):
+            model.data.meetingSettings.llmEndpoint.key = key
+            model.data.meetingSettings.llmEndpoint.keyUnavailable = false
+            model.data.notice = L10nKey.settingsLLMEndpointKeyNew.text
+        case .failure(let error):
+            model.data.notice = MeetingErrorText.sentence(error, action: .settings)
+        }
+    }
+
     // MARK: settings
 
     /// Saves one edit where it lives. A save that did not go through is said, and the page shows the stored value again.
@@ -887,10 +937,11 @@ final class MainWindowSource {
             switch change {
             case .enabled: host.meetingsEnabledChanged()
             case .callMode: host.meetings()?.settingsChanged()
-            case .retention, .mode, .name: break
+            case .retention, .mode, .name, .llmEndpoint: break
             case .liveCaptions: break // saved through `liveSaves` above; unreachable here
             }
             if case .retention = change { model.data.meetingSettings.retentionVerified = true }
+            if case .llmEndpoint(let on) = change { model.data.meetingSettings.llmEndpoint.on = on }
             // A name is typed letter by letter: only a change that alters other parts of the page reads it all again.
             if change.needsRefresh { refresh() }
         }

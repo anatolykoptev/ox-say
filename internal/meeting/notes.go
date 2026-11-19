@@ -648,10 +648,22 @@ func (c Composer) retryDelay() time.Duration {
 	return retryDelay
 }
 
+// SelfTimed is implemented by a Chat that starts the per-call timer itself, once
+// its call really begins. Such a Chat may first wait for something that is not
+// the model's time (a decode slot another client holds), and a deadline the
+// composer had already started would run down during that wait and cut the
+// call short. The composer leaves the call's deadline to it; the run's own
+// budget (Compose) still bounds the whole.
+type SelfTimed interface{ SelfTimed() }
+
 // call is one model call under its own deadline, so a hung server cannot hold
 // the notes run forever. Before runs outside it: waiting for a dictation to
-// finish is not the model being slow.
+// finish is not the model being slow. A SelfTimed Chat sets that deadline
+// itself.
 func (c Composer) call(ctx context.Context, r Request) (string, error) {
+	if _, ok := c.Chat.(SelfTimed); ok {
+		return c.Chat.Complete(ctx, r)
+	}
 	ctx, cancel := context.WithTimeout(ctx, c.callTimeout())
 	defer cancel()
 	return c.Chat.Complete(ctx, r)
