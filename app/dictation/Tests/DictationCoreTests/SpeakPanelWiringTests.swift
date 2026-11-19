@@ -247,6 +247,7 @@ final class SpeakPanelWiringTests: XCTestCase {
             ("var hotkeyMode: Binding<HotkeyMode> {", "self.actions.setHotkeyMode($0)"),
             ("func voice(_ slot: VoiceSlot) -> Binding<String?> {", "self.actions.pickVoice(slot, $0)"),
             ("var startAtLogin: Binding<Bool> {", "self.actions.setStartAtLogin($0)"),
+            ("var hideOverlaysFromShare: Binding<Bool> {", "self.actions.setHideOverlaysFromShare($0)"),
             ("func codePack(_ pack: CodePack) -> Binding<Bool> {", "self.actions.setCodePack(pack, $0)"),
         ]
         for (signature, setter) in bindings {

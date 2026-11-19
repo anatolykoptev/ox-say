@@ -9,16 +9,39 @@ import AppKit
 /// DTS also asks for an `.accessory` policy, but shipping apps (Granola, Anarlog) draw the same panels from a
 /// `.regular` app, so the policy is NOT changed here: it is logged beside every miss, and a live run decides. Applied
 /// at construction and again at every show, so nothing that changed the window since leaves it behind.
+///
+/// «Hide OxSay overlays from screen sharing and recordings» is applied here too, so every panel that goes through
+/// `apply` honours it and a panel added later cannot forget it. It asks macOS to leave the window out of captures
+/// (`sharingType`); on macOS 15.4 and later that is not guaranteed, so it is best effort and off by default.
 public enum PlateWindowSpec {
     public static let level: NSWindow.Level = .screenSaver
     public static let collectionBehavior: NSWindow.CollectionBehavior = [.canJoinAllSpaces, .canJoinAllApplications,
                                                                          .fullScreenAuxiliary, .stationary]
+
+    /// Where the switch is stored; the app reads the standard defaults, a test swaps in a suite.
+    public static var defaults: UserDefaults = .standard
+
+    /// Every panel `apply` has seen, weakly, so a switch flipped while they are on screen reaches them. Main thread only,
+    /// like every AppKit window.
+    private static let panels = NSHashTable<NSPanel>.weakObjects()
+
+    /// `.none` asks the window server to leave the window out of screen shares and recordings; `.readOnly` is the system
+    /// default and what a window has when the switch is off.
+    public static func sharingType(hide: Bool) -> NSWindow.SharingType { hide ? .none : .readOnly }
 
     public static func apply(to panel: NSPanel, extra: NSWindow.CollectionBehavior = []) {
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
         panel.level = level
         panel.collectionBehavior = collectionBehavior.union(extra)
+        panel.sharingType = sharingType(hide: DictationSettings.hideFromShare(defaults))
+        panels.add(panel)
+    }
+
+    /// The switch was flipped: panels already on screen take the new value now, not at their next show.
+    public static func hideFromShareChanged() {
+        let type = sharingType(hide: DictationSettings.hideFromShare(defaults))
+        for panel in panels.allObjects { panel.sharingType = type }
     }
 }
 

@@ -191,6 +191,8 @@ struct SettingsPage: View {
     private var general: some View {
         Section {
             Toggle(L10nKey.settingsLogin.text, isOn: model.startAtLogin)
+            ToggleRow(title: L10nKey.settingsHideShare.text, hint: L10nKey.settingsHideShareFooter.text,
+                      isOn: model.hideOverlaysFromShare)
             HintedRow(title: L10nKey.settingsEngine.text) {
                 if model.data.about.engineRunning {
                     Label(L10nKey.settingsEngineRunning.text, systemImage: "checkmark.circle.fill")

@@ -433,6 +433,11 @@ final class MainWindowSource {
             self.host.pillShownChanged()
         }
         a.setHotkeyMode = { [weak self] mode in self?.host.setHotkeyMode(mode) }
+        a.setHideOverlaysFromShare = { [weak self] on in
+            guard let self else { return }
+            DictationSettings.setHideFromShare(on, self.host.defaults)
+            PlateWindowSpec.hideFromShareChanged()
+        }
     }
 
     /// Reads everything the window shows. The list and the settings come from the daemon, so they are awaited; a failed
@@ -583,6 +588,7 @@ final class MainWindowSource {
         if model.data.voices.entries.isEmpty, model.data.voices.load != .loaded { model.data.voices.voices = host.knownVoices() }
         model.data.about = AboutValues(version: AboutPanel.appVersion, engineRunning: host.daemonStatus() != nil,
                                        startAtLogin: host.startAtLogin())
+        model.data.hideOverlaysFromShare = DictationSettings.hideFromShare(d)
         updateDesignAvailability()
     }
 
