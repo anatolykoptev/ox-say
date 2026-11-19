@@ -140,7 +140,7 @@ func notesServerArgs(cfg *config.Config, port int, modelPath string) []string {
 // child gets the same argv but its own key, so rotating it cannot break a
 // resident engine still serving its first key.
 func notesServerArgsKey(cfg *config.Config, port int, modelPath, keyFile string) []string {
-	return notesArgs(cfg, port, modelPath, notesGPULayers(cfg), 0, keyFile)
+	return notesArgs(cfg, port, modelPath, meeting.NotesContextTokens(), notesGPULayers(cfg), 0, keyFile)
 }
 
 // notesPlanArgs is the argv the spawn-time fit decided: the plan's model
@@ -155,20 +155,27 @@ func notesPlanArgs(cfg *config.Config, port int, p notesPlan) []string {
 // gets the same fitted argv but its own key, so rotating it cannot break a
 // resident engine still serving its first key.
 func notesPlanArgsKey(cfg *config.Config, port int, p notesPlan, keyFile string) []string {
-	if p.fitMiB > 0 {
-		return notesArgs(cfg, port, p.model, "", p.fitMiB, keyFile)
+	ctx := p.ctx
+	if ctx <= 0 {
+		ctx = meeting.NotesContextTokens()
 	}
-	return notesArgs(cfg, port, p.model, notesGPULayers(cfg), 0, keyFile)
+	if p.fitMiB > 0 {
+		return notesArgs(cfg, port, p.model, ctx, "", p.fitMiB, keyFile)
+	}
+	return notesArgs(cfg, port, p.model, ctx, notesGPULayers(cfg), 0, keyFile)
 }
 
-// notesArgs builds the child argv. ngl is the -ngl value verbatim: "99" for
-// full offload, "0" for CPU decode, or "" to leave it unset for the fitter
-// (fitMiB > 0 then names its --fit-target). Never a verbosity flag: at
-// debug level llama-server logs request bodies and every prompt token, which
-// would put the meeting transcript into notes.log.
-func notesArgs(cfg *config.Config, port int, modelPath, ngl string, fitMiB int, keyFile string) []string {
+// notesArgs builds the child argv. ctx is the -c value: the meeting-notes
+// context normally, the larger llm_endpoint_ctx while the endpoint is on
+// (notesSpawnPlan clamps it to what the model and the room allow). ngl is
+// the -ngl value verbatim: "99" for full offload, "0" for CPU decode, or ""
+// to leave it unset for the fitter (fitMiB > 0 then names its --fit-target).
+// Never a verbosity flag: at debug level llama-server logs request bodies
+// and every prompt token, which would put the meeting transcript into
+// notes.log.
+func notesArgs(cfg *config.Config, port int, modelPath string, ctx int, ngl string, fitMiB int, keyFile string) []string {
 	args := []string{
-		"-m", modelPath, "-c", strconv.Itoa(meeting.NotesContextTokens()),
+		"-m", modelPath, "-c", strconv.Itoa(ctx),
 		"-ctk", "q8_0", "-ctv", "q8_0",
 		"--host", voxLoopbackHost, "--port", strconv.Itoa(port),
 		"-fa", "on", "--jinja", "--no-ui", "-np", "1", "--cache-ram", "0",
@@ -395,6 +402,12 @@ func notesEngineConfig(cfg *config.Config, logger *slog.Logger, plan func() note
 // and sends the call.
 type llmChat struct{ d *Daemon }
 
+// SelfTimed marks llmChat's call deadline as its own (meeting.SelfTimed): the
+// composer's per-call timer would already be running while Complete waits for
+// the decode slot behind an agent's stream, and the generation would get only
+// what that wait left of it.
+func (llmChat) SelfTimed() {}
+
 func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error) {
 	if c.d.LLMSup == nil {
 		return "", errors.New("the notes engine is not configured")
@@ -451,9 +464,22 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 		// model is then in the page cache): Compose may start once more.
 		return "", &meeting.EngineDownError{Err: err, Retryable: !engine.IsVerifyRefusal(err) && !errors.Is(err, engine.ErrShutdown), Reason: engineDownReason(err)}
 	}
+	// The child decodes one request at a time (-np 1): the daemon's request
+	// slot serializes this call against an endpoint request in flight, which
+	// holds it for its whole stream (at most llm_endpoint_max_s) — a long
+	// agent request can delay this call by the request's own remaining time.
+	// The call's own timer starts only once it holds the slot: time spent
+	// queued behind an agent is not the model's time, and must not read as an
+	// answer timeout. The composer does not start one of its own for llmChat
+	// (SelfTimed), so ctx here carries no deadline that the wait has been
+	// spending.
+	if err := c.d.takeNotesSlot(ctx, true); err != nil {
+		return "", err
+	}
 	callCtx, cancel := context.WithTimeout(ctx, notesCallTimeout)
 	defer cancel()
 	out, err := meeting.HTTPChat{BaseURL: base, Key: c.d.notesKey}.Complete(callCtx, r)
+	c.d.notesReqSlot.release()
 	if err == nil || ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded) || callCtx.Err() != context.DeadlineExceeded {
 		return out, err
 	}
@@ -592,11 +618,16 @@ func (d *Daemon) notesStaleChild(ctx context.Context) error {
 	sp := d.fit.spawn
 	d.fit.mu.Unlock()
 	if sp.set {
-		if sp.resPath == res.Path {
+		// sp.model, not the resolution: a compact-fallback spawn runs a file of its own with its own ceiling.
+		if sp.resPath == res.Path && sp.want == d.notesCtxWantFor(sp.model) {
 			return nil
 		}
 	} else if running == res.Path || (res.Path == "" && running == d.Cfg.NotesModel) {
-		return nil // an engine not planned by notesSpawnPlan: its own -m is the record
+		// An engine not planned by notesSpawnPlan: its own -m and -c are the
+		// record — a context ask that moved under it recycles it too.
+		if c := notesFlagValue(args, "-c"); c == "" || c == strconv.Itoa(d.notesCtxWantFor(running)) {
+			return nil
+		}
 	}
 	d.log.Info("notes model changed under the resident engine; recycling it")
 	if err := d.LLMSup.Stop(ctx); err != nil {
@@ -639,11 +670,8 @@ func (d *Daemon) initMeetings() {
 		Transcribe: func(ctx context.Context, wav string) (*stt.Result, error) {
 			return d.Transcribe(ctx, TranscribeInput{AudioPath: wav})
 		},
-		Chat: llmChat{d: d},
-		NotesTurn: func(ctx context.Context) (func(), error) {
-			d.liftNotesFloor() // a new notes job decides the GPU budget afresh
-			return d.notesEngineTurn(ctx)
-		},
+		Chat:       llmChat{d: d},
+		NotesTurn:  d.notesJobTurn,
 		NotesReady: func() string { code, _ := d.notesBlock(); return code },
 		TranscribeReady: func() string {
 			if _, err := os.Stat(d.Cfg.STTModel); err != nil {
@@ -676,6 +704,27 @@ func (d *Daemon) initMeetings() {
 			return func(s string) string { out, _ := glossary.Apply(s, pairs); return out }, ids
 		},
 	})
+}
+
+// notesJobTurn is Deps.NotesTurn: the turn for one whole notes job, counted in
+// notesJobs from the moment it queues until its release, so the endpoint's
+// admission can tell that meeting notes are waiting or running.
+func (d *Daemon) notesJobTurn(ctx context.Context) (func(), error) {
+	d.notesJobs.Add(1)
+	d.liftNotesFloor() // a new notes job decides the GPU budget afresh
+	leave, err := d.notesEngineTurn(ctx)
+	if err != nil {
+		d.notesJobs.Add(-1)
+		return nil, err
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			leave()
+			d.notesJobs.Add(-1)
+			d.recycleLargeCtxSoon() // a large-context child the endpoint left behind can go now
+		})
+	}, nil
 }
 
 // cpuPieceSeconds is the recognizer piece length on a Mac without unified memory.

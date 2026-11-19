@@ -85,6 +85,53 @@ public enum NotesWriterState: Equatable {
     case unavailable(L10nKey)
 }
 
+/// The OpenAI-compatible endpoint as the daemon answered it (`GET /v1/meetings/settings`): whether other local
+/// apps may use the notes model, its loopback URL, and the context the child runs with against the one asked.
+/// `verified` is true only when the daemon's answer carried the endpoint fields: while it could not be asked, or
+/// answered like an older daemon without the feature, the toggle stays off and disabled and the rest says nothing.
+/// The per-install `key` is not part of that answer — it is fetched separately, with the owner token, and is empty
+/// until then (`keyUnavailable` says that the fetch failed).
+public struct LLMEndpointValues: Equatable {
+    public var on: Bool
+    public var url: String
+    public var key: String
+    public var keyUnavailable: Bool
+    /// The context the notes child runs with under the endpoint, in tokens (0 until the daemon answers).
+    public var contextTokens: Int
+    /// The context the settings ask for, in tokens (0 until the daemon answers).
+    public var askedTokens: Int
+    public var verified: Bool
+
+    public init(on: Bool = false, url: String = "", key: String = "", keyUnavailable: Bool = false, contextTokens: Int = 0,
+                askedTokens: Int = 0, verified: Bool = false) {
+        self.on = on
+        self.url = url
+        self.key = key
+        self.keyUnavailable = keyUnavailable
+        self.contextTokens = contextTokens
+        self.askedTokens = askedTokens
+        self.verified = verified
+    }
+
+    /// The values of a daemon answer; absent fields read as the feature's defaults (off, empty, unverified).
+    public static func of(_ daemon: MeetingDaemonSettings?) -> LLMEndpointValues {
+        guard let daemon, daemon.llmEndpointAnswered else { return LLMEndpointValues() }
+        return LLMEndpointValues(on: daemon.llmEndpointOn, url: daemon.llmEndpointURL,
+                                 contextTokens: daemon.llmEndpointCtxEffective, askedTokens: daemon.llmEndpointCtx, verified: true)
+    }
+}
+
+extension LLMEndpointValues {
+    /// The context sentence: what the notes model runs with, and — when the daemon fit or the model's own limit gave
+    /// less than was asked — what was asked, so a smaller number is never read as the setting being ignored.
+    public func contextLine(text: (L10nKey) -> String = { $0.text }) -> String {
+        if askedTokens > 0, askedTokens != contextTokens {
+            return String(format: text(.settingsLLMEndpointCtxAsked), contextTokens, askedTokens)
+        }
+        return String(format: text(.settingsLLMEndpointCtx), contextTokens)
+    }
+}
+
 /// The meeting settings the Settings page shows. The folder, the global call mode, per-app picks and name are
 /// `MeetingSettings` / `CallPolicy` values (UserDefaults); retention is the daemon's; the notes writer comes
 /// from the daemon's status.
@@ -110,11 +157,13 @@ public struct MeetingSettingsValues: Equatable {
     /// What the name falls back to (the macOS full name).
     public var yourNameFallback: String
     public var notesWriter: NotesWriterState
+    /// The endpoint for other local apps, as the daemon answered it.
+    public var llmEndpoint: LLMEndpointValues
 
     public init(enabled: Bool, callMode: CallGlobalMode, apps: [CallApp], folderPath: String, folderSyncsICloud: Bool = false,
                 retention: MeetingRetention, retentionVerified: Bool = true, liveCaptions: Bool = false,
                 liveCaptionsDefault: Bool? = nil, liveCaptionsVerified: Bool = true, yourName: String, yourNameFallback: String,
-                notesWriter: NotesWriterState) {
+                notesWriter: NotesWriterState, llmEndpoint: LLMEndpointValues = LLMEndpointValues()) {
         self.enabled = enabled
         self.callMode = callMode
         self.apps = apps
@@ -128,6 +177,7 @@ public struct MeetingSettingsValues: Equatable {
         self.yourName = yourName
         self.yourNameFallback = yourNameFallback
         self.notesWriter = notesWriter
+        self.llmEndpoint = llmEndpoint
     }
 }
 
@@ -141,20 +191,24 @@ public enum MeetingSettingsModel {
         /// A per-app pick, nil to return the row to "as set above".
         case mode(source: String, mode: CallAppMode?)
         case name(String)
+        /// The OpenAI-compatible endpoint: other local apps may use the notes model, or not.
+        case llmEndpoint(Bool)
 
         /// Whether the page must read everything again after the save. A name is typed letter by letter and must not.
         public var needsRefresh: Bool {
             switch self {
-            case .enabled: return true
+            case .enabled, .llmEndpoint: return true
             case .callMode, .retention, .liveCaptions, .mode, .name: return false
             }
         }
     }
 
     /// `daemonRetention` is what the daemon reported, nil when it could not be asked; it wins because the daemon is what
-    /// deletes the audio. The folder's iCloud answer is read fresh on every load: a pick of a different folder moves it.
+    /// deletes the audio. `llmEndpoint` is the daemon's endpoint answer (`LLMEndpointValues.of`), the only truthful source
+    /// for those fields. The folder's iCloud answer is read fresh on every load: a pick of a different folder moves it.
     public static func load(defaults d: UserDefaults, daemonRetention: MeetingRetention?, daemonLiveCaptions: Bool? = nil,
-                            liveCaptionsDefault: Bool? = nil, notesWriter: NotesWriterState,
+                            liveCaptionsDefault: Bool? = nil, llmEndpoint: LLMEndpointValues = LLMEndpointValues(),
+                            notesWriter: NotesWriterState,
                             fullName: String, home: URL = FileManager.default.homeDirectoryForCurrentUser,
                             probe: ICloudSync.Probe = ICloudSync.probe) -> MeetingSettingsValues {
         let folder = MeetingSettings.folder(d, home: home, probe: probe)
@@ -167,18 +221,21 @@ public enum MeetingSettingsModel {
             retentionVerified: daemonRetention != nil,
             liveCaptions: daemonLiveCaptions ?? MeetingSettings.liveCaptionsCopy(d) ?? false,
             liveCaptionsDefault: liveCaptionsDefault, liveCaptionsVerified: daemonLiveCaptions != nil,
-            yourName: d.string(forKey: MeetingSettings.nameKey) ?? "", yourNameFallback: fullName, notesWriter: notesWriter)
+            yourName: d.string(forKey: MeetingSettings.nameKey) ?? "", yourNameFallback: fullName, notesWriter: notesWriter,
+            llmEndpoint: llmEndpoint)
     }
 
     /// The folder pick as one step: stored, then the values read again, so the page's iCloud
     /// answer is the new folder's own and a caller cannot save without the recompute.
     public static func folderPicked(_ url: URL, defaults d: UserDefaults, daemonRetention: MeetingRetention?,
-                                    daemonLiveCaptions: Bool? = nil, liveCaptionsDefault: Bool? = nil, notesWriter: NotesWriterState, fullName: String,
+                                    daemonLiveCaptions: Bool? = nil, liveCaptionsDefault: Bool? = nil,
+                                    llmEndpoint: LLMEndpointValues = LLMEndpointValues(), notesWriter: NotesWriterState,
+                                    fullName: String,
                                     home: URL = FileManager.default.homeDirectoryForCurrentUser,
                                     probe: ICloudSync.Probe = ICloudSync.probe) -> MeetingSettingsValues {
         MeetingSettings.setFolder(url, d)
         return load(defaults: d, daemonRetention: daemonRetention, daemonLiveCaptions: daemonLiveCaptions,
-                    liveCaptionsDefault: liveCaptionsDefault, notesWriter: notesWriter,
+                    liveCaptionsDefault: liveCaptionsDefault, llmEndpoint: llmEndpoint, notesWriter: notesWriter,
                     fullName: fullName, home: home, probe: probe)
     }
 
@@ -196,6 +253,7 @@ public enum MeetingSettingsModel {
         if old.enabled != new.enabled { out.append(.enabled(new.enabled)) }
         if old.callMode != new.callMode { out.append(.callMode(new.callMode)) }
         if old.retention != new.retention { out.append(.retention(new.retention)) }
+        if old.llmEndpoint.on != new.llmEndpoint.on { out.append(.llmEndpoint(new.llmEndpoint.on)) }
         if old.liveCaptions != new.liveCaptions { out.append(.liveCaptions(new.liveCaptions)) }
         if old.yourName != new.yourName { out.append(.name(new.yourName)) }
         for app in new.apps where old.apps.first(where: { $0.id == app.id })?.mode != app.mode {
@@ -210,10 +268,14 @@ public enum MeetingSettingsModel {
 public struct MeetingSettingsApplier {
     public var defaults: UserDefaults
     public var client: StudioClient
+    /// The owner bearer, read when a call needs it and kept nowhere (`OwnerToken.read` on the daemon's home).
+    public var ownerToken: () -> String?
 
-    public init(defaults: UserDefaults, client: StudioClient) {
+    public init(defaults: UserDefaults, client: StudioClient,
+                ownerToken: @escaping () -> String? = { OwnerToken.read(home: DaemonHome.current()) }) {
         self.defaults = defaults
         self.client = client
+        self.ownerToken = ownerToken
     }
 
     /// nil when saved; else the sentence for the user (nothing was changed).
@@ -234,6 +296,12 @@ public struct MeetingSettingsApplier {
                 return MeetingErrorText.sentence(error, action: .settings, text: text)
             }
             MeetingSettings.setRetention(pick, defaults)
+        case .llmEndpoint(let on):
+            do {
+                try await client.setLLMEndpoint(on: on, ownerToken: ownerToken())
+            } catch {
+                return MeetingErrorText.sentence(error, action: .settings, text: text)
+            }
         case .liveCaptions(let on):
             do {
                 try await client.setMeetingLiveCaptions(on)
