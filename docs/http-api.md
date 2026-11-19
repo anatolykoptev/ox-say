@@ -53,7 +53,7 @@ Glossary routes (the heard → meant pairs applied to recognised text). `POST /v
 
 | Route | Description |
 |-------|-------------|
-| `GET /v1/glossary` | `{"pairs":[…]}` — every pair: `id`, `heard`, `meant`, `status` (`candidate`/`active`/`rejected`), `sightings` (hashes only), `seen`, `added`, and `vetted` when present (the dictionary found the heard form a single non-ordinary word, so it may activate on the evidence of other spellings of its meant form) |
+| `GET /v1/glossary` | `{"pairs":[…]}` — every pair: `id`, `heard`, `meant`, `status` (`candidate`/`active`/`rejected`), `sightings` (hashes only), `seen` (agent filings), `seen_dictation` (sightings that came from a later dictation, see below), `needed` (read-only: the distinct sentences it needs to activate on its own evidence — 2, or 3 for a single heard word under 5 letters), `added`, and `vetted` when present (the dictionary found the heard form a single non-ordinary word, so it may activate on the evidence of other spellings of its meant form) |
 | `POST /v1/glossary` | `{"heard","meant","context"}` — file a pair. The context must contain the heard form and only its hash is kept; `409` when the heard form already maps to another term, `400` on an invalid pair (heard: 1–4 words of letters, digits, spaces, `'` and `-` only; meant: ≤ 4 words, ≤ 60 chars, letters/digits/spaces and `. - + _ ' #` only) |
 | `POST /v1/glossary/<id>/approve` | Make the pair active (also reactivates a rejected one). Owner-only — `403` without `Authorization: Bearer <owner token>` |
 | `POST /v1/glossary/<id>/reject` | Stop the pair applying; it stays as a tombstone a later `add` cannot reactivate. Owner-only — `403` without `Authorization: Bearer <owner token>` |
@@ -77,6 +77,43 @@ the rest keep their timings), so text, words, SRT and VTT agree. In a streaming 
 whose words an `/audio` chunk boundary splits is corrected only in the final `text` of
 `/finish` — the per-chunk `segments` texts are rewritten one response at a time and keep what
 they decoded.
+
+A recurring misrecognition in dictation counts as a sighting. An agent files a pair once, and rarely files the
+same one again from another sentence, so the evidence a candidate needs (`needed`) would never arrive. When
+a dictation's `/finish` returns, the daemon scans the recogniser's raw `text` (before the glossary is applied)
+for the heard forms of candidate pairs; each sentence that carries one is recorded as a sighting, deduplicated
+by its hash like an agent's. The guards, all required:
+
+- Only a **vetted** candidate counts (`vetted: true`: the heard form is a single word the dictionary does not
+  know as an ordinary word). A pair with no verdict, a phrase, or an ordinary word («давайте») never gains a
+  sighting this way; agent filings count as before.
+- Active pairs need nothing, a rejected pair is a tombstone and gains nothing, and an owner edit restarts a
+  pair from zero.
+- Only the live dictation counts (`/finish` of a streaming session). Meeting transcripts, `/v1/audio/transcriptions`,
+  `/v1/transcripts` and the MCP `transcribe` tool never do: a meeting repeats the same far-side audio and a
+  file can be run again. The app's one-shot fallback (used
+  when a streaming session fails) goes through `/v1/audio/transcriptions` and cannot be told from a file
+  transcription, so a dictation that took it is not counted: an under-count, which fails safe.
+- Privacy: only the 8-hex hash of the sentence is stored, and the daemon logs counts (`sightings`, `activated`),
+  never a sentence or a heard form.
+- At most **one** sighting per meant per dictation: two sentences of one utterance, or two spellings of one
+  term in it, do not activate a pair, because recurrence means the error comes back in a later dictation.
+- One identity for both sources: a sentence is hashed by its **words** (lowercased, punctuation dropped), so
+  the same words under different punctuation are one sentence. It ends at `. ! ? …` or a newline that is
+  followed by white space or the end of the text; a `?` inside a URL does not end it, and neither does the dot
+  of an abbreviation («т.е.», "e.g.", "Mr."). An agent's filing hashes the sentence of its `context` that carries
+  the heard form by the same rule, so a sentence an agent filed and a dictation later repeats is one sighting.
+  A filing adds nothing when the pair already holds the hash of its whole context or of one of those sentences
+  (an identical retry is a no-op); a context where no sentence carries the form is hashed whole. A hash stored
+  before this rule (a whole context) also counts as the sentence it carries, within 64 words.
+- The match is the exact heard form, whole word, in the raw output; no dictionary is loaded and no file is
+  written when nothing matched. The dictation that completes a pair's evidence is answered with the pairs it
+  started with; the next one gets the correction.
+- After recording, the usual promotion runs, so a pair that reaches `needed` activates exactly as it would from
+  agent filings. At most 8 sightings are kept per pair.
+
+`seen` counts the agent's filings of the pair, `seen_dictation` how many of its `sightings` came from this
+rule; the rest were filed by an agent. A glossary file written before `seen_dictation` loads with 0.
 
 Model routes (list the models this Mac can run, and install or remove the optional ones):
 

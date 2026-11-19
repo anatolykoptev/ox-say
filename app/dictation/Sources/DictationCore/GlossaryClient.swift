@@ -23,13 +23,52 @@ public struct GlossaryPair: Equatable, Identifiable {
     public let status: GlossaryStatus
     /// How many times an agent filed it.
     public let seen: Int
+    /// The distinct sentences the pair has been heard in (the daemon lists their hashes, never the sentences).
+    public let sightings: Int
+    /// How many of those came from a later dictation carrying the heard form again; the rest an agent filed.
+    public let seenDictation: Int
+    /// The sentences it needs to activate on its own evidence; 0 when an older daemon does not say.
+    public let needed: Int
 
-    public init(id: String, heard: String, meant: String, status: GlossaryStatus, seen: Int) {
+    public init(id: String, heard: String, meant: String, status: GlossaryStatus, seen: Int,
+                sightings: Int = 0, seenDictation: Int = 0, needed: Int = 0) {
         self.id = id
         self.heard = heard
         self.meant = meant
         self.status = status
         self.seen = seen
+        self.sightings = sightings
+        self.seenDictation = seenDictation
+        self.needed = needed
+    }
+
+    /// The evidence cell: a candidate shows its progress toward activation («1 из 2»); any other pair, or a
+    /// candidate whose daemon does not say what it needs, shows the plain count of sentences.
+    public var progressText: String {
+        if status == .candidate, needed > 0 {
+            return L10nKey.glossaryProgress.text(String(min(sightings, needed)), String(needed))
+        }
+        return String(sightings)
+    }
+
+    /// Where the sightings came from, for the row's tooltip: sentences, counted in the words of the language.
+    public var provenanceText: String {
+        L10nKey.glossaryProvenance.text(Self.sentences(seenDictation), Self.sentences(max(0, sightings - seenDictation)))
+    }
+
+    /// "1 sentence" / "2 sentences" / «5 предложений»: the plural form is the language's. A language with a form of
+    /// its own for 2-4 (Russian) ships a `few` text that differs from its `many` text; one without (English) ships
+    /// both the same, so the strings themselves name the rule and a language added later needs no extra key.
+    static func sentences(_ n: Int) -> String {
+        let slavic = L10nKey.glossarySentencesFew.text != L10nKey.glossarySentencesMany.text
+        let tail = n % 100
+        let key: L10nKey
+        switch (slavic, n % 10) {
+        case (true, 1) where tail != 11, (false, _) where n == 1: key = .glossarySentencesOne
+        case (true, 2...4) where !(12...14).contains(tail): key = .glossarySentencesFew
+        default: key = .glossarySentencesMany
+        }
+        return key.text(String(n))
     }
 
     /// `{"pairs":[…]}`; nil when it is not that. A row with no id, heard or meant is skipped, never shown half.
@@ -48,7 +87,8 @@ public struct GlossaryPair: Equatable, Identifiable {
         guard let id = row["id"] as? String, !id.isEmpty, let heard = row["heard"] as? String,
               let meant = row["meant"] as? String else { return nil }
         return GlossaryPair(id: id, heard: heard, meant: meant, status: GlossaryStatus(row["status"] as? String ?? ""),
-                            seen: (row["seen"] as? Int) ?? 0)
+                            seen: (row["seen"] as? Int) ?? 0, sightings: (row["sightings"] as? [Any])?.count ?? 0,
+                            seenDictation: (row["seen_dictation"] as? Int) ?? 0, needed: (row["needed"] as? Int) ?? 0)
     }
 }
 

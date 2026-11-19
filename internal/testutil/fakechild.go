@@ -94,6 +94,9 @@
 //	                               for a chunk of 3200 bytes or more (so one
 //	                               response can carry several); logs
 //	                               "sess-audio <id> <content-length> <content-type>"
+//	                               OXSAY_FAKE_STT_SESSION_TEXTS_FILE (a JSON
+//	                               array of strings, re-read per chunk) replaces
+//	                               the n-th chunk text
 //	POST   /sessions/{id}/finish -> 200 done with text = the chunks joined;
 //	                               logs "sess-finish <id>"
 //	DELETE /sessions/{id}        -> 200 {}; logs "sess-del <id>"
@@ -263,6 +266,19 @@ func fakeSTTSegments(s *fakeSTTSession) []map[string]any {
 	}
 	s.returned = len(s.texts)
 	return segs
+}
+
+// fakeSTTChunkText is what the i-th chunk (0-based) of a session decodes to: "chunk <i+1>", unless the file named
+// by OXSAY_FAKE_STT_SESSION_TEXTS_FILE (a JSON array of strings, re-read on every chunk so a test can change
+// it between dictations) has an i-th entry.
+func fakeSTTChunkText(i int) string {
+	if path := os.Getenv("OXSAY_FAKE_STT_SESSION_TEXTS_FILE"); path != "" {
+		var texts []string
+		if raw, err := os.ReadFile(path); err == nil && json.Unmarshal(raw, &texts) == nil && i < len(texts) {
+			return texts[i]
+		}
+	}
+	return "chunk " + strconv.Itoa(i+1)
 }
 
 // sttArgv reports whether argv looks like an ox-stt invocation.
@@ -679,7 +695,7 @@ func runFakeSTTServe(args []string) int {
 				closed = 2
 			}
 			for range closed {
-				s.texts = append(s.texts, "chunk "+strconv.Itoa(len(s.texts)+1))
+				s.texts = append(s.texts, fakeSTTChunkText(len(s.texts)))
 			}
 			segs = fakeSTTSegments(s)
 		}
