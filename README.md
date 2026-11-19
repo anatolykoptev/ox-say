@@ -22,7 +22,8 @@ The repository is `ox-say`. The app and the menu-bar item are called OxSay, and 
   with outside guests work. Tell people you are recording, because the law in some places requires everyone's consent.
 - **Languages.** The speech recognizer covers 25 European languages, Russian and English among them. Notes are
   written in the language of the transcript. The optional Whisper model adds 99 languages to the command line
-  and the API.
+  and the API. The default recognizer, parakeet-ultra, cut word errors on accented English from 18.85% to 16.53%
+  in our synthetic-speech test ([accuracy numbers](docs/performance.md#speech-recognition-accuracy)).
 - **It works on a 16 GB Mac.** The notes model is chosen by the memory you have, and it leaves room for the
   browser that runs your call.
 - **Apple Silicon and Intel.** Intel Macs with an AMD graphics card run the same engines. A few features

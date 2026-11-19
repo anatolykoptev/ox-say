@@ -28,6 +28,25 @@ scripts/fetch-models.sh /tmp/ox-say-models
 go run ./cmd/ox-say-bench -engine /tmp/ox-say-engine/out -models /tmp/ox-say-models
 ```
 
+## Speech recognition accuracy
+
+Word error rate (lower is better) of the speech recognizer, before and after the switch to
+parakeet-ultra in v0.1.39.
+
+| Set | v3 q8_0 (before) | ultra q8_0 (default) | ultra f16 (optional) |
+|---|---|---|---|
+| Russian-accented English (proxy) | 18.85% | 16.53% | 15.67% |
+| Native English | 5.03% | 4.89% | unchanged |
+| Russian | 1.46% | 0.97% | unchanged |
+
+- Cyrillic transliterations in English output fell from 8 to 3 clips.
+- f16 against q8_0 on accented English: −0.86 pt, paired bootstrap 95% CI −1.57 to −0.26. The f16
+  weights are 1.26 GB against 669 MB and about 2× slower per clip, so they are opt-in
+  ([Configuration](configuration.md#parakeet-ultra-f16)).
+- Method: synthetic speech, 125 English sentences in two macOS voices plus 20 Russian sentences,
+  the same engine build for every column. Not yet measured on human recordings.
+- Weights: [Koptev/parakeet-ultra-ggml](https://huggingface.co/Koptev/parakeet-ultra-ggml).
+
 ## Apple M5 Pro, macOS 26.5 (2026-10-14)
 
 The first-start notes below read well under 1 s because macOS caches compiled Metal libraries
