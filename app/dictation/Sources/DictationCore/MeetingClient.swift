@@ -153,6 +153,14 @@ extension StudioClient {
         return key
     }
 
+    /// PUT /v1/meetings/settings: live captions on or off. Only this field is sent; a PUT keeps the rest.
+    public func setMeetingLiveCaptions(_ on: Bool) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["live_captions": on])
+        var request = post("v1/meetings/settings", body: body, timeout: Self.quickTimeout)
+        request.httpMethod = "PUT"
+        _ = try await succeed(request)
+    }
+
     /// POST /v1/meetings/notes-model/install: download the notes model.
     public func installNotesModel() async throws {
         _ = try await succeed(post("v1/meetings/notes-model/install", body: nil, timeout: Self.quickTimeout))

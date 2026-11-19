@@ -147,6 +147,12 @@ public struct MeetingSettingsValues: Equatable {
     public var retention: MeetingRetention
     /// False when the daemon could not be asked: `retention` is the app's last copy, not a fact.
     public var retentionVerified: Bool
+    /// Live captions while recording (the daemon's switch).
+    public var liveCaptions: Bool
+    /// What the daemon picks by default on this Mac; nil when it did not say.
+    public var liveCaptionsDefault: Bool?
+    /// False when the daemon could not be asked: `liveCaptions` is the app's last copy (off when there is none).
+    public var liveCaptionsVerified: Bool
     public var yourName: String
     /// What the name falls back to (the macOS full name).
     public var yourNameFallback: String
@@ -155,7 +161,8 @@ public struct MeetingSettingsValues: Equatable {
     public var llmEndpoint: LLMEndpointValues
 
     public init(enabled: Bool, callMode: CallGlobalMode, apps: [CallApp], folderPath: String, folderSyncsICloud: Bool = false,
-                retention: MeetingRetention, retentionVerified: Bool = true, yourName: String, yourNameFallback: String,
+                retention: MeetingRetention, retentionVerified: Bool = true, liveCaptions: Bool = false,
+                liveCaptionsDefault: Bool? = nil, liveCaptionsVerified: Bool = true, yourName: String, yourNameFallback: String,
                 notesWriter: NotesWriterState, llmEndpoint: LLMEndpointValues = LLMEndpointValues()) {
         self.enabled = enabled
         self.callMode = callMode
@@ -164,6 +171,9 @@ public struct MeetingSettingsValues: Equatable {
         self.folderSyncsICloud = folderSyncsICloud
         self.retention = retention
         self.retentionVerified = retentionVerified
+        self.liveCaptions = liveCaptions
+        self.liveCaptionsDefault = liveCaptionsDefault
+        self.liveCaptionsVerified = liveCaptionsVerified
         self.yourName = yourName
         self.yourNameFallback = yourNameFallback
         self.notesWriter = notesWriter
@@ -177,6 +187,7 @@ public enum MeetingSettingsModel {
         case enabled(Bool)
         case callMode(CallGlobalMode)
         case retention(MeetingRetention)
+        case liveCaptions(Bool)
         /// A per-app pick, nil to return the row to "as set above".
         case mode(source: String, mode: CallAppMode?)
         case name(String)
@@ -187,35 +198,53 @@ public enum MeetingSettingsModel {
         public var needsRefresh: Bool {
             switch self {
             case .enabled, .llmEndpoint: return true
-            case .callMode, .retention, .mode, .name: return false
+            case .callMode, .retention, .liveCaptions, .mode, .name: return false
             }
         }
     }
 
-    /// `daemon` is what the daemon reported, nil when it could not be asked; its retention wins because the daemon is
-    /// what deletes the audio, and its endpoint fields are the only truthful answer for them. The folder's iCloud
-    /// answer is read fresh on every load: a pick of a different folder moves it.
-    public static func load(defaults d: UserDefaults, daemon: MeetingDaemonSettings?, notesWriter: NotesWriterState,
+    /// `daemonRetention` is what the daemon reported, nil when it could not be asked; it wins because the daemon is what
+    /// deletes the audio. `llmEndpoint` is the daemon's endpoint answer (`LLMEndpointValues.of`), the only truthful source
+    /// for those fields. The folder's iCloud answer is read fresh on every load: a pick of a different folder moves it.
+    public static func load(defaults d: UserDefaults, daemonRetention: MeetingRetention?, daemonLiveCaptions: Bool? = nil,
+                            liveCaptionsDefault: Bool? = nil, llmEndpoint: LLMEndpointValues = LLMEndpointValues(),
+                            notesWriter: NotesWriterState,
                             fullName: String, home: URL = FileManager.default.homeDirectoryForCurrentUser,
                             probe: ICloudSync.Probe = ICloudSync.probe) -> MeetingSettingsValues {
         let folder = MeetingSettings.folder(d, home: home, probe: probe)
+        // What the daemon just said is the app's copy from now on, so the fallback never revives an older value.
+        if let daemonLiveCaptions { MeetingSettings.setLiveCaptionsCopy(daemonLiveCaptions, d) }
         return MeetingSettingsValues(
             enabled: MeetingSettings.enabled(d), callMode: MeetingSettings.callMode(d), apps: CallPolicy.apps(d),
             folderPath: folder.path, folderSyncsICloud: ICloudSync.syncs(folder, home: home, probe: probe),
-            retention: daemon?.retention ?? MeetingSettings.retention(d),
-            retentionVerified: daemon != nil, yourName: d.string(forKey: MeetingSettings.nameKey) ?? "", yourNameFallback: fullName, notesWriter: notesWriter,
-            llmEndpoint: LLMEndpointValues.of(daemon))
+            retention: daemonRetention ?? MeetingSettings.retention(d),
+            retentionVerified: daemonRetention != nil,
+            liveCaptions: daemonLiveCaptions ?? MeetingSettings.liveCaptionsCopy(d) ?? false,
+            liveCaptionsDefault: liveCaptionsDefault, liveCaptionsVerified: daemonLiveCaptions != nil,
+            yourName: d.string(forKey: MeetingSettings.nameKey) ?? "", yourNameFallback: fullName, notesWriter: notesWriter,
+            llmEndpoint: llmEndpoint)
     }
 
     /// The folder pick as one step: stored, then the values read again, so the page's iCloud
     /// answer is the new folder's own and a caller cannot save without the recompute.
-    public static func folderPicked(_ url: URL, defaults d: UserDefaults, daemon: MeetingDaemonSettings?,
-                                    notesWriter: NotesWriterState, fullName: String,
+    public static func folderPicked(_ url: URL, defaults d: UserDefaults, daemonRetention: MeetingRetention?,
+                                    daemonLiveCaptions: Bool? = nil, liveCaptionsDefault: Bool? = nil,
+                                    llmEndpoint: LLMEndpointValues = LLMEndpointValues(), notesWriter: NotesWriterState,
+                                    fullName: String,
                                     home: URL = FileManager.default.homeDirectoryForCurrentUser,
                                     probe: ICloudSync.Probe = ICloudSync.probe) -> MeetingSettingsValues {
         MeetingSettings.setFolder(url, d)
-        return load(defaults: d, daemon: daemon, notesWriter: notesWriter,
+        return load(defaults: d, daemonRetention: daemonRetention, daemonLiveCaptions: daemonLiveCaptions,
+                    liveCaptionsDefault: liveCaptionsDefault, llmEndpoint: llmEndpoint, notesWriter: notesWriter,
                     fullName: fullName, home: home, probe: probe)
+    }
+
+    /// A read that an edit overtook: everything it carries stands, except the switch, which stays as the edit left it.
+    public static func keepingPendingEdit(_ loaded: MeetingSettingsValues, current: MeetingSettingsValues) -> MeetingSettingsValues {
+        var out = loaded
+        out.liveCaptions = current.liveCaptions
+        out.liveCaptionsVerified = current.liveCaptionsVerified
+        return out
     }
 
     /// The edits that take `old` to `new`.
@@ -225,6 +254,7 @@ public enum MeetingSettingsModel {
         if old.callMode != new.callMode { out.append(.callMode(new.callMode)) }
         if old.retention != new.retention { out.append(.retention(new.retention)) }
         if old.llmEndpoint.on != new.llmEndpoint.on { out.append(.llmEndpoint(new.llmEndpoint.on)) }
+        if old.liveCaptions != new.liveCaptions { out.append(.liveCaptions(new.liveCaptions)) }
         if old.yourName != new.yourName { out.append(.name(new.yourName)) }
         for app in new.apps where old.apps.first(where: { $0.id == app.id })?.mode != app.mode {
             out.append(.mode(source: app.id, mode: app.mode))
@@ -272,6 +302,13 @@ public struct MeetingSettingsApplier {
             } catch {
                 return MeetingErrorText.sentence(error, action: .settings, text: text)
             }
+        case .liveCaptions(let on):
+            do {
+                try await client.setMeetingLiveCaptions(on)
+            } catch {
+                return MeetingErrorText.sentence(error, action: .settings, text: text)
+            }
+            MeetingSettings.setLiveCaptionsCopy(on, defaults)
         }
         return nil
     }
@@ -294,4 +331,14 @@ public enum DictationSettings {
     public static func mode(_ d: UserDefaults) -> HotkeyMode { d.string(forKey: modeKey).flatMap(HotkeyMode.init(rawValue:)) ?? .hold }
 
     public static func setMode(_ mode: HotkeyMode, _ d: UserDefaults) { d.set(mode.rawValue, forKey: modeKey) }
+
+    /// «Показывать пилюлю при диктовке»: whether the pill's listening and
+    /// working looks appear while a dictation runs. Read live at every show,
+    /// so the switch needs no restart. Missing key (an install that never
+    /// opened Settings) reads as on.
+    public static let showPillKey = "showDictationPill"
+
+    public static func showPill(_ d: UserDefaults) -> Bool { (d.object(forKey: showPillKey) as? Bool) ?? true }
+
+    public static func setShowPill(_ on: Bool, _ d: UserDefaults) { d.set(on, forKey: showPillKey) }
 }

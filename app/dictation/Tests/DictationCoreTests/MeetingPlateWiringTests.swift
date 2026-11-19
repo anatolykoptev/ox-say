@@ -69,7 +69,7 @@ final class MeetingPlateWiringTests: XCTestCase {
         let check = try XCTUnwrap(body(o, of: "private func checkVisible(expected: Int, owner ownerAtShow: Int) {"))
         XCTAssertTrue(check.contains("watch.observe(onscreen:"))
         XCTAssertTrue(check.contains("PlateWindowSpec.apply(to: panel, extra: .ignoresCycle)"))
-        let show = try XCTUnwrap(body(o, of: "private func show() {"))
+        let show = try XCTUnwrap(body(o, of: "private func show(owner who: PillOwner) -> PillOrder {"))
         XCTAssertTrue(show.contains("PlateWindowSpec.apply(to: panel, extra: .ignoresCycle)\n        panel.orderFrontRegardless()"))
     }
 

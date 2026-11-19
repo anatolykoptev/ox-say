@@ -310,6 +310,8 @@
 "permission.state.unknown" = "Check in Settings";
 "permission.fix" = "Fix";
 "permission.open_settings" = "Open Settings";
+"settings.code_vocab" = "Code vocabulary";
+"settings.code_vocab.hint" = "Helps recognize names from code. Turn it on when you dictate about code: in ordinary speech it may take a word for a term.";
 "settings.general" = "General";
 "settings.login" = "Start OxSay when I log in";
 "settings.check_updates" = "Check for Updates…";
@@ -323,6 +325,8 @@
 "dictation.mode.toggle" = "Press once to start, again to stop";
 "dictation.recent.empty" = "Nothing yet. Your latest dictations will appear here.";
 "dictation.recent.footer" = "Kept in memory only. They disappear when you quit OxSay.";
+"dictation.pill" = "Show the dictation pill";
+"dictation.pill.footer" = "When off, nothing appears on screen while you dictate; errors are still shown.";
 "voices.read_aloud" = "Read aloud";
 "voices.read_aloud.footer" = "Select text in any app, press the key, and OxSay reads it aloud.";
 "voices.russian" = "Voice for Russian text";
@@ -395,6 +399,11 @@
 "meeting.error.off" = "Meeting notes are switched off. Turn them on in Settings.";
 "meetings.title.call" = "%@ call";
 "settings.keep.unchecked" = "Couldn't check with the service. This is your last choice.";
+"settings.live_captions" = "Live captions during a meeting";
+"settings.live_captions.footer" = "Shows what is said while you record. Speech recognition uses the processor.";
+"settings.live_captions.default_on" = "On by default on this Mac.";
+"settings.live_captions.default_off" = "Off by default on this Mac.";
+"badge.open_live" = "Open live captions";
 "notice.meeting.copy_stale" = "The title was changed, but the copy in your notes folder has not been updated.";
 "search.placeholder" = "Search meetings";
 "search.searching" = "Searching…";

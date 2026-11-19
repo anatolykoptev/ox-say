@@ -14,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/anatolykoptev/ox-say/internal/codevocab"
 	"github.com/anatolykoptev/ox-say/internal/meeting"
 )
 
@@ -390,10 +391,11 @@ func (d *Daemon) handleMeetingDelete(w http.ResponseWriter, r *http.Request) {
 // choice resolved against this Mac's default (LiveCaptionsDefault says which that is). AEC is the effective
 // meeting_aec choice, "on" or "off"; a meeting setting that was never made reads as on.
 type meetingSettingsAnswer struct {
-	RetentionDays       int    `json:"retention_days"`
-	LiveCaptions        bool   `json:"live_captions"`
-	LiveCaptionsDefault bool   `json:"live_captions_default"`
-	AEC                 string `json:"meeting_aec"`
+	RetentionDays       int      `json:"retention_days"`
+	LiveCaptions        bool     `json:"live_captions"`
+	LiveCaptionsDefault bool     `json:"live_captions_default"`
+	AEC                 string   `json:"meeting_aec"`
+	CodeVocabulary      []string `json:"code_vocabulary"`
 	// LLMEndpoint is the effective llm_endpoint choice, "on" or "off" (a setting never made reads as off).
 	// LLMEndpointCtx is the context the settings ASK for (stored, or the default); LLMEndpointCtxEffective is
 	// what the notes child runs with — or would on its next start — after the fit and the model's own limit,
@@ -420,6 +422,7 @@ func (d *Daemon) settingsAnswer() meetingSettingsAnswer {
 		LiveCaptions:            d.liveEnabled(),
 		LiveCaptionsDefault:     d.liveDefault(),
 		AEC:                     aec,
+		CodeVocabulary:          d.codePacks(),
 		LLMEndpoint:             ep,
 		LLMEndpointCtx:          st.LLMEndpointCtxTokens(),
 		LLMEndpointCtxEffective: d.notesCtxEffective(),
@@ -435,12 +438,13 @@ func (d *Daemon) handleMeetingSettings(w http.ResponseWriter, _ *http.Request) {
 // meetingSettingsIn is the body of PUT /v1/meetings/settings. Pointers: an absent retention_days must not read as
 // 0, which is "never delete", and an absent live_captions must not read as "off".
 type meetingSettingsIn struct {
-	RetentionDays   *int    `json:"retention_days"`
-	LiveCaptions    *bool   `json:"live_captions"`
-	AEC             *string `json:"meeting_aec"`
-	LLMEndpoint     *string `json:"llm_endpoint"`
-	LLMEndpointCtx  *int    `json:"llm_endpoint_ctx"`
-	LLMEndpointMaxS *int    `json:"llm_endpoint_max_s"`
+	RetentionDays   *int      `json:"retention_days"`
+	LiveCaptions    *bool     `json:"live_captions"`
+	AEC             *string   `json:"meeting_aec"`
+	CodeVocabulary  *[]string `json:"code_vocabulary"`
+	LLMEndpoint     *string   `json:"llm_endpoint"`
+	LLMEndpointCtx  *int      `json:"llm_endpoint_ctx"`
+	LLMEndpointMaxS *int      `json:"llm_endpoint_max_s"`
 	// What GET answers beside the settings: a client that sends the answer back is not refused as long as it
 	// changes nothing the owner guards (changesOwnerFields). Read, never stored.
 	LiveCaptionsDefault     *bool   `json:"live_captions_default"`
@@ -449,8 +453,8 @@ type meetingSettingsIn struct {
 }
 
 func (in *meetingSettingsIn) empty() bool {
-	return in.RetentionDays == nil && in.LiveCaptions == nil && in.AEC == nil && in.LLMEndpoint == nil &&
-		in.LLMEndpointCtx == nil && in.LLMEndpointMaxS == nil
+	return in.RetentionDays == nil && in.LiveCaptions == nil && in.AEC == nil && in.CodeVocabulary == nil &&
+		in.LLMEndpoint == nil && in.LLMEndpointCtx == nil && in.LLMEndpointMaxS == nil
 }
 
 // errOwnerRequired is a settings change that only the owner may make.
@@ -471,6 +475,13 @@ func (in *meetingSettingsIn) changesOwnerFields(cur meeting.Settings) bool {
 func (in *meetingSettingsIn) validate() string {
 	if in.AEC != nil && *in.AEC != meeting.AECOn && *in.AEC != meeting.AECOff {
 		return "meeting_aec must be \"on\" or \"off\""
+	}
+	if in.CodeVocabulary != nil {
+		for _, name := range *in.CodeVocabulary {
+			if !codevocab.ValidName(name) {
+				return fmt.Sprintf("code_vocabulary %q is not one of %v", name, codevocab.Names)
+			}
+		}
 	}
 	if in.LLMEndpoint != nil && *in.LLMEndpoint != meeting.LLMEndpointOn && *in.LLMEndpoint != meeting.LLMEndpointOff {
 		return "llm_endpoint must be \"on\" or \"off\""
@@ -500,6 +511,9 @@ func (in *meetingSettingsIn) applyTo(cur meeting.Settings) meeting.Settings {
 	if in.AEC != nil {
 		cur.AEC = *in.AEC
 	}
+	if in.CodeVocabulary != nil {
+		cur.CodeVocabulary = codevocab.Enabled(*in.CodeVocabulary)
+	}
 	if in.LLMEndpoint != nil {
 		cur.LLMEndpoint = *in.LLMEndpoint
 	}
@@ -520,7 +534,7 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if in.empty() {
-		writeErr(w, http.StatusBadRequest, "retention_days, live_captions, meeting_aec, llm_endpoint, llm_endpoint_ctx or llm_endpoint_max_s is required")
+		writeErr(w, http.StatusBadRequest, "retention_days, live_captions, meeting_aec, code_vocabulary, llm_endpoint, llm_endpoint_ctx or llm_endpoint_max_s is required")
 		return
 	}
 	if msg := in.validate(); msg != "" {
@@ -557,6 +571,11 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 		}
 		d.writeMeetingErr(w, err)
 		return
+	}
+	if in.CodeVocabulary != nil {
+		// The boost list's input changed: rebuild now, on this goroutine, so the first dictation after the
+		// toggle is boosted with the new packs and the answer reflects what is on.
+		d.refreshBoost()
 	}
 	d.live.reconcile()
 	if in.LLMEndpoint != nil && *in.LLMEndpoint == meeting.LLMEndpointOff {

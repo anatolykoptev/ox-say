@@ -331,7 +331,8 @@ frame; the talker is unchanged.
 vendored ggml takes the same `patches/ggml`. It reads a 16 kHz mono WAV and
 prints JSON: `text`, `segments` and `words` (`w`, `s`, `e`, `p`; seconds).
 
-- `--engine parakeet` (default): Parakeet TDT 0.6B v3, 25 European languages,
+- `--engine parakeet` (default): Parakeet TDT 0.6B (the parakeet-ultra weights
+  ship by default), 25 European languages,
   punctuation and word timings. Long audio is cut into chunks of at most
   `--chunk-s` (30) seconds at the quietest 10 ms frame near each window's end:
   one graph per chunk keeps each GPU command buffer under the macOS watchdog

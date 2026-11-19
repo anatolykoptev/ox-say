@@ -280,6 +280,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // While a dictation runs the pill belongs to it: the overlay asks the
         // controller's state before letting any hide take it down.
         overlay.dictationState = { [weak self] in self?.controller?.state ?? .idle }
+        // «Показывать пилюлю при диктовке», read at every show so the Settings
+        // switch needs no restart; off gates the listening/working looks only.
+        overlay.showsDictationPill = { DictationSettings.showPill(.standard) }
         streamer.onText = { [weak self] text in
             guard let self, PillOwnership.acceptsLiveText(dictation: self.controller.state) else { return }
             self.overlay.setLiveText(text)
@@ -692,7 +695,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// recording owns the pill, so during dictation the kickstart is silent.
     private func showHandshakePill() {
         guard controller.state == .idle else { return }
-        overlay.showWorking()
+        overlay.showWorking(owner: .task)
         overlay.setWorkingText(L10nKey.updateFinishingPill.text)
         overlay.setHintHidden(true)
         beginPill(&handshakePill)
@@ -705,9 +708,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func endPill(_ slot: inout PillSlot) {
         switch slot.end(current: overlay.owner, dictation: controller.state) {
         case .finish: overlay.finish()
-        case .restore(.listening): overlay.showListening()
+        case .restore(.listening): overlay.showListening(owner: .dictation)
         case .restore(.working):
-            overlay.showWorking()
+            overlay.showWorking(owner: .dictation)
             tickWorking()
         case .leave: break
         }
@@ -720,7 +723,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// A Studio task's pill: the newest live task shows.
     private func showStudioPill(task: String, text: String) {
-        overlay.showWorking()
+        overlay.showWorking(owner: .task)
         overlay.setWorkingText(text)
         overlay.setHintHidden(true)
         studioPills.begin(task: task, text: text, owner: overlay.owner)
@@ -842,7 +845,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.mainWindow.source?.recordingChanged()
             },
             daemonStatus: { [unowned self] in self.serviceStatus },
-            updateInstalling: { [unowned self] in self.updateInstalling }))
+            updateInstalling: { [unowned self] in self.updateInstalling },
+            openRoute: { [unowned self] route in self.mainWindow.show(route) }))
     }
 
     /// The meetings switch changed in the main window: the feature, its menu item and the icon follow at once.
@@ -881,6 +885,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             knownVoices: { [unowned self] in self.knownVoices ?? [] },
             setHotkeyMode: { [unowned self] mode in self.applyHotkeyMode(mode) },
             soundChanged: { [unowned self] in self.syncSoundModeItems() },
+            pillShownChanged: { [unowned self] in self.overlay.dictationPillSettingChanged() },
             pickVoice: { [unowned self] slot, voice in
                 self.applyVoicePick(key: slot == .russian ? self.speakVoiceRUKey : self.speakVoiceENKey, voice: voice)
             },
@@ -967,13 +972,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lastNotice = nil
             statusItem.button?.toolTip = nil
             statusLine.title = L10nKey.statusListening.text
-            overlay.showListening()
+            overlay.showListening(owner: .dictation)
         case .transcribing:
             symbol = "ellipsis.circle"
             statusLine.title = L10nKey.statusTranscribing.text
             // The paste goes to the app the user was dictating into, or nowhere.
             output.target = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            overlay.showWorking()
+            overlay.showWorking(owner: .dictation)
             startWorkingTimer()
         }
         if state != .transcribing {
@@ -1073,7 +1078,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // guard the same way. Speech still plays; it just does not take the
         // pill over the recording's look.
         if controller.state == .idle {
-            overlay.showWorking()
+            overlay.showWorking(owner: .task)
             overlay.setWorkingText(L10nKey.pillSpeaking.text)
             overlay.setHintHidden(true)
             beginPill(&speakPill)
@@ -1258,7 +1263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !updateCheckRunning else { return }
         updateCheckRunning = true
         let local = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
-        overlay.showWorking()
+        overlay.showWorking(owner: .task)
         overlay.setWorkingText(L10nKey.updateCheckingPill.text)
         overlay.setHintHidden(true)
         beginPill(&updateCheckPill)
@@ -1468,7 +1473,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// shows nothing then, so the pill appears when the dictation ends.
     private func showInstallPill() {
         guard let text = installPillText else { return }
-        overlay.showWorking()
+        overlay.showWorking(owner: .task)
         overlay.setWorkingText(text)
         overlay.setHintHidden(true)
         beginPill(&installPill)

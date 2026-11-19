@@ -19,10 +19,12 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/anatolykoptev/ox-say/internal/codevocab"
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
 	"github.com/anatolykoptev/ox-say/internal/glossary"
 	"github.com/anatolykoptev/ox-say/internal/meeting"
+	"github.com/anatolykoptev/ox-say/internal/stt"
 	"github.com/anatolykoptev/ox-say/internal/transcripts"
 	"github.com/anatolykoptev/ox-say/internal/voices"
 )
@@ -85,7 +87,9 @@ type Daemon struct {
 	tbMu       sync.Mutex
 	tbHave     bool
 	tbKey      string // content key of tbTerms
+	tbPacks    string // the enabled packs tbTerms was derived for ("" = none)
 	tbSeenGen  uint64 // the glGen tbCurKey was computed for
+	tbGlKey    string // boostKey of the glossary pairs at tbSeenGen
 	tbCurKey   string // content key of the current glossary
 	tbKeyOK    bool
 	tbTerms    []string
@@ -428,6 +432,11 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox, 
 	d.notesReqSlot = newReqSlot()
 	d.llmGate = make(chan struct{}, 1+llmMaxWaiters)
 	d.initMeetings()
+	// initGlossary derived the boost list before the settings store existed: with packs saved, derive again now,
+	// so the first decode after a restart is boosted without waiting for a settings change.
+	if len(d.codePacks()) > 0 {
+		d.refreshBoost()
+	}
 	d.initTranscripts()
 	if d.VoxSup != nil {
 		d.voxQoS = &qosGate{
@@ -850,6 +859,26 @@ type statusSummary struct {
 	// TTSFaults counts speech takes the engine failed to finish since the
 	// daemon started (see ttsFaults).
 	TTSFaults ttsFaults `json:"tts_faults"`
+	// CodeVocabulary is the built-in code packs setting: the enabled pack
+	// names, how many boost terms the current list carries, and the wire cap.
+	CodeVocabulary codeVocabStatus `json:"code_vocabulary"`
+}
+
+// codeVocabStatus is /status code_vocabulary: the enabled packs and the size
+// of the boost list they and the glossary produce against its caps.
+type codeVocabStatus struct {
+	// Packs is the enabled language packs, canonical order (empty = off).
+	Packs []string `json:"packs"`
+	// PacksAvailable is every pack id the setting accepts.
+	PacksAvailable []string `json:"packs_available"`
+	// BoostTerms is the term lines the current boost list holds (glossary +
+	// packs); the wire sends at most BoostWireBytes of it and at most
+	// BoostCap terms.
+	BoostTerms int `json:"boost_terms"`
+	// BoostCap is the most terms the engine parses (engine/stt/boost.h).
+	BoostCap int `json:"boost_cap"`
+	// BoostWireBytes is the JSON byte budget all delivery paths trim to.
+	BoostWireBytes int `json:"boost_wire_bytes"`
 }
 
 var version = "dev"
@@ -868,6 +897,7 @@ func (d *Daemon) Status() statusSummary {
 		sttServer = d.STTSup.Status()
 	}
 	busy := d.busy()
+	enabled := d.codePacks()
 	return statusSummary{
 		Engine:      d.Sup.Status(),
 		STTServer:   sttServer,
@@ -900,6 +930,7 @@ func (d *Daemon) Status() statusSummary {
 			"stt_server":        d.Cfg.STTServer,
 			"stt_port":          d.Cfg.STTPort,
 			"stt_idle_stop_s":   d.Cfg.STTIdleStop.Seconds(),
+			"stt_model":         d.Cfg.STTModel,
 			"stt_vad_model":     d.Cfg.STTVADModel,
 			"tts_model":         d.Cfg.TTSModel,
 			// What a client uploading a file must stay inside: the per-transcription timeout and the upload cap,
@@ -913,6 +944,13 @@ func (d *Daemon) Status() statusSummary {
 		Busy:       busy,
 		Idle:       busy.idle(),
 		TTSFaults:  ttsFaults{Runaways: d.runaways.Load(), StreamAborts: d.streamAborts.Load()},
+		CodeVocabulary: codeVocabStatus{
+			Packs:          enabled,
+			PacksAvailable: codevocab.Names,
+			BoostTerms:     d.boostTermsLen(),
+			BoostCap:       glossary.MaxBoostTerms,
+			BoostWireBytes: stt.MaxWireJSON,
+		},
 	}
 }
 

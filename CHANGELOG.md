@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.39](https://github.com/anatolykoptev/ox-say/compare/v0.1.38...v0.1.39) (2026-11-18)
+
+
+### Added
+
+* **app:** a setting to hide the dictation pill ([#649](https://github.com/anatolykoptev/ox-say/issues/649)) ([eae19e1](https://github.com/anatolykoptev/ox-say/commit/eae19e1e9549760bc95a8390ad84fd8a53b429a1))
+* **stt:** Cyrillic and mixed-script spoken forms in the code packs ([#651](https://github.com/anatolykoptev/ox-say/issues/651)) ([8dd830d](https://github.com/anatolykoptev/ox-say/commit/8dd830d501fa9d5da366b45dab972ff93fe71b00))
+* **stt:** default to the parakeet-ultra q8_0 weights ([#655](https://github.com/anatolykoptev/ox-say/issues/655)) ([7af8e8c](https://github.com/anatolykoptev/ox-say/commit/7af8e8c95f42194acd21e4f047d709ec5c2c9d1a))
+
+## [0.1.38](https://github.com/anatolykoptev/ox-say/compare/v0.1.37...v0.1.38) (2026-11-18)
+
+
+### Added
+
+* **app:** live captions — Settings toggle, plate opens the live page, last line in the recording row ([#611](https://github.com/anatolykoptev/ox-say/issues/611), [#612](https://github.com/anatolykoptev/ox-say/issues/612)) ([#642](https://github.com/anatolykoptev/ox-say/issues/642)) ([af48cea](https://github.com/anatolykoptev/ox-say/commit/af48cea8fe7925074f3fb8bc86e8c935b6ddcd4d))
+* **stt:** code vocabulary packs for Python, Go and Rust ([#647](https://github.com/anatolykoptev/ox-say/issues/647)) ([afe2c9c](https://github.com/anatolykoptev/ox-say/commit/afe2c9cfe25d7451ac34accf1b26334b07bb5f1d))
+
 ## [0.1.37](https://github.com/anatolykoptev/ox-say/compare/v0.1.36...v0.1.37) (2026-11-17)
 
 

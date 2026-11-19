@@ -75,6 +75,26 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertTrue(app.contains("SoundWhileDictatingSetting.choose(mode, in: .standard)"), "the menu still uses choose")
     }
 
+    /// «Показывать пилюлю при диктовке»: the page's toggle is saved through
+    /// `DictationSettings.setShowPill` — never by writing the key — the window
+    /// reads the stored value into the model, and the save tells the overlay,
+    /// which is what drops a pill that is up at once.
+    /// Mutation: MainWindowSource.actions, `DictationSettings.setShowPill(on, self.host.defaults)` ->
+    /// `self.host.defaults.set(on, forKey: "showDictationPill")` -> RED; drop `self.host.pillShownChanged()` -> RED;
+    /// `pillShown: DictationSettings.showPill(d)` -> `pillShown: true` -> RED.
+    func testThePillSwitchGoesThroughTheSettingAndTheOverlay() throws {
+        let text = try window()
+        XCTAssertTrue(text.contains("DictationSettings.setShowPill(on, self.host.defaults)"))
+        XCTAssertTrue(text.contains("self.host.pillShownChanged()"), "the overlay hears the switch at once")
+        XCTAssertTrue(text.contains("pillShown: DictationSettings.showPill(d)"), "the page shows the stored value")
+        XCTAssertFalse(text.contains("showDictationPill\""), "no direct write of the pill key from the window")
+        let app = try source("OxSayDictation/AppDelegate.swift")
+        XCTAssertTrue(app.contains("pillShownChanged: { [unowned self] in self.overlay.dictationPillSettingChanged() }"))
+        let page = try source("MainWindowUI/DictationPage.swift")
+        XCTAssertTrue(page.contains("Toggle(L10nKey.dictationPill.text, isOn: model.showPill)"), "the dictation page lost the toggle")
+        XCTAssertTrue(page.contains("L10nKey.dictationPillFooter.text"), "the toggle lost its one-line hint")
+    }
+
     /// A delete the daemon refused is shown; the meeting stays in the list.
     /// Mutation: MainWindowSource.delete, `case .failed(let sentence): model.data.notice = sentence` -> `case .failed: break` -> RED.
     func testARefusedDeleteIsShown() throws {
@@ -502,7 +522,7 @@ final class MainWindowWiringTests: XCTestCase {
     func testTheWindowReadsTheDaemonsRetention() throws {
         let text = try window()
         XCTAssertTrue(text.contains("let daemon = try? await host.client.meetingDaemonSettings()"))
-        XCTAssertTrue(text.contains("daemon: daemon"))
+        XCTAssertTrue(text.contains("daemonRetention: daemon?.retention"))
     }
 
     /// The Show in Finder target is DictationCore's decision over the ledger and the notes folder.

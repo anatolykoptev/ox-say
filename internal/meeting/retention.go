@@ -44,6 +44,9 @@ type Settings struct {
 	// LLMEndpointDefaultMaxS. A stream that reaches it is ended cleanly so one agent cannot hold the
 	// notes model for the upstream's whole timeout.
 	LLMEndpointMaxS int `json:"llm_endpoint_max_s,omitempty"`
+	// CodeVocabulary is the enabled built-in code packs ("python", "go", "rust"); nil or empty is none. The
+	// setting lives here because this is the daemon's one settings file; it has nothing to do with meetings.
+	CodeVocabulary []string `json:"code_vocabulary,omitempty"`
 }
 
 // The values Settings.AEC accepts ("" stands for never chosen).

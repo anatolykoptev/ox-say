@@ -87,6 +87,14 @@ used, and which modifies the computation graph as its NOTICE.md lists (engine/cl
 Apache-2.0 text ship next to the installed binary and next to the models). Licence: Apache-2.0. Credit: Alibaba SLAB
 (ClearerVoice-Studio).
 
+Speech-to-text (engine/stt, the ox-stt engine) runs a ggml conversion of parakeet-ultra, Moondream's post-trained
+parakeet-tdt-0.6b-v3 (https://huggingface.co/moondream/parakeet-ultra; base model
+https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), published at Koptev/parakeet-ultra-ggml, which
+scripts/fetch-models.sh downloads at a pinned revision. The conversion is ours (engine/stt/convert/, Apache-2.0;
+its PROVENANCE.md records the bytes and the changes the licence asks listed). The weights stay under Creative
+Commons Attribution 4.0 (https://creativecommons.org/licenses/by/4.0/). Credit: NVIDIA (parakeet-tdt-0.6b-v3)
+and Moondream (parakeet-ultra). Neither has reviewed, endorsed or sponsored the conversion.
+
 Meeting echo cancellation (engine/aec, the ox-aec engine) statically links freedesktop's webrtc-audio-processing
 (https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing), the WebRTC AudioProcessing module's AEC3 echo
 canceller: BSD-3-Clause, Copyright (c) 2011 Google Inc. The build links the parts the module bundles: Google's

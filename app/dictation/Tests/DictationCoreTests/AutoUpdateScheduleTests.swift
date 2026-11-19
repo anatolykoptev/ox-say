@@ -173,8 +173,8 @@ final class AutoUpdateWiringTests: XCTestCase {
         XCTAssertFalse(observer.contains("checkForUpdates"), "a wake reaches the manual check")
     }
 
-    // Mutation: add `overlay.showWorking()` / `runAlert(` to the background
-    // check, or drop its UpdateGate guard -> RED.
+    // Mutation: add `overlay.showWorking(owner: .task)` / `runAlert(` to the
+    // background check, or drop its UpdateGate guard -> RED.
     func testBackgroundCheckShowsNoPillNoAlertAndSkipsAnInstall() {
         let check = requireBody("private func backgroundUpdateCheck(")
         for forbidden in ["checkForUpdates", "showWorking", "setWorkingText", "runAlert", "confirmInstall", "installUpdate", "present("] {

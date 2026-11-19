@@ -20,6 +20,15 @@ public enum PillOwnership {
         dictation == .idle
     }
 
+    /// The verdict `Overlay.show()` applies verbatim: only the dictation's
+    /// own shows are gated while «Показывать пилюлю при диктовке» is off —
+    /// a task's borrowed working look (install, handshake, studio, update
+    /// check, "Speaking…"), a message or playback always order in, whatever
+    /// the dictation state.
+    public static func order(owner: PillOwner, pillShown: Bool) -> PillOrder {
+        owner == .dictation && !pillShown ? .orderOut : .orderIn
+    }
+
     /// `owner` is the overlay's owner count captured right after the task's
     /// show (nil when the task never showed one); `current` is that count now;
     /// `dictation` is the controller's state.
@@ -27,6 +36,29 @@ public enum PillOwnership {
         guard let owner, owner == current else { return false }
         return dictation == .idle
     }
+}
+
+/// Who asked for the pill now up. Declared at the show's call site — never
+/// inferred from the dictation state, so a task's borrowed look cannot be
+/// mistaken for the dictation's own.
+public enum PillOwner: Equatable {
+    /// The dictation's own listening/working shows and their restores — the
+    /// only owner «Показывать пилюлю при диктовке» gates.
+    case dictation
+    /// A task's borrowed working look: install, handshake, studio, update
+    /// check, "Speaking…". Never gated; the Settings switch and a refused
+    /// hide leave it alone.
+    case task
+    /// A message or playback controls borrowing the panel: its end
+    /// mid-dictation puts the dictation look back.
+    case transient
+}
+
+/// What the panel does with a show — `Overlay.show()` applies it with no
+/// inversion, so the gate decision is testable without AppKit.
+public enum PillOrder: Equatable {
+    case orderIn
+    case orderOut
 }
 
 /// How the dictation looks on the pill: the look a refused finish or a hide

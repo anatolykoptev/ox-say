@@ -25,6 +25,10 @@ struct DictationPage: View {
                 Picker(L10nKey.menuSoundWhileDictating.text, selection: model.sound) {
                     ForEach(SoundWhileDictating.allCases, id: \.self) { Text($0.titleKey.text).tag($0) }
                 }
+                VStack(alignment: .leading, spacing: 2) {
+                    Toggle(L10nKey.dictationPill.text, isOn: model.showPill)
+                    Text(L10nKey.dictationPillFooter.text).font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section {
                 if model.data.dictation.recent.isEmpty {

@@ -304,6 +304,8 @@
 "permission.state.unknown" = "Проверьте в Настройках";
 "permission.fix" = "Исправить";
 "permission.open_settings" = "Открыть настройки";
+"settings.code_vocab" = "Словарь для кода";
+"settings.code_vocab.hint" = "Помогает распознавать названия из кода. Включайте, когда диктуете про код: в обычной речи может принять слово за термин.";
 "settings.general" = "Основное";
 "settings.login" = "Запускать OxSay при входе в систему";
 "settings.check_updates" = "Проверить обновления…";
@@ -317,6 +319,8 @@
 "dictation.mode.toggle" = "Нажать, чтобы начать, и ещё раз, чтобы закончить";
 "dictation.recent.empty" = "Пока пусто. Здесь появятся ваши последние диктовки.";
 "dictation.recent.footer" = "Хранятся только в памяти. Пропадают, когда вы выходите из OxSay.";
+"dictation.pill" = "Показывать пилюлю при диктовке";
+"dictation.pill.footer" = "Если выключить, во время диктовки ничего не видно на экране; ошибки всё равно показываются.";
 "voices.read_aloud" = "Чтение вслух";
 "voices.read_aloud.footer" = "Выделите текст в любом приложении и нажмите клавишу — OxSay прочитает его вслух.";
 "voices.russian" = "Голос для русского текста";
@@ -389,6 +393,11 @@
 "meeting.error.off" = "Заметки о встречах выключены. Включите их в Настройках.";
 "meetings.title.call" = "Звонок в %@";
 "settings.keep.unchecked" = "Не удалось сверить со службой. Показан ваш последний выбор.";
+"settings.live_captions" = "Субтитры во время встречи";
+"settings.live_captions.footer" = "Показывают, что говорят во время записи. Распознавание речи нагружает процессор.";
+"settings.live_captions.default_on" = "На этом Маке по умолчанию включены.";
+"settings.live_captions.default_off" = "На этом Маке по умолчанию выключены.";
+"badge.open_live" = "Открыть субтитры";
 "notice.meeting.copy_stale" = "Название изменено, но копия в папке заметок не обновилась.";
 "search.placeholder" = "Поиск по встречам";
 "search.searching" = "Ищу…";

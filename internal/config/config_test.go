@@ -75,7 +75,7 @@ func TestLoadDefaults(t *testing.T) {
 	if c.STTBin != filepath.Join("/tmp/oxsay-test-home", "engine", "ox-stt") {
 		t.Fatalf("stt bin = %q", c.STTBin)
 	}
-	if c.STTModel != filepath.Join("/tmp/oxsay-test-home", "models", "ggml-parakeet-tdt-0.6b-v3-q8_0.bin") {
+	if c.STTModel != filepath.Join("/tmp/oxsay-test-home", "models", "ggml-parakeet-ultra-q8_0.bin") {
 		t.Fatalf("stt model = %q", c.STTModel)
 	}
 	if c.STTWhisperModel != filepath.Join("/tmp/oxsay-test-home", "models", "ggml-large-v3-turbo.bin") {
@@ -1128,6 +1128,29 @@ func TestCleanPinsAgreeAcrossLanguages(t *testing.T) {
 	swiftRev := regexp.MustCompile(`(?m)^\s*public static let modelsRevision = "([0-9a-f]{40})"$`).FindSubmatch(swift)
 	if swiftRev == nil || string(swiftRev[1]) != CleanModelsRevision {
 		t.Fatalf("engine/clean Pins.swift modelsRevision %q != CleanModelsRevision %s", swiftRev, CleanModelsRevision)
+	}
+}
+
+// The default speech-to-text weights are named in two places: STTModelFile here and the entry fetch-models.sh downloads
+// from the $parakeet base URL in its models=(...) list. A rename in one would leave every fresh install without the file
+// the daemon opens, so the entry is read out of the script's real list and compared.
+// Mutation: scripts/fetch-models.sh, change the filename of the "$parakeet" models entry to
+// ggml-parakeet-ultra-q8_0x.bin -> RED; config.go, change STTModelFile the same way -> RED.
+func TestSTTModelFileMatchesFetchModels(t *testing.T) {
+	sh, err := os.ReadFile("../../scripts/fetch-models.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := regexp.MustCompile(`(?ms)^models=\(\n(.*?)^\)$`).FindSubmatch(sh)
+	if list == nil {
+		t.Fatal("fetch-models.sh has no models=( ... ) list")
+	}
+	entry := regexp.MustCompile(`(?m)^\s*"(\S+) [0-9a-f]{64} \$parakeet"$`).FindAllSubmatch(list[1], -1)
+	if len(entry) != 1 {
+		t.Fatalf("fetch-models.sh models list has %d $parakeet entries, want 1", len(entry))
+	}
+	if got := string(entry[0][1]); got != STTModelFile {
+		t.Fatalf("fetch-models.sh downloads %q, config.STTModelFile is %q", got, STTModelFile)
 	}
 }
 

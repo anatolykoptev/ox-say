@@ -41,6 +41,13 @@ final class Overlay {
     /// mid-dictation (a stray finish, a message timeout, a playback ending)
     /// does not take it down — the dictation look is put back instead.
     var dictationState: (() -> DictationState)?
+    /// «Показывать пилюлю при диктовке», read live at every show: off keeps the
+    /// dictation's own looks ordered out — messages and playback are not gated.
+    var showsDictationPill: (() -> Bool)?
+    /// Who asked for the pill now up — set inside `show()` from the owner each
+    /// show declares. The «Показывать пилюлю» switch and the refused-hide
+    /// restore act on the dictation's own pill only; a task pill is left alone.
+    private var pillOwner: PillOwner = .transient
     private let playPauseButton = NSButton()
     private let stopButton = NSButton()
     /// True while the pill shows playback controls — the only state where it
@@ -153,7 +160,9 @@ final class Overlay {
     private(set) var owner = 0
 
     /// Recording: bars "breathe" in grey until the first sound arrives.
-    func showListening() {
+    /// `who` declares whether the dictation itself or a task borrowing the
+    /// look asked — only the dictation's shows are gated.
+    func showListening(owner who: PillOwner) {
         owner += 1
         kind = "listening"
         leaveMessage()
@@ -163,11 +172,14 @@ final class Overlay {
         spinner.stopAnimation(nil)
         spinner.isHidden = true
         label.isHidden = true
-        show()
-        bars.start()
+        // A suppressed show starts no timer: the bars run only while the pill
+        // is on screen, and start again when a restore orders it back in.
+        if show(owner: who) == .orderIn { bars.start() }
     }
 
-    func showWorking() {
+    /// `who` declares whether the dictation itself or a task borrowing the
+    /// look asked — only the dictation's shows are gated.
+    func showWorking(owner who: PillOwner) {
         owner += 1
         kind = "working"
         leaveMessage()
@@ -175,10 +187,9 @@ final class Overlay {
         bars.stop()
         bars.isHidden = true
         spinner.isHidden = false
-        spinner.startAnimation(nil)
         label.isHidden = false
         setWorkingText(L10nKey.pillTranscribing.text)
-        show()
+        if show(owner: who) == .orderIn { spinner.startAnimation(nil) }
     }
 
     /// While transcribing: the elapsed time, and why it takes long once it does.
@@ -233,6 +244,17 @@ final class Overlay {
         if !showingMessage { hide() }
     }
 
+    /// «Показывать пилюлю при диктовке» moved in Settings: while a dictation
+    /// runs its look is put back — through the same gate as every show, so a
+    /// pill that is up comes down at once and an allowed one comes back. While
+    /// nothing dictates there is nothing of the dictation's up, and a message
+    /// keeps its few seconds.
+    func dictationPillSettingChanged() {
+        guard !showingMessage, pillOwner == .dictation,
+              let state = dictationState?(), let look = PillDictationLook(dictation: state) else { return }
+        restoreDictationLook(look)
+    }
+
     /// Speaking: the pill turns into playback controls — a pause/resume button,
     /// the position counter and a stop button. This is the only state that
     /// takes mouse events; dictation keeps passing clicks through.
@@ -251,7 +273,7 @@ final class Overlay {
         playPauseButton.isHidden = false
         stopButton.isHidden = false
         panel.ignoresMouseEvents = false
-        show()
+        show(owner: .transient)
         tickPlayback()
         let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.tickPlayback() } }
         RunLoop.main.add(timer, forMode: .common)
@@ -338,7 +360,7 @@ final class Overlay {
         resize(to: NSSize(width: max(pillSize.width, ceil(fit.width) + 40), height: max(pillSize.height, ceil(fit.height) + 18)))
         message.frame = NSRect(x: 20, y: (size.height - ceil(fit.height)) / 2, width: ceil(fit.width), height: ceil(fit.height))
         showingMessage = true
-        show()
+        show(owner: .transient)
         messageTimeout?.cancel()
         let timeout = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -392,16 +414,14 @@ final class Overlay {
     }
 
     private func hide() {
-        if let state = dictationState?(), let look = PillDictationLook(dictation: state) {
-            // A hide landing mid-dictation must not take the pill — it belongs
-            // to the dictation until the key is up. Put the dictation look
-            // back instead of fading out — before anything is wiped, so the
-            // words decoded so far do not flicker away and back.
+        if pillOwner != .task, let state = dictationState?(), let look = PillDictationLook(dictation: state) {
+            // A hide landing mid-dictation must not take the dictation's own
+            // pill — it belongs to the dictation until the key is up. Put the
+            // dictation look back instead of fading out — before anything is
+            // wiped, so the words decoded so far do not flicker away and back.
+            // A task's pill is not the dictation's: the hide takes it down.
             overlayLog.error("overlay hide during dictation: re-showing kind=\(String(describing: look), privacy: .public) owner=\(self.owner, privacy: .public)")
-            switch look {
-            case .listening: showListening()
-            case .working: showWorking()
-            }
+            restoreDictationLook(look)
             return
         }
         leavePlaying()
@@ -424,6 +444,15 @@ final class Overlay {
         })
     }
 
+    /// The dictation's look put back — the way a refused hide, a task pill
+    /// ending mid-dictation and the «Показывать пилюлю» flip restore it.
+    private func restoreDictationLook(_ look: PillDictationLook) {
+        switch look {
+        case .listening: showListening(owner: .dictation)
+        case .working: showWorking(owner: .dictation)
+        }
+    }
+
     /// From the microphone, any thread.
     nonisolated func setLevels(_ levels: [Float]) {
         DispatchQueue.main.async { [bars] in bars.target(levels) }
@@ -439,8 +468,25 @@ final class Overlay {
         }
     }
 
-    private func show() {
+    /// Runs the gate: the verdict DictationCore returns is applied verbatim —
+    /// `.orderIn` puts the panel up, `.orderOut` takes it down and nothing
+    /// else runs. The shows that animate read the verdict back.
+    @discardableResult
+    private func show(owner who: PillOwner) -> PillOrder {
         shown += 1
+        pillOwner = who
+        // «Показывать пилюлю при диктовке» gates only the shows the dictation
+        // itself asked for: a task's borrowed working look (install,
+        // handshake, studio, update check, "Speaking…"), a message or
+        // playback always order in — whatever the dictation state.
+        let verdict = PillOwnership.order(owner: who, pillShown: showsDictationPill?() ?? true)
+        guard verdict == .orderIn else {
+            wantsVisible = false
+            panel.orderOut(nil)
+            watch = PlateWatch()
+            overlayLog.notice("overlay show suppressed: pill hidden kind=\(self.kind, privacy: .public) owner=\(self.owner, privacy: .public)")
+            return verdict
+        }
         wantsVisible = true
         recentre()
         // Deterministic: an alpha animation still in flight (a fade-out that a
@@ -461,6 +507,7 @@ final class Overlay {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
             self?.checkVisible(expected: expected, owner: ownerAtShow)
         }
+        return verdict
     }
 
     /// The window server's truth about the pill's own window, ~250 ms after a show: a panel that should be up but is

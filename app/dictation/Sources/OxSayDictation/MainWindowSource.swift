@@ -23,6 +23,8 @@ struct MainWindowHost {
     var setHotkeyMode: (HotkeyMode) -> Void
     /// The sound pick was saved: the menu's check marks follow it.
     var soundChanged: () -> Void
+    /// «Показывать пилюлю при диктовке» was saved: the overlay takes a dictation pill that is up down or puts it back.
+    var pillShownChanged: () -> Void
     var pickVoice: (VoiceSlot, String?) -> Void
     /// The voice library changed (a voice was deleted or renamed, or the list was read): the menu's voice list and
     /// its read-aloud checkmarks follow.
@@ -66,10 +68,23 @@ final class MainWindowSource {
     private var visible = false
     private var pollTask: Task<Void, Never>?
     private var clockTimer: Timer?
+    /// The code vocabulary switches: one save at a time, the latest choice last, the page shows the daemon's answer.
+    private lazy var codePackSync = CodePackSync(
+        put: { [unowned self] packs, unknown in try await self.host.client.setCodeVocabulary(packs, keeping: unknown) },
+        read: { [unowned self] in try await self.host.client.codeVocabularyAnswer() },
+        apply: { [unowned self] answer in self.model.data.codePacks = answer.packs })
     private var gate = RefreshGate()
     /// The poll of live captions of the chosen meeting while it is recorded (`LivePolling`); one at a time.
     private var liveTask: Task<Void, Never>?
     private var liveMeeting: String?
+    /// The meetings `/live` said are over: never targeted again (`LiveTargeting`).
+    private var liveTargeting = LiveTargeting()
+    /// Saves of the live-captions switch: one at a time, newest intent last.
+    private lazy var liveSaves = LiveCaptionsSaveQueue(
+        send: { [unowned self] on in
+            await MeetingSettingsApplier(defaults: self.host.defaults, client: self.host.client).apply(.liveCaptions(on))
+        },
+        finished: { [weak self] outcome in self?.liveSaveFinished(outcome) })
     private let audio = MeetingAudioPlayer()
     /// "New key" taps of the model-access section, one rotation at a time (see `LLMEndpointKeyQueue`).
     private lazy var llmKeys = LLMEndpointKeyQueue(
@@ -228,7 +243,7 @@ final class MainWindowSource {
     func apply(_ route: MainRoute) {
         let route = route.resolved(visible: MainWindowSpec.sections(advanced: model.advanced))
         model.section = route.section
-        if let id = route.meetingID { model.selectedMeeting = id }
+        model.selectedMeeting = route.selection(current: model.selectedMeeting)
         if let id = route.speakID { speakSource.showProject(id) }
     }
 
@@ -334,12 +349,7 @@ final class MainWindowSource {
         }
         a.regenerateLLMKey = { [weak self] in self?.regenerateLLMKey() }
         a.checkForUpdates = { [weak self] in self?.host.checkForUpdates() }
-        a.setSound = { [weak self] mode in
-            guard let self else { return }
-            DictationSettings.setSound(mode, self.host.defaults)
-            self.host.soundChanged()
-        }
-        a.setHotkeyMode = { [weak self] mode in self?.host.setHotkeyMode(mode) }
+        dictationActions(&a)
         a.pickVoice = { [weak self] slot, voice in self?.host.pickVoice(slot, voice) }
         a.reloadVoices = { [weak self] in self?.voiceSource.reload() }
         a.previewVoice = { [weak self] id in self?.speakSource.stopClip(); self?.cleanSource.stopPlayback(); self?.voiceSource.preview(id) }
@@ -354,6 +364,13 @@ final class MainWindowSource {
             guard let self else { return }
             self.host.setStartAtLogin(on)
             self.model.data.about.startAtLogin = self.host.startAtLogin()
+        }
+        a.setCodePack = { [weak self] _, _ in
+            guard let self else { return }
+            // The model already holds the new set (the switch's binding wrote it); the sync sends the latest set one
+            // request at a time and then shows what the daemon confirms.
+            let packs = self.model.data.codePacks
+            Task { @MainActor in await self.codePackSync.choose(packs) }
         }
         a.dismissNotice = { [weak self] in self?.model.data.notice = nil }
         a.searchTyped = { [weak self] text in self?.searchEvent(.typed(text)) }
@@ -399,6 +416,23 @@ final class MainWindowSource {
         a.cleanSide = { [weak self] side in self?.cleanSource.choose(side) }
         a.cleanSeek = { [weak self] seconds in self?.cleanSource.seek(seconds) }
         return a
+    }
+
+    /// The dictation section's settings writes: each stores the pick through
+    /// DictationSettings and tells the app — the menu's check marks for the
+    /// sound, the overlay's gate for the pill.
+    private func dictationActions(_ a: inout MainWindowActions) {
+        a.setSound = { [weak self] mode in
+            guard let self else { return }
+            DictationSettings.setSound(mode, self.host.defaults)
+            self.host.soundChanged()
+        }
+        a.setShowPill = { [weak self] on in
+            guard let self else { return }
+            DictationSettings.setShowPill(on, self.host.defaults)
+            self.host.pillShownChanged()
+        }
+        a.setHotkeyMode = { [weak self] mode in self?.host.setHotkeyMode(mode) }
     }
 
     /// Reads everything the window shows. The list and the settings come from the daemon, so they are awaited; a failed
@@ -462,10 +496,13 @@ final class MainWindowSource {
     // MARK: live captions
 
     /// Starts or stops the live poll to match the window: only while it is visible, on the Meetings page, with a
-    /// meeting that is being recorded chosen. Called after every refresh pass and every route change.
+    /// meeting being recorded (the chosen one, else the one in the list). Called after every refresh pass and every route change.
     private func syncLive() {
         let selected = model.selectedMeeting.flatMap { id in model.data.meetings.first { $0.id == id } }
-        guard model.section == .meetings, LivePolling.needed(visible: visible, selected: selected), let id = selected?.id else {
+        // The recording is read even while another meeting is open: its row in the list shows the last line.
+        guard model.section == .meetings,
+              let id = liveTargeting.target(visible: visible, selected: selected, meetings: model.data.meetings,
+                                            recordingID: host.meetings()?.recordingID) else {
             stopLive()
             return
         }
@@ -497,6 +534,8 @@ final class MainWindowSource {
             feed.apply(answer)
             if model.data.live[id] != feed { model.data.live[id] = feed }
             if !answer.state.recording {
+                // Never targeted again, even if the list read behind this fails and the row keeps saying "recording".
+                liveTargeting.reportedStopped(id)
                 stopLive()
                 refresh()
                 return false
@@ -535,7 +574,8 @@ final class MainWindowSource {
     private func loadSimpleSections() {
         let d = host.defaults
         model.data.dictation = DictationValues(keyTitle: host.dictationKeyTitle(), mode: DictationSettings.mode(d),
-                                               sound: DictationSettings.sound(d), recent: host.recentDictations())
+                                               sound: DictationSettings.sound(d), pillShown: DictationSettings.showPill(d),
+                                               recent: host.recentDictations())
         // The library itself (entries, playing) belongs to VoiceSource; only the ids are borrowed from the menu's list
         // until its first read lands.
         model.data.voices.russianVoice = d.string(forKey: DictationSettings.speakVoiceRUKey)
@@ -560,17 +600,32 @@ final class MainWindowSource {
     private func reloadSettingsAsync(pickedFolder: URL? = nil) async {
         if let pickedFolder { MeetingSettings.setFolder(pickedFolder, host.defaults) }
         let keyRead = llmKeys.beginRead()
+        let token = liveSaves.beginRead()
         let daemon = try? await host.client.meetingDaemonSettings()
+        // An edit of the switch that ran or began since the read started is newer than what the daemon answered.
+        let stale = liveSaves.isStale(token)
+        let liveCaptions = stale ? nil : daemon?.liveCaptions
         let notes = host.daemonStatus()?.notes
-        // Read after the await, with no suspension before the assignment: a rotation that finished while the settings
-        // request was in flight is in here, so the key the page already shows survives the reload.
+        // The code packs ride the same read: a settings edit that began since it started is newer than the answer, and a
+        // pack save in flight is newer too (CodePackSync.isBusy).
+        if let answer = try? await host.client.codeVocabularyAnswer() {
+            codePackSync.learn(answer)
+            if !stale, !codePackSync.isBusy { model.data.codePacks = answer.packs }
+        }
+        // Read after the last await, with no suspension before the assignment: a rotation that finished while the
+        // settings request was in flight is in here, so the key the page already shows survives the reload.
         let shown = model.data.meetingSettings.llmEndpoint
-        model.data.meetingSettings = pickedFolder.map {
-            MeetingSettingsModel.folderPicked($0, defaults: host.defaults, daemon: daemon,
-                                              notesWriter: NotesWriterState.of(notes), fullName: NSFullUserName())
+        let endpoint = LLMEndpointValues.of(daemon)
+        let loaded = pickedFolder.map {
+            MeetingSettingsModel.folderPicked($0, defaults: host.defaults, daemonRetention: daemon?.retention,
+                                              daemonLiveCaptions: liveCaptions, liveCaptionsDefault: daemon?.liveCaptionsDefault,
+                                              llmEndpoint: endpoint, notesWriter: NotesWriterState.of(notes),
+                                              fullName: NSFullUserName())
         } ?? MeetingSettingsModel.load(
-            defaults: host.defaults, daemon: daemon, notesWriter: NotesWriterState.of(notes),
+            defaults: host.defaults, daemonRetention: daemon?.retention, daemonLiveCaptions: liveCaptions,
+            liveCaptionsDefault: daemon?.liveCaptionsDefault, llmEndpoint: endpoint, notesWriter: NotesWriterState.of(notes),
             fullName: NSFullUserName())
+        model.data.meetingSettings = stale ? MeetingSettingsModel.keepingPendingEdit(loaded, current: model.data.meetingSettings) : loaded
         if shown.on, model.data.meetingSettings.llmEndpoint.on {
             model.data.meetingSettings.llmEndpoint.key = shown.key
             model.data.meetingSettings.llmEndpoint.keyUnavailable = shown.keyUnavailable
@@ -862,6 +917,10 @@ final class MainWindowSource {
     private func apply(_ change: MeetingSettingsModel.Change) {
         // Switching meetings off ends the audio at once, whatever the save then says.
         if case .enabled(false) = change { stopPlayback() }
+        if case .liveCaptions(let on) = change {
+            liveSaves.submit(on)
+            return
+        }
         Task { @MainActor in
             let applier = MeetingSettingsApplier(defaults: host.defaults, client: host.client)
             if let failure = await applier.apply(change) {
@@ -873,11 +932,25 @@ final class MainWindowSource {
             case .enabled: host.meetingsEnabledChanged()
             case .callMode: host.meetings()?.settingsChanged()
             case .retention, .mode, .name, .llmEndpoint: break
+            case .liveCaptions: break // saved through `liveSaves` above; unreachable here
             }
             if case .retention = change { model.data.meetingSettings.retentionVerified = true }
             if case .llmEndpoint(let on) = change { model.data.meetingSettings.llmEndpoint.on = on }
             // A name is typed letter by letter: only a change that alters other parts of the page reads it all again.
             if change.needsRefresh { refresh() }
+        }
+    }
+
+    /// The last save of the switch ended: the page shows what the daemon took last; a refused one is said, and the page reads
+    /// the stored value again.
+    private func liveSaveFinished(_ outcome: LiveCaptionsSaveQueue.Outcome) {
+        switch outcome {
+        case .saved(let on):
+            model.data.meetingSettings.liveCaptions = on
+            model.data.meetingSettings.liveCaptionsVerified = true
+        case .failed(let sentence):
+            model.data.notice = sentence
+            Task { @MainActor in await reloadSettingsAsync() }
         }
     }
 
@@ -887,10 +960,11 @@ final class MainWindowSource {
     private static func blank(_ host: MainWindowHost) -> MainWindowData {
         MainWindowData(
             meetings: [], meetingsLoad: .loading, details: [:],
-            meetingSettings: MeetingSettingsModel.load(defaults: host.defaults, daemon: nil, notesWriter: .unavailable(.meetingErrDaemonDown),
+            meetingSettings: MeetingSettingsModel.load(defaults: host.defaults, daemonRetention: nil, notesWriter: .unavailable(.meetingErrDaemonDown),
                                                        fullName: NSFullUserName()),
             permissions: [],
-            dictation: DictationValues(keyTitle: nil, mode: DictationSettings.mode(host.defaults), sound: DictationSettings.sound(host.defaults), recent: []),
+            dictation: DictationValues(keyTitle: nil, mode: DictationSettings.mode(host.defaults),
+                                       sound: DictationSettings.sound(host.defaults), pillShown: DictationSettings.showPill(host.defaults), recent: []),
             voices: VoicesValues(voices: [], russianVoice: nil, englishVoice: nil),
             about: AboutValues(version: AboutPanel.appVersion, engineRunning: false, startAtLogin: false))
     }

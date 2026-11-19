@@ -8,8 +8,7 @@ final class MeetingSettingsModelTests: XCTestCase {
     private let home = URL(fileURLWithPath: "/Users/test", isDirectory: true)
 
     private func values(_ d: UserDefaults, daemon: MeetingRetention? = nil) -> MeetingSettingsValues {
-        MeetingSettingsModel.load(defaults: d, daemon: daemon.map { MeetingDaemonSettings(retentionDays: $0.rawValue) },
-                                  notesWriter: .ready, fullName: "Alex Morgan", home: home)
+        MeetingSettingsModel.load(defaults: d, daemonRetention: daemon, notesWriter: .ready, fullName: "Alex Morgan", home: home)
     }
 
     private func client(_ answer: String = "{}", status: Int = 200, record: ((URLRequest) -> Void)? = nil) -> StudioClient {
@@ -166,6 +165,20 @@ final class DictationSettingsTests: XCTestCase {
         DictationSettings.setMode(.toggle, d)
         XCTAssertEqual(DictationSettings.mode(d), .toggle)
         XCTAssertEqual(d.string(forKey: DictationSettings.modeKey), "toggle")
+    }
+
+    /// «Показывать пилюлю при диктовке» defaults to on — a missing key (an
+    /// install that never opened Settings) still shows the pill — and the
+    /// switch round-trips through the ordinary Bool store.
+    /// Mutation: MeetingSettingsModel.showPill, `?? true` -> `?? false` -> RED.
+    func testThePillSwitchRoundTripsAndDefaultsToOn() {
+        let d = suite()
+        XCTAssertTrue(DictationSettings.showPill(d), "missing key must read as on")
+        DictationSettings.setShowPill(false, d)
+        XCTAssertFalse(DictationSettings.showPill(d))
+        XCTAssertEqual(d.object(forKey: DictationSettings.showPillKey) as? Bool, false)
+        DictationSettings.setShowPill(true, d)
+        XCTAssertTrue(DictationSettings.showPill(d))
     }
 }
 
