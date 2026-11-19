@@ -83,6 +83,12 @@ type Daemon struct {
 	glPairs  []glossary.Pair
 	glWarned glKey
 	glGen    uint64 // moves on every reload of the pairs from disk
+	// rc* is the recurrence matcher (glossary.Recurrence), keyed like the pair cache by the file's mtime+size.
+	rcMu     sync.Mutex
+	rcSet    bool
+	rcKey    glKey
+	rcWarned glKey
+	rcM      *glossary.Recurrence
 	// tb* is the decoder boost list derived from the active pairs, keyed by their content (see boost.go).
 	tbMu       sync.Mutex
 	tbHave     bool

@@ -167,8 +167,11 @@ func (d *Daemon) sttSessionOp(w http.ResponseWriter, r *http.Request, op string,
 		up += "/" + op
 	}
 	var rewrite func([]byte) []byte
-	if op == "finish" || op == "audio" {
+	switch op {
+	case "audio":
 		rewrite = d.correctSessionBody
+	case "finish":
+		rewrite = d.finishRewrite
 	}
 	status, _ := d.sttSessionProxy(w, r, base, up, limit, rewrite, nil)
 	switch {

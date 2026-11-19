@@ -894,7 +894,12 @@
 "glossary.col.heard" = "Heard";
 "glossary.col.meant" = "Meant";
 "glossary.col.status" = "Status";
-"glossary.col.seen" = "Seen";
+"glossary.col.seen" = "Sentences";
+"glossary.progress" = "%1$@ of %2$@";
+"glossary.provenance" = "From dictation: %1$@. From assistants: %2$@.";
+"glossary.sentences.one" = "%@ sentence";
+"glossary.sentences.few" = "%@ sentences";
+"glossary.sentences.many" = "%@ sentences";
 "glossary.status.candidate" = "To review";
 "glossary.status.active" = "Active";
 "glossary.status.rejected" = "Rejected";
