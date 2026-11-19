@@ -6,13 +6,16 @@ public struct DictationValues: Equatable {
     public var keyTitle: String?
     public var mode: HotkeyMode
     public var sound: SoundWhileDictating
+    /// «Показывать пилюлю при диктовке»: whether the pill appears while a dictation runs.
+    public var pillShown: Bool
     /// The last dictations, newest first (memory only, as `DictationHistory` keeps them).
     public var recent: [String]
 
-    public init(keyTitle: String?, mode: HotkeyMode, sound: SoundWhileDictating, recent: [String]) {
+    public init(keyTitle: String?, mode: HotkeyMode, sound: SoundWhileDictating, pillShown: Bool, recent: [String]) {
         self.keyTitle = keyTitle
         self.mode = mode
         self.sound = sound
+        self.pillShown = pillShown
         self.recent = recent
     }
 }
@@ -154,6 +157,8 @@ public struct MainWindowData: Equatable {
     public var dictation: DictationValues
     public var voices: VoicesValues
     public var about: AboutValues
+    /// The code vocabulary packs that are on (the daemon keeps them).
+    public var codePacks: Set<CodePack>
     public var speak: SpeakValues
     public var transcribe: TranscribeValues
     public var clean: CleanValues
@@ -166,7 +171,7 @@ public struct MainWindowData: Equatable {
                 meetingSettings: MeetingSettingsValues, permissions: [PermissionItem],
                 dictation: DictationValues, voices: VoicesValues, about: AboutValues, speak: SpeakValues = SpeakValues(),
                 transcribe: TranscribeValues = TranscribeValues(), clean: CleanValues = CleanValues(),
-                live: [String: LiveFeed] = [:]) {
+                live: [String: LiveFeed] = [:], codePacks: Set<CodePack> = []) {
         self.meetings = meetings
         self.meetingsLoad = meetingsLoad
         self.details = details
@@ -185,6 +190,7 @@ public struct MainWindowData: Equatable {
         self.transcribe = transcribe
         self.clean = clean
         self.live = live
+        self.codePacks = codePacks
     }
 }
 
@@ -209,6 +215,8 @@ public struct MainWindowActions {
     public var downloadNotesWriter: () -> Void = {}
     public var checkForUpdates: () -> Void = {}
     public var setSound: (SoundWhileDictating) -> Void = { _ in }
+    /// «Показывать пилюлю при диктовке» moved: the app stores it and tells the overlay.
+    public var setShowPill: (Bool) -> Void = { _ in }
     public var setHotkeyMode: (HotkeyMode) -> Void = { _ in }
     public var pickVoice: (VoiceSlot, String?) -> Void = { _, _ in }
     /// The Voices page: read the library again, play a voice's sample (one at a time), stop it, rename (id, new label),
@@ -229,6 +237,8 @@ public struct MainWindowActions {
     /// «Скачать студийный голос»: the app's own studio voice install, with its confirmation.
     public var installStudioVoice: () -> Void = {}
     public var setStartAtLogin: (Bool) -> Void = { _ in }
+    /// A code vocabulary switch: the pack and whether it is now on (the app tells the daemon).
+    public var setCodePack: (CodePack, Bool) -> Void = { _, _ in }
     public var dismissNotice: () -> Void = {}
     /// The search field's text, as typed (the app debounces, cancels and retries).
     public var searchTyped: (String) -> Void = { _ in }

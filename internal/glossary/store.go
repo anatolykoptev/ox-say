@@ -64,6 +64,10 @@ type Pair struct {
 	// sentences alone.
 	Vetted bool      `json:"vetted,omitempty"`
 	Added  time.Time `json:"added"`
+	// Pack marks a pair synthesised from a built-in code pack (internal/codevocab): it is never
+	// stored, and its heard form also matches a token that mixes Latin and Cyrillic letters
+	// («Startс» for "starts") — owner pairs never carry it.
+	Pack bool `json:"-"`
 }
 
 type file struct {

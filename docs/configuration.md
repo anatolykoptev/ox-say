@@ -30,7 +30,7 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_CACHE_DIR` | `~/Library/Caches/ox-say` | Default output dir for `speak` |
 | `OX_SAY_PRODUCE_OUT_DIR` | `~/Movies/ox-say` | Where `produce` publishes a finished voiceover when the request names no `out_path` (provisional default, pending the owner) |
 | `OX_SAY_STT_BIN` | `<engine dir>/ox-stt` | Speech-to-text binary |
-| `OX_SAY_STT_MODEL` | `$OX_SAY_HOME/models/ggml-parakeet-tdt-0.6b-v3-q8_0.bin` | Parakeet weights |
+| `OX_SAY_STT_MODEL` | `$OX_SAY_HOME/models/ggml-parakeet-ultra-q8_0.bin` | Parakeet weights. `ggml-parakeet-ultra-f16.bin` in the same folder is the optional unquantised build (1.26 GB, about twice as slow per clip, slightly lower WER on accented English); see [the f16 weights](#parakeet-ultra-f16) below |
 | `OX_SAY_STT_VAD_MODEL` | `$OX_SAY_HOME/models/ggml-silero-v5.1.2.bin` | Silero VAD model; enables the streaming session routes when present at STT-server spawn |
 | `OX_SAY_STT_WHISPER_MODEL` | `$OX_SAY_HOME/models/ggml-large-v3-turbo.bin` | Whisper weights (`--with-whisper` fetch) |
 | `OX_SAY_STT_GPU` | `auto` | CLI device under the shared GPU lease: `auto` = GPU only for audio ≤ 5 min while the lease is free (TTS engine down, no GPU run in flight), else CPU (-ng); `on` = GPU whenever the lease is free, any length, else CPU (never waits); `off` forces CPU. With a discrete card the resident server is always CPU-only; with unified memory `auto`/`on` put the server and the CLI on the GPU and `off` puts both on the CPU |
@@ -53,3 +53,23 @@ the installed agent. `GET /status` shows the path each engine resolved to
 under `config` (`engine_bin`, `stt_bin`, `voxcpm2_bin`, `notes_bin`,
 `diar_bin`).
 
+
+## Parakeet-ultra f16
+
+The default speech-to-text weights are parakeet-ultra q8_0 (669 MB). The f16 file of the same model (1.26 GB) is
+slightly more accurate on Russian-accented English on our synthetic set: WER 16.53% → 15.67%, a paired bootstrap
+difference of −0.86 points (95% interval −1.57 to −0.26). Native English and Russian are unchanged, and it is about
+twice as slow per clip. To use it, point `OX_SAY_STT_MODEL` at the file when you run the installer:
+
+```sh
+OX_SAY_STT_MODEL="$HOME/Library/Application Support/ox-say/models/ggml-parakeet-ultra-f16.bin" sh get.sh
+```
+
+(from a checkout, `scripts/install.sh` in place of `sh get.sh`; through the pipe form of the installer, put the variable
+in front of the `sh`). The installer fetches and SHA-256 verifies the file first, then writes the setting into the
+LaunchAgent and restarts the daemon, so the daemon never points at a file that is not there. Because the setting
+carries over, every later update keeps the f16 file verified in place. The q8_0 file is always fetched as well: it is
+the default and the fallback. `scripts/fetch-models.sh --with-parakeet-f16` fetches the f16 file on its own.
+
+To go back to the default, drop the setting with an empty value: `OX_SAY_STT_MODEL= sh get.sh`. The f16 file stays on
+disk, and an update no longer touches it; delete it to free the space.

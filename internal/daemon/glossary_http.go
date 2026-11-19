@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/anatolykoptev/ox-say/internal/glossary"
@@ -273,12 +274,14 @@ func (d *Daemon) invalidateGlossary() {
 	d.rcMu.Unlock()
 }
 
-// glossaryPairs loads the active pairs, cached by the file's mtime+size.
-// Any problem means no corrections and one Warn per distinct file state,
-// never a failed recognition.
+// glossaryPairs loads the active pairs, cached by the file's mtime+size,
+// and appends the enabled code packs' rewrite pairs — the post-pass's one
+// list. Any problem means no corrections and one Warn per distinct file
+// state, never a failed recognition.
 func (d *Daemon) glossaryPairs() []glossary.Pair {
 	pairs, _ := d.glossaryPairsGen()
-	return pairs
+	// a fresh slice: pairs is the cache's own backing array, shared by every concurrent caller
+	return slices.Concat(pairs, d.packFixPairs(pairs))
 }
 
 // glossaryPairsGen is glossaryPairs plus a generation that moves on every

@@ -243,9 +243,11 @@ final class SpeakPanelWiringTests: XCTestCase {
             ("var speakLoudness: Binding<LoudnessTarget?> {", "self.actions.speakLoudness($0)"),
             ("var speakVoice: Binding<String?> {", "self.actions.speakVoiceChanged($0)"),
             ("var sound: Binding<SoundWhileDictating> {", "self.actions.setSound($0)"),
+            ("var showPill: Binding<Bool> {", "self.actions.setShowPill($0)"),
             ("var hotkeyMode: Binding<HotkeyMode> {", "self.actions.setHotkeyMode($0)"),
             ("func voice(_ slot: VoiceSlot) -> Binding<String?> {", "self.actions.pickVoice(slot, $0)"),
             ("var startAtLogin: Binding<Bool> {", "self.actions.setStartAtLogin($0)"),
+            ("func codePack(_ pack: CodePack) -> Binding<Bool> {", "self.actions.setCodePack(pack, $0)"),
         ]
         for (signature, setter) in bindings {
             let start = try XCTUnwrap(model.range(of: signature), "\(signature) not found")

@@ -112,7 +112,7 @@ scenario() {
         "$@" bash "$tmp/$script" >"$tmp/$name.log" 2>&1
 }
 
-for s in render carry stale nokeys ttsmodel relmodel; do
+for s in render carry stale nokeys ttsmodel relmodel f16carry; do
     cp "$root/launchd/$label.plist.in" "$tmp/template-$s.plist"
 done
 # A template that makes a mid-render plutil fail while the file still lints
@@ -191,6 +191,24 @@ else
     pass "OX_SAY_GET_URL not exported"
 fi
 check_in_log "drop announced" "$tmp/stale.log" "dropping OX_SAY_GET_URL"
+
+# --- C2: a carried OX_SAY_STT_MODEL is in the environment fetch-models.sh runs in ----------------------------
+# fetch-models.sh keeps the parakeet-ultra f16 file in place when OX_SAY_STT_MODEL names it, so an update with no
+# flag must find the agent's value exported. Mutation: in oxs_settings, change `export "$name=$(plutil ...` to a
+# plain assignment (or drop it) -> "carried OX_SAY_STT_MODEL is exported" fails.
+mkdir -p "$tmp/home-f16carry/Library/LaunchAgents"
+cp "$root/launchd/$label.plist.in" "$tmp/home-f16carry/Library/LaunchAgents/$label.plist"
+plutil -replace EnvironmentVariables.OX_SAY_STT_MODEL -string "$tmp/Application Support/ox-say/models/ggml-parakeet-ultra-f16.bin" \
+    "$tmp/home-f16carry/Library/LaunchAgents/$label.plist"
+rm -f "$tmp/env-after-settings.txt"
+scenario f16carry scenario-render.sh \
+    || fail "f16carry scenario failed: $(tail -3 "$tmp/f16carry.log")"
+if grep -qx 'OX_SAY_STT_MODEL' "$tmp/env-after-settings.txt" 2>/dev/null; then
+    pass "carried OX_SAY_STT_MODEL is exported"
+else
+    fail "carried OX_SAY_STT_MODEL is not in the environment after oxs_settings"
+fi
+check "carried OX_SAY_STT_MODEL reaches the render" "$(plist_val "$tmp/render.plist" OX_SAY_STT_MODEL)" "$tmp/Application Support/ox-say/models/ggml-parakeet-ultra-f16.bin"
 
 # --- D: a failing render stops the installer before the install step --------
 rm -f "$tmp/installed"

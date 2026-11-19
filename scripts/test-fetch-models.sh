@@ -50,6 +50,11 @@
 #   * fetch-models.sh: delete the `[ "$resume" = 1 ] || { resume=1; opts+=(-C -); }` line in fetch_part -> "after the
 #     self-heal, a retry resumes from the fresh .part" fails
 #   * fetch-models.sh: put `rm -f "$nem_marker"` before the loop -> "an unrelated failure keeps the marker" fails
+#   * fetch-models.sh: delete the `ggml-parakeet-ultra-f16.bin | */ggml-parakeet-ultra-f16.bin) with_parakeet_f16=1`
+#     arm of the OX_SAY_STT_MODEL case -> an update by get.sh no longer keeps the f16 file -> "OX_SAY_STT_MODEL naming
+#     the f16 file fetches it with no flag" fails
+#   * fetch-models.sh: change the f16 SHA-256 or the parakeet_f16 revision -> "the f16 entry carries the pinned SHA-256" /
+#     "the f16 file is downloaded from the pinned revision URL" fail
 #   * fetch-models.sh: delete the `notes_only ... with_whisper` conflict check -> "an option for another set is
 #     refused" fails
 #   * fetch-models.sh: change `curl -fsSL` to `curl -fL` -> the fake curl prints
@@ -475,6 +480,88 @@ for combo in "--notes $name $notes_sha $notes_url --with-whisper" "--diar-only -
     out=$(bash "$root/scripts/fetch-models.sh" $combo "$tmp/dconf" 2>&1)
     rc=$?
     if [ "$rc" -eq 2 ] && [ ! -e "$tmp/dconf" ]; then pass "an option for another set is refused ($combo)"; else fail "$combo: exit $rc, $out"; fi
+done
+
+# --- parakeet-ultra f16 (--with-parakeet-f16, or OX_SAY_STT_MODEL naming the file) --------------------------------
+# The expected SHA-256, size and revision are typed here from the Hub's own answer (x-linked-etag, x-linked-size,
+# x-repo-commit of a HEAD on the file URL), not read back out of fetch-models.sh, so a wrong pin there is caught.
+f16_name=ggml-parakeet-ultra-f16.bin
+f16_sha=ee42f83ae751d7b3f9c435543df92ea6926f2d73df3129186a1ab58a8c7b6150
+f16_url=https://huggingface.co/Koptev/parakeet-ultra-ggml/resolve/2d1259722b0a0ee0d525aaaadcd648de58641dc0/$f16_name
+q8_url=https://huggingface.co/Koptev/parakeet-ultra-ggml/resolve/376105ac643ed20ac1e6cb54c2c04c454294c5a9
+if grep -qF "\"$f16_name $f16_sha \$parakeet_f16\"" "$root/scripts/fetch-models.sh"; then pass "the f16 entry carries the pinned SHA-256"; else fail "the f16 entry is not $f16_name $f16_sha"; fi
+if grep -q "^parakeet=$q8_url\$" "$root/scripts/fetch-models.sh"; then pass "the q8_0 pin did not move"; else fail "the q8_0 revision is not $q8_url"; fi
+# Every default-list file is an "intact" copy in $g/from (the loop would stop at the first one it could not get); the f16
+# file is NOT there, so a run that wants it reaches the scripted curl, which hands back "intact" and logs the URL.
+f16=$tmp/f16; mkdir -p "$f16/bin"
+cat > "$f16/bin/shasum" <<FAKE
+#!/bin/bash
+f=\${3:-}
+case \$f in
+    */$f16_name*) if [ "\$(cat "\$f")" = intact ]; then echo "$f16_sha  -"; exit 0; fi ;;
+esac
+exec "$g/bin/shasum" "\$@"
+FAKE
+chmod +x "$f16/bin/shasum"
+f16_curl() { # dir
+    mkdir -p "$1/bin"
+    cat > "$1/bin/curl" <<'FAKE'
+#!/bin/bash
+out= prev= wfmt=
+for a in "$@"; do
+    [ "$prev" = -o ] && out=$a
+    [ "$prev" = -w ] && wfmt=$a
+    prev=$a
+done
+echo "$*" >> "$(dirname "$(dirname "$0")")/calls"
+printf intact > "$out"
+[ -n "$wfmt" ] && printf '%s' "${wfmt//%\{http_code\}/200}"
+exit 0
+FAKE
+    chmod +x "$1/bin/curl"
+}
+f16_curl "$f16"
+# run_f16 <dest> <OX_SAY_STT_MODEL or -> [fetch-models.sh args]: the default list, no Nemotron, f16 only via flag or env.
+run_f16() {
+    local dest=$1 model=$2 setting=()
+    shift 2
+    [ "$model" = - ] || setting=("$model")
+    env -u OX_SAY_STT_MODEL ${setting[@]+"${setting[@]}"} OX_SAY_NEMOTRON=0 PATH="$f16/bin:$PATH" OX_SAY_MODELS_FROM="$g/from" bash "$root/scripts/fetch-models.sh" "$@" "$dest" 2>&1
+}
+f16_calls() { grep -c "$f16_url" "$f16/calls" 2>/dev/null || true; }
+
+out=$(run_f16 "$f16/a" - --with-parakeet-f16); rc=$?
+if [ "$rc" = 0 ] && [ -f "$f16/a/$f16_name" ] && [ -f "$f16/a/ggml-parakeet-ultra-q8_0.bin" ]; then pass "--with-parakeet-f16 fetches the f16 file and keeps the q8_0 default"; else fail "--with-parakeet-f16 (rc $rc): $out"; fi
+case $out in *"ok      $f16_name"*) pass "--with-parakeet-f16 verifies the f16 file ('ok')" ;; *) fail "no ok line for the f16 file: $out" ;; esac
+n=$(f16_calls)
+if [ "$n" = 1 ]; then pass "the f16 file is downloaded from the pinned revision URL"; else fail "the f16 URL $f16_url was requested $n times: $(cat "$f16/calls" 2>/dev/null)"; fi
+
+: > "$f16/calls"
+out=$(run_f16 "$f16/b" -); rc=$?
+case $out in *"$f16_name"*) fail "a default run listed the f16 file: $out" ;; *) [ "$rc" = 0 ] && pass "a default run does not fetch the f16 file" || fail "default run failed (rc $rc): $out" ;; esac
+out=$(run_f16 "$f16/c" "OX_SAY_STT_MODEL=/Users/someone/Library/Application Support/ox-say/models/ggml-parakeet-ultra-q8_0.bin"); rc=$?
+case $out in *"$f16_name"*) fail "OX_SAY_STT_MODEL naming q8_0 pulled the f16 file: $out" ;; *) [ "$rc" = 0 ] && pass "OX_SAY_STT_MODEL naming the q8_0 file does not fetch f16" || fail "q8_0 run failed (rc $rc): $out" ;; esac
+
+# The update path: get.sh runs fetch-models.sh with no flag and the agent's OX_SAY_STT_MODEL exported.
+out=$(run_f16 "$f16/d" "OX_SAY_STT_MODEL=/Users/someone/Library/Application Support/ox-say/models/$f16_name"); rc=$?
+if [ "$rc" = 0 ] && [ -f "$f16/d/$f16_name" ]; then pass "OX_SAY_STT_MODEL naming the f16 file fetches it with no flag"; else fail "env-named f16 (rc $rc): $out"; fi
+case $out in *"ok      $f16_name"*) pass "the env-named f16 file is verified ('ok')" ;; *) fail "no ok line for the env-named f16 file: $out" ;; esac
+out=$(run_f16 "$f16/e" "OX_SAY_STT_MODEL=$f16_name"); rc=$?
+if [ "$rc" = 0 ] && [ -f "$f16/e/$f16_name" ]; then pass "a bare f16 file name in OX_SAY_STT_MODEL also matches"; else fail "bare-name f16 (rc $rc): $out"; fi
+# Already in place and intact: verified again, no second download.
+before=$(f16_calls)
+out=$(run_f16 "$f16/d" "OX_SAY_STT_MODEL=/x/$f16_name"); rc=$?
+case $out in
+    *"fetch   $f16_name"* | *"copy    $f16_name"*) fail "an intact f16 file was fetched again: $out" ;;
+    *"ok      $f16_name"*) [ "$(f16_calls)" = "$before" ] && pass "an f16 file already in place is verified, not downloaded again" || fail "curl was called again for a present f16 file" ;;
+    *) fail "present f16 file: rc $rc: $out" ;;
+esac
+# The flag is for the default set only.
+for combo in "--notes $name $notes_sha $notes_url --with-parakeet-f16" "--diar-only --with-parakeet-f16" "--nemotron-only --with-parakeet-f16" "--clean-only --with-parakeet-f16"; do
+    # shellcheck disable=SC2086
+    out=$(bash "$root/scripts/fetch-models.sh" $combo "$f16/conf" 2>&1)
+    rc=$?
+    if [ "$rc" -eq 2 ] && [ ! -e "$f16/conf" ]; then pass "an option for another set is refused ($combo)"; else fail "$combo: exit $rc, $out"; fi
 done
 
 # --- the download loop, with a scripted curl ---------------------------------------------------------------------

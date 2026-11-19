@@ -50,7 +50,7 @@ func (r *Recurrence) Scan(text string) map[string][]string {
 				continue
 			}
 			for _, ci := range r.first[fold(t.s)] {
-				if _, ok := matchAt(seg, i, r.cs[ci], true); ok {
+				if _, ok := matchAt(seg, i, r.cs[ci], true, nil); ok {
 					hits[ci] = struct{}{}
 				}
 			}

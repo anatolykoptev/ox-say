@@ -165,3 +165,24 @@ extension StudioClient {
         return answer
     }
 }
+
+/// Which meeting the window reads live captions for, and which it has been told are over. A meeting that answered
+/// "not recording" is never targeted again: when the list read after it fails, its row still says "recording", and a
+/// target taken from that row would start a new request at once, again and again.
+public struct LiveTargeting: Equatable {
+    public private(set) var stopped: Set<String> = []
+
+    public init() {}
+
+    /// `/live` said the recording is over.
+    public mutating func reportedStopped(_ id: String) { stopped.insert(id) }
+
+    /// The chosen meeting while it is recording, else the recording the plate shows (`recordingID`: the app's own
+    /// recording), because its row shows the last line. nil when the window is not visible or nothing qualifies.
+    public func target(visible: Bool, selected: MeetingInfo?, meetings: [MeetingInfo], recordingID: String?) -> String? {
+        guard visible else { return nil }
+        if let selected, selected.status == .recording, !stopped.contains(selected.id) { return selected.id }
+        guard let recordingID, !stopped.contains(recordingID) else { return nil }
+        return meetings.first { $0.id == recordingID && $0.status == .recording }?.id
+    }
+}

@@ -61,6 +61,8 @@ measurement. The 1.7B Q8 talker is not fetched by
 
 ### Speech-to-text: ox-stt, Parakeet TDT 0.6B v3 q8_0
 
+The shipped default is parakeet-ultra q8_0. These rows were measured on v3 q8_0; ultra has the same architecture and size.
+
 | Measurement | Metal | CPU (-ng) |
 |---|---|---|
 | Server start (spawn to ready) | 0.23 s | 0.40 s |
@@ -122,6 +124,8 @@ installed, so there are no 1.7B rows.
 | qwen-talker-0.6b-base-Q8_0.gguf | cloned | Russian | 2.6 | 255 | 0.61 | 3149 | 1.7G |
 
 ### Speech-to-text: ox-stt, Parakeet TDT 0.6B v3 q8_0
+
+The shipped default is parakeet-ultra q8_0. These rows were measured on v3 q8_0; ultra has the same architecture and size.
 
 | Measurement | Metal | CPU (-ng) |
 |---|---|---|

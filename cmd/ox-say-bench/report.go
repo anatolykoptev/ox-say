@@ -152,7 +152,7 @@ func (r *report) markdown() string {
 		fmt.Fprintf(&b, "| %s | %s | %s | %.1f | %.0f | %.2f | %.0f | %s |\n",
 			t.model, t.voice, t.lang, t.start.Seconds(), t.firstAudioMS, t.rtf, t.rssMB, t.footprint)
 	}
-	b.WriteString("\n### Speech-to-text: ox-stt, Parakeet TDT 0.6B v3 q8_0\n\n| Measurement |")
+	fmt.Fprintf(&b, "\n### Speech-to-text: ox-stt, %s\n\n| Measurement |", sttModelLabel())
 	for _, d := range devices {
 		fmt.Fprintf(&b, " %s |", d.name)
 	}
@@ -189,4 +189,9 @@ func median(xs []float64) float64 {
 	s := slices.Clone(xs)
 	slices.Sort(s)
 	return s[len(s)/2]
+}
+
+// sttModelLabel names the Parakeet weights the bench ran, from the file it loads, so the heading follows config.STTModelFile.
+func sttModelLabel() string {
+	return strings.TrimSuffix(strings.TrimPrefix(parakeetFile, ggmlPrefix), ggmlSuffix)
 }

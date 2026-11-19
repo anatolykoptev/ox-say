@@ -24,8 +24,16 @@ public enum MeetingRetention: Int, CaseIterable, Equatable {
 /// The settings the daemon keeps for meetings (`GET /v1/meetings/settings`): today only how long audio stays.
 public struct MeetingDaemonSettings: Equatable {
     public var retentionDays: Int
+    /// Live captions are on in the daemon; nil from a daemon that predates the field (never read as "off").
+    public var liveCaptions: Bool?
+    /// What the daemon picks without a choice (`live_captions_default`: on for Apple Silicon, off for Intel).
+    public var liveCaptionsDefault: Bool?
 
-    public init(retentionDays: Int) { self.retentionDays = retentionDays }
+    public init(retentionDays: Int, liveCaptions: Bool? = nil, liveCaptionsDefault: Bool? = nil) {
+        self.retentionDays = retentionDays
+        self.liveCaptions = liveCaptions
+        self.liveCaptionsDefault = liveCaptionsDefault
+    }
 
     public var retention: MeetingRetention { MeetingRetention(rawValue: retentionDays) ?? .month }
 
@@ -34,7 +42,8 @@ public struct MeetingDaemonSettings: Equatable {
     public static func decode(_ data: Data) -> MeetingDaemonSettings? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let days = obj["retention_days"] as? Int, MeetingRetention(rawValue: days) != nil else { return nil }
-        return MeetingDaemonSettings(retentionDays: days)
+        return MeetingDaemonSettings(retentionDays: days, liveCaptions: obj["live_captions"] as? Bool,
+                                     liveCaptionsDefault: obj["live_captions_default"] as? Bool)
     }
 }
 
@@ -62,6 +71,8 @@ public enum MeetingSettings {
     public static let enabledKey = "meetingsEnabled"
     public static let folderKey = "meetingsFolder"
     public static let retentionKey = "meetingsRetentionDays"
+    /// The app's last copy of the daemon's live-captions switch (the daemon owns the value).
+    public static let liveCaptionsKey = "meetingsLiveCaptions"
     /// The global call mode (`CallGlobalMode`). The old `meetingsAutoStart` boolean is dead: the feature
     /// itself shipped off, so nothing it could have meant is still true — the key is simply not read.
     public static let callModeKey = "meetingsCallMode"
@@ -119,6 +130,11 @@ public enum MeetingSettings {
     }
 
     public static func setRetention(_ r: MeetingRetention, _ d: UserDefaults) { d.set(r.rawValue, forKey: retentionKey) }
+
+    /// The last live-captions value the daemon took; nil when none was ever saved from here.
+    public static func liveCaptionsCopy(_ d: UserDefaults) -> Bool? { d.object(forKey: liveCaptionsKey) as? Bool }
+
+    public static func setLiveCaptionsCopy(_ on: Bool, _ d: UserDefaults) { d.set(on, forKey: liveCaptionsKey) }
 
     /// The global call mode; an unset or unknown value asks first — nothing records by itself.
     public static func callMode(_ d: UserDefaults) -> CallGlobalMode {

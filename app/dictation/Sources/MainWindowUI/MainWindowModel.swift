@@ -154,6 +154,10 @@ public final class MainWindowModel: ObservableObject {
         Binding(get: { self.data.dictation.sound }, set: { self.data.dictation.sound = $0; self.actions.setSound($0) })
     }
 
+    var showPill: Binding<Bool> {
+        Binding(get: { self.data.dictation.pillShown }, set: { self.data.dictation.pillShown = $0; self.actions.setShowPill($0) })
+    }
+
     var hotkeyMode: Binding<HotkeyMode> {
         Binding(get: { self.data.dictation.mode }, set: { self.data.dictation.mode = $0; self.actions.setHotkeyMode($0) })
     }
@@ -164,6 +168,11 @@ public final class MainWindowModel: ObservableObject {
                     if slot == .russian { self.data.voices.russianVoice = $0 } else { self.data.voices.englishVoice = $0 }
                     self.actions.pickVoice(slot, $0)
                 })
+    }
+
+    func codePack(_ pack: CodePack) -> Binding<Bool> {
+        Binding(get: { self.data.codePacks.contains(pack) },
+                set: { self.data.codePacks = CodeVocabulary.toggled(self.data.codePacks, pack, on: $0); self.actions.setCodePack(pack, $0) })
     }
 
     var startAtLogin: Binding<Bool> {
