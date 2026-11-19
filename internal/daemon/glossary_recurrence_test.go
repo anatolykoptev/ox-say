@@ -409,3 +409,116 @@ func TestGlossaryListCarriesNeededAndSeenDictation(t *testing.T) {
 		}
 	}
 }
+
+// seedLegacySighting rewrites a stored pair's sightings to the whole-context hashes the store kept before a
+// sentence was cut like a dictation: ID(context) is hash8 of the folded word sequence, which is that hash.
+func (r *dictRig) seedLegacySighting(t *testing.T, heard string, contexts ...string) {
+	t.Helper()
+	path := filepath.Join(r.d.Cfg.Home, glossary.FileName)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f struct {
+		Version int              `json:"version"`
+		Pairs   []map[string]any `json:"pairs"`
+	}
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range f.Pairs {
+		if p["id"] == glossary.ID(heard) {
+			hs := make([]string, 0, len(contexts))
+			for _, c := range contexts {
+				hs = append(hs, glossary.ID(c))
+			}
+			p["sightings"] = hs
+		}
+	}
+	out, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.d.invalidateGlossary()
+}
+
+// A candidate filed before this change holds the hash of its whole context. Dictating that same sentence is the
+// same sighting, not a new one, whether the legacy context is the sentence or a longer run that carries it.
+// Mutation: glossary/recurrence.go scan.flush, drop the legacyHash call (h stays the sentence's own hash) -> RED
+// (the second case adds a sighting and the pair turns active).
+func TestDictationRecurrenceKnowsALegacyContextHash(t *testing.T) {
+	for _, c := range []struct{ legacy, dictated string }{
+		{"mr zorbex called", "Mr. Zorbex called."},
+		{"it rained zorbex called", "It rained. Zorbex called."},
+	} {
+		r := newDictRig(t)
+		r.candidate(t, recHeard, recMeant, true)
+		r.seedLegacySighting(t, recHeard, c.legacy)
+		r.dictate(t, c.dictated)
+		p := r.pair(t, recHeard)
+		if len(p.Sightings) != 1 || p.SeenDictation != 0 || p.Status != glossary.Candidate {
+			t.Fatalf("legacy %q, dictated %q: sightings %d, seen_dictation %d, status %s; want 1, 0, candidate",
+				c.legacy, c.dictated, len(p.Sightings), p.SeenDictation, p.Status)
+		}
+	}
+}
+
+// The same words under different punctuation are the same sentence: an abbreviation's dot, a missing dot, or a
+// "?" inside a URL does not change the sighting.
+// Mutation: glossary/recurrence.go isCut, return true for every terminator token (drop the whitespace and
+// abbreviation conditions) -> RED (each case adds a second sighting and activates the pair).
+func TestDictationRecurrenceIgnoresPunctuationOnlyDifferences(t *testing.T) {
+	for _, c := range []struct{ heard, meant, filed, dictated string }{
+		{recHeard, recMeant, "Mr. Zorbex called.", "Mr Zorbex called."},
+		{recHeard, recMeant, "Check e.g. Zorbex now.", "Check e.g Zorbex now."},
+		{"зорбекс", "Zorbax", "Это т.е. зорбекс звонил.", "Это т.е зорбекс звонил."},
+		{recHeard, recMeant, "Open site.org/p?zorbex now.", "Open site.org/p zorbex now."},
+	} {
+		r := newDictRig(t)
+		if _, _, err := r.d.Glossary.AddChecked(c.heard, c.meant, c.filed, true); err != nil {
+			t.Fatal(err)
+		}
+		r.d.invalidateGlossary()
+		r.dictate(t, c.dictated)
+		p := r.pair(t, c.heard)
+		if len(p.Sightings) != 1 || p.SeenDictation != 0 || p.Status != glossary.Candidate {
+			t.Fatalf("filed %q, dictated %q: sightings %d, seen_dictation %d, status %s; want 1, 0, candidate",
+				c.filed, c.dictated, len(p.Sightings), p.SeenDictation, p.Status)
+		}
+	}
+}
+
+// An agent that files the same context twice (a retry) reports one sentence twice: the second call is no new
+// sighting, even though it carries a second sentence the first call did not store.
+// Mutation: glossary/store.go AddChecked, drop the filingHash known-check (append the first sentence hash the
+// pair lacks) -> RED (the retry stores "zorbex two" and the pair turns active).
+func TestAgentFilingRetryIsNotASecondSighting(t *testing.T) {
+	r := newDictRig(t)
+	for range 2 {
+		if _, _, err := r.d.glossaryAdd(recHeard, recMeant, "zorbex one. zorbex two."); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := r.pair(t, recHeard)
+	if len(p.Sightings) != 1 || p.Status != glossary.Candidate || p.Seen != 2 {
+		t.Fatalf("sightings %d, status %s, seen %d; want 1, candidate, 2", len(p.Sightings), p.Status, p.Seen)
+	}
+}
+
+// One dictation that carries two spellings of one meant is one sighting for that meant, not one per spelling:
+// pooled evidence would otherwise activate the second spelling on a sentence the first already vouched for.
+// Mutation: glossary/recurrence.go RecordDictation, drop the `if _, done := meants[p.Meant]; done` skip -> RED
+// (the second spelling gains a sighting and activates).
+func TestDictationRecurrenceCountsOnePerMeantPerDictation(t *testing.T) {
+	r := newDictRig(t)
+	if _, _, err := r.d.glossaryAdd(recHeard, recMeant, "please open zorbex now."); err != nil {
+		t.Fatal(err)
+	}
+	r.candidate(t, "zorbix", recMeant, true)
+	r.dictate(t, "zorbex and zorbix called.")
+	wantCounts(t, r.pair(t, recHeard), 2, 1, glossary.Active)
+	wantCounts(t, r.pair(t, "zorbix"), 0, 0, glossary.Candidate)
+}

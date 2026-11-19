@@ -903,7 +903,6 @@ public enum L10nKey: String, CaseIterable {
     case glossaryColSeen = "glossary.col.seen"
     case glossaryProgress = "glossary.progress"
     case glossaryProvenance = "glossary.provenance"
-    case glossaryPluralRule = "glossary.plural.rule"
     case glossarySentencesOne = "glossary.sentences.one"
     case glossarySentencesFew = "glossary.sentences.few"
     case glossarySentencesMany = "glossary.sentences.many"

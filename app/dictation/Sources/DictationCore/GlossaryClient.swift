@@ -56,10 +56,11 @@ public struct GlossaryPair: Equatable, Identifiable {
         L10nKey.glossaryProvenance.text(Self.sentences(seenDictation), Self.sentences(max(0, sightings - seenDictation)))
     }
 
-    /// "1 sentence" / "2 sentences" / «5 предложений»: the plural form is the language's, named by the
-    /// `glossary.plural.rule` string (`one-other` or `slavic`) so a language added later says its own rule.
+    /// "1 sentence" / "2 sentences" / «5 предложений»: the plural form is the language's. A language with a form of
+    /// its own for 2-4 (Russian) ships a `few` text that differs from its `many` text; one without (English) ships
+    /// both the same, so the strings themselves name the rule and a language added later needs no extra key.
     static func sentences(_ n: Int) -> String {
-        let slavic = L10nKey.glossaryPluralRule.text == "slavic"
+        let slavic = L10nKey.glossarySentencesFew.text != L10nKey.glossarySentencesMany.text
         let tail = n % 100
         let key: L10nKey
         switch (slavic, n % 10) {

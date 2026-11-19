@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -121,8 +122,8 @@ func BenchmarkRecurrenceScan(b *testing.B) {
 // Mutation: store.go AddChecked, hash8(key(context)) instead of contextHashes -> RED.
 func TestAgentFilingHashesLikeADictation(t *testing.T) {
 	for _, c := range []struct{ heard, meant, context, sentence string }{
-		{"zorbex", "Zorbax", "Mr. Zorbex called.", "Zorbex called"},
-		{"зорбекс", "Zorbax", "Это, т.е. зорбекс звонил.", "зорбекс звонил"},
+		{"zorbex", "Zorbax", "Mr. Zorbex called.", "Mr Zorbex called"},
+		{"зорбекс", "Zorbax", "Это, т.е. зорбекс звонил.", "Это т.е зорбекс звонил"},
 		{"zorbex", "Zorbax", "It rained. Then zorbex called! Fine.", "then zorbex called"},
 	} {
 		s := NewStore(t.TempDir())
@@ -144,7 +145,110 @@ func TestAgentFilingHashesLikeADictation(t *testing.T) {
 	}
 	// A form that spans a cut keeps the whole-context hash.
 	p, err = NewStore(t.TempDir()).Add("pill versus", "PV", "x pill. versus y")
-	if err == nil && len(p.Sightings) != 1 {
-		t.Fatalf("spanning form: %v", p.Sightings)
+	if err != nil || len(p.Sightings) != 1 || p.Sightings[0] != hash8(key("x pill. versus y")) {
+		t.Fatalf("spanning form: %v, %v; want the whole-context hash %s", p.Sightings, err, hash8(key("x pill. versus y")))
+	}
+}
+
+func sentencesOf(text string) []string {
+	ws, spans := sentenceSpans(tokenize(text))
+	var out []string
+	for _, sp := range spans {
+		out = append(out, strings.Join(ws[sp[0]:sp[1]], " "))
+	}
+	return out
+}
+
+// A sentence is its words: a dot after an abbreviation, a "?" inside a URL and a missing final dot change no
+// sentence, while a real terminator cuts.
+// Mutation: recurrence.go isCut, return true as soon as the token holds a sentenceEnds character -> RED.
+func TestSentenceCuts(t *testing.T) {
+	for _, c := range []struct {
+		text string
+		want []string
+	}{
+		{"Mr. Zorbex called.", []string{"mr zorbex called"}},
+		{"Mr Zorbex called", []string{"mr zorbex called"}},
+		{"See e.g. this one. Next", []string{"see e.g this one", "next"}},
+		{"Это т.е. так! Да?", []string{"это т.е так", "да"}},
+		{"Open site.org/p?zorbex now. ok", []string{"open site.org p zorbex now", "ok"}},
+		{"I use node.js. Then more", []string{"i use node.js", "then more"}},
+		{"wait... ok", []string{"wait", "ok"}},
+		{"line one\nline two", []string{"line one", "line two"}},
+		{"Is it? Yes (see below.) Fine", []string{"is it", "yes see below", "fine"}},
+		{"Plan A. Then B", []string{"plan a", "then b"}},
+	} {
+		if got := sentencesOf(c.text); !slices.Equal(got, c.want) {
+			t.Errorf("%q: sentences %q, want %q", c.text, got, c.want)
+		}
+	}
+}
+
+// A stored whole-context hash vouches for a sentence its context carries, within maxContextWords; another
+// context, or one that does not carry the sentence, does not.
+// Mutation: recurrence.go legacyHash, start i at lo instead of hi-maxContextWords -> RED (the leading run is lost).
+func TestLegacyHashMatchesTheContextThatCarriesTheSentence(t *testing.T) {
+	ws := words("it rained all day. zorbex called me. then it stopped")
+	whole := hashWords(ws)
+	own := hashWords(ws[4:7]) // "zorbex called me"
+	lead := hashWords(ws[:7]) // "it rained all day zorbex called me"
+	for _, c := range []struct {
+		name  string
+		known []string
+		want  string
+	}{
+		{"whole text", []string{whole}, whole},
+		{"leading run", []string{"deadbeef", lead}, lead},
+		{"its own hash", []string{own}, own},
+		{"another context", []string{hashWords(words("zorbex called you"))}, ""},
+		{"no sightings", nil, ""},
+	} {
+		got, ok := legacyHash(ws, 4, 7, c.known)
+		if got != c.want || ok != (c.want != "") {
+			t.Errorf("%s: got %q, %v; want %q", c.name, got, ok, c.want)
+		}
+	}
+	long := make([]string, maxContextWords+10)
+	for i := range long {
+		long[i] = fmt.Sprintf("w%d", i)
+	}
+	if _, ok := legacyHash(long, len(long)-2, len(long), []string{hashWords(long)}); ok {
+		t.Error("a run longer than maxContextWords must not match")
+	}
+}
+
+// The miss path cuts and hashes nothing: a text without any heard form costs what tokenizing and folding it costs,
+// however many sentences it has.
+// Mutation: recurrence.go Scan, call sentenceSpans(s.toks) before the loop -> RED (allocations grow with sentences).
+func TestScanMissAllocatesNoMoreThanTokenizing(t *testing.T) {
+	r := NewRecurrence([]Pair{vettedCandidate("zorbex", "Zorbax")})
+	text := strings.Repeat("we went over the plan. Then agreed on who sends what! ", 40)
+	base := testing.AllocsPerRun(20, func() {
+		for _, tk := range tokenize(text) {
+			if tk.word {
+				_ = r.first[fold(tk.s)]
+			}
+		}
+	})
+	got := testing.AllocsPerRun(20, func() {
+		if r.Scan(text) != nil {
+			t.Fatal("a miss found something")
+		}
+	})
+	if got > base {
+		t.Fatalf("Scan miss allocates %v, tokenize+fold baseline %v", got, base)
+	}
+}
+
+// The hashes a scan reports per pair are bounded by what the store can take, however many sentences carry the form.
+// Mutation: recurrence.go scan.flush, drop the `len(got) > maxSightings` test -> RED.
+func TestScanBoundsHashesPerPair(t *testing.T) {
+	r := NewRecurrence([]Pair{vettedCandidate("zorbex", "Zorbax")})
+	text := ""
+	for i := range 40 {
+		text += fmt.Sprintf("zorbex number %d here. ", i)
+	}
+	if got := r.Scan(text)[ID("zorbex")]; len(got) != maxSightings+1 {
+		t.Fatalf("hashes = %d, want %d", len(got), maxSightings+1)
 	}
 }

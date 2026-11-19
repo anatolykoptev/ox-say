@@ -234,14 +234,12 @@ func (s *Store) AddChecked(heard, meant, context string, vetted bool) (Pair, boo
 	p := &pairs[i]
 	p.Seen++
 	p.Vetted = p.Vetted || vetted
-	if context != "" {
-		// The sentence(s) of the context that carry the heard form, cut exactly as a dictation is (contextHashes),
-		// so the same sentence is one sighting whether an agent or a dictation reports it. One filing adds at most one.
-		for _, h := range contextHashes(context, heard) {
-			if !slices.Contains(p.Sightings, h) && len(p.Sightings) < maxSightings {
-				p.Sightings = append(p.Sightings, h)
-				break
-			}
+	if context != "" && len(p.Sightings) < maxSightings {
+		// The sentence of the context that carries the heard form, cut and hashed exactly as a dictation is
+		// (filingHash), so one sentence is one sighting whether an agent or a dictation reports it. A retry of
+		// the same filing, or a sentence the pair already holds, adds none.
+		if h, ok := filingHash(context, heard, p.Sightings); ok {
+			p.Sightings = append(p.Sightings, h)
 		}
 	}
 	promote(pairs, meant)

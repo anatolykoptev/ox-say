@@ -891,7 +891,6 @@
 "glossary.col.seen" = "Фразы";
 "glossary.progress" = "%1$@ из %2$@";
 "glossary.provenance" = "Из диктовки: %1$@. От ассистентов: %2$@.";
-"glossary.plural.rule" = "slavic";
 "glossary.sentences.one" = "%@ предложение";
 "glossary.sentences.few" = "%@ предложения";
 "glossary.sentences.many" = "%@ предложений";

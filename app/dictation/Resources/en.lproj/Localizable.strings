@@ -897,7 +897,6 @@
 "glossary.col.seen" = "Sentences";
 "glossary.progress" = "%1$@ of %2$@";
 "glossary.provenance" = "From dictation: %1$@. From assistants: %2$@.";
-"glossary.plural.rule" = "one-other";
 "glossary.sentences.one" = "%@ sentence";
 "glossary.sentences.few" = "%@ sentences";
 "glossary.sentences.many" = "%@ sentences";

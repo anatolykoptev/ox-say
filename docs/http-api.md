@@ -96,12 +96,16 @@ by its hash like an agent's. The guards, all required:
   transcription, so a dictation that took it is not counted: an under-count, which fails safe.
 - Privacy: only the 8-hex hash of the sentence is stored, and the daemon logs counts (`sightings`, `activated`),
   never a sentence or a heard form.
-- At most **one** sighting per pair per dictation: two sentences of one utterance do not activate a pair,
-  because recurrence means the error comes back in a later dictation.
-- One segmentation for both sources: a sentence is the text between `. ! ? …` or a newline. An agent's filing
-  hashes the sentence(s) of its `context` that carry the heard form by the same rule (at most one sighting per
-  filing; a context where no sentence carries the form keeps the hash of the whole context), so a sentence an
-  agent filed and a dictation later repeats is one sighting, even with an abbreviation («т.е.», "Mr.") in it.
+- At most **one** sighting per meant per dictation: two sentences of one utterance, or two spellings of one
+  term in it, do not activate a pair, because recurrence means the error comes back in a later dictation.
+- One identity for both sources: a sentence is hashed by its **words** (lowercased, punctuation dropped), so
+  the same words under different punctuation are one sentence. It ends at `. ! ? …` or a newline that is
+  followed by white space or the end of the text; a `?` inside a URL does not end it, and neither does the dot
+  of an abbreviation («т.е.», "e.g.", "Mr."). An agent's filing hashes the sentence of its `context` that carries
+  the heard form by the same rule, so a sentence an agent filed and a dictation later repeats is one sighting.
+  A filing adds nothing when the pair already holds the hash of its whole context or of one of those sentences
+  (an identical retry is a no-op); a context where no sentence carries the form is hashed whole. A hash stored
+  before this rule (a whole context) also counts as the sentence it carries, within 64 words.
 - The match is the exact heard form, whole word, in the raw output; no dictionary is loaded and no file is
   written when nothing matched. The dictation that completes a pair's evidence is answered with the pairs it
   started with; the next one gets the correction.
