@@ -57,7 +57,7 @@ func isCut(toks []token, i int) bool {
 		return false
 	}
 	dotsOnly := !strings.ContainsAny(s, "!?…\n")
-	return !(dotsOnly && i > 0 && toks[i-1].word && isAbbreviation(toks[i-1].s))
+	return !dotsOnly || i == 0 || !toks[i-1].word || !isAbbreviation(toks[i-1].s)
 }
 
 // Recurrence finds the heard forms of the pairs that may gain a sighting from dictation: the candidates the
