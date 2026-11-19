@@ -78,9 +78,9 @@ struct GlossaryPage: View {
             }
             .width(min: 90, ideal: 110)
             TableColumn(L10nKey.glossaryColSeen.text) { pair in
-                Text("\(pair.seen)").monospacedDigit().foregroundStyle(.secondary)
+                Text(pair.progressText).monospacedDigit().foregroundStyle(.secondary).help(pair.provenanceText)
             }
-            .width(min: 40, ideal: 50)
+            .width(min: 60, ideal: 80)
         }
         .contextMenu(forSelectionType: GlossaryPair.ID.self) { ids in
             if let id = ids.first, let pair = model.visible.first(where: { $0.id == id }) { actions(for: pair) }
