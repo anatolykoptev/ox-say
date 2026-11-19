@@ -98,6 +98,7 @@ func containsSeq(hay, needle []string) bool {
 }
 
 type compiled struct {
+	id    string
 	heard []string
 	// stems[k] is nominalStem(heard[k]): "" when that word matches only itself.
 	stems []string
@@ -115,9 +116,14 @@ type compiled struct {
 
 // compile keeps the active pairs, longest heard form first.
 func compile(pairs []Pair) []compiled {
+	return compileWhere(pairs, func(p Pair) bool { return p.Status == Active })
+}
+
+// compileWhere compiles the pairs keep accepts, longest heard form first.
+func compileWhere(pairs []Pair, keep func(Pair) bool) []compiled {
 	var cs []compiled
 	for _, p := range pairs {
-		if p.Status != Active {
+		if !keep(p) {
 			continue
 		}
 		if h := words(p.Heard); len(h) > 0 {
@@ -131,7 +137,7 @@ func compile(pairs []Pair) []compiled {
 // compilePair builds one pair's matcher: the folded heard words, the stems they
 // may match by, and the meant's folded middle and edges.
 func compilePair(p Pair, h []string) compiled {
-	c := compiled{heard: h, stems: stemsFor(p, h), meant: p.Meant, homoglyph: p.Pack}
+	c := compiled{id: p.ID, heard: h, stems: stemsFor(p, h), meant: p.Meant, homoglyph: p.Pack}
 	c.mkey, c.lead, c.trail = meantEdges(p.Meant)
 	return c
 }
@@ -325,17 +331,20 @@ func firstMatch(cs []compiled, try func(c compiled, exact bool) bool) (compiled,
 	return compiled{}, false
 }
 
+// takenAt reports whether token j is already consumed; a nil taken (a read-only scan) consumes nothing.
+func takenAt(taken []bool, j int) bool { return j < len(taken) && taken[j] }
+
 func matchAt(toks []token, i int, c compiled, exact bool, taken []bool) (int, bool) {
 	j := i
 	for k, h := range c.heard {
 		if k > 0 {
-			if j >= len(toks) || taken[j] || toks[j].word || strings.TrimSpace(toks[j].s) != "" ||
+			if j >= len(toks) || takenAt(taken, j) || toks[j].word || strings.TrimSpace(toks[j].s) != "" ||
 				strings.IndexByte(toks[j].s, '\n') >= 0 {
 				return 0, false
 			}
 			j++
 		}
-		if j >= len(toks) || taken[j] || !toks[j].word || !same(h, c, k, exact, fold(toks[j].s)) {
+		if j >= len(toks) || takenAt(taken, j) || !toks[j].word || !same(h, c, k, exact, fold(toks[j].s)) {
 			return 0, false
 		}
 		j++

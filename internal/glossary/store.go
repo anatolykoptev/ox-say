@@ -54,7 +54,10 @@ type Pair struct {
 	Meant     string   `json:"meant"`
 	Status    Status   `json:"status"`
 	Sightings []string `json:"sightings,omitempty"` // hashes of distinct sentences
-	Seen      int      `json:"seen"`
+	Seen      int      `json:"seen"`                // agent filings of this pair
+	// SeenDictation is how many of Sightings came from a later dictation whose raw recognition carried the heard
+	// form again (see Recurrence); the rest were filed by an agent. A file written before the field reads as 0.
+	SeenDictation int `json:"seen_dictation"`
 	// Vetted: the dictionary was consulted when the pair was filed and the heard form is a single word that is not
 	// ordinary words of its language. Only a vetted pair may activate on the evidence of its meant form's other
 	// spellings; a pair with no verdict (filed with no dictionary, or before this field) activates on its own
@@ -231,8 +234,11 @@ func (s *Store) AddChecked(heard, meant, context string, vetted bool) (Pair, boo
 	p := &pairs[i]
 	p.Seen++
 	p.Vetted = p.Vetted || vetted
-	if context != "" {
-		if h := hash8(key(context)); !slices.Contains(p.Sightings, h) && len(p.Sightings) < maxSightings {
+	if context != "" && len(p.Sightings) < maxSightings {
+		// The sentence of the context that carries the heard form, cut and hashed exactly as a dictation is
+		// (filingHash), so one sentence is one sighting whether an agent or a dictation reports it. A retry of
+		// the same filing, or a sentence the pair already holds, adds none.
+		if h, ok := filingHash(context, heard, p.Sightings); ok {
 			p.Sightings = append(p.Sightings, h)
 		}
 	}
@@ -291,6 +297,7 @@ func (s *Store) Edit(id, meant string) (Pair, error) {
 	}
 	pairs[i].Meant = meant
 	pairs[i].Sightings = nil
+	pairs[i].SeenDictation = 0
 	if pairs[i].Status != Active {
 		// One agent filing of the new meant must not reach the activation threshold and settle a pair the owner
 		// only re-opened: activation needs fresh evidence or an owner approve.
