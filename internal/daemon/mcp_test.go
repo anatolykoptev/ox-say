@@ -88,6 +88,7 @@ var wantToolSchemas = map[string]struct{ props, required []string }{
 	"meetings_list":   {[]string{"limit"}, nil},
 	"meeting_get":     {[]string{"id", "part", "offset", "max_chars"}, []string{"id"}},
 	"meetings_search": {[]string{"query"}, []string{"query"}},
+	"meeting_live":    {[]string{"meeting_id", "after", "wait_s"}, nil},
 	"voice_clean":     {[]string{"in_path", "out_path", "wet", "stereo", "overwrite"}, []string{"in_path", "out_path"}},
 	"glossary_add":    {[]string{"heard", "meant", "context"}, []string{"heard", "meant", "context"}},
 }
@@ -180,6 +181,7 @@ func TestMCPDescriptionsAreSelfSufficient(t *testing.T) {
 		"meetings_list":     {"meeting_get", "status", "notes_pending", "has_notes"},
 		"meeting_get":       {"meetings_list", "notes", "transcript", "next_offset", "max_chars", "language"},
 		"meetings_search":   {"meeting_get", "title", "snippet", "start", "speaker", "50", "truncated"},
+		"meeting_live":      {"after", "next", "wait_s", "preview", "meeting_get", "recording", "captions off", "lagging"},
 		"glossary_add":      {"dictated", "misrecognition", "heard", "meant", "context", "hash", "Do NOT file", "candidate", "sighting", "conflict", "invalid"},
 	}
 	for tool, words := range need {

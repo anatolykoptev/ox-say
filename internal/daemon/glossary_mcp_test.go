@@ -147,4 +147,9 @@ func TestMCPServerInstructionsPointAtGlossaryAdd(t *testing.T) {
 	if !strings.Contains(got, "glossary_add") || !strings.Contains(got, "dictated") {
 		t.Fatalf("instructions = %q, want a pointer to glossary_add for dictated messages", got)
 	}
+	for _, w := range []string{"meeting_live", "after", "next", "preview", "meeting_get"} {
+		if !strings.Contains(got, w) {
+			t.Fatalf("instructions lack %q for following a call: %q", w, got)
+		}
+	}
 }
