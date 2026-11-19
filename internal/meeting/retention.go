@@ -32,6 +32,18 @@ type Settings struct {
 	// which is on — a settings file written before the option existed gets the default every new install does,
 	// and only an explicit off keeps it off.
 	AEC string `json:"meeting_aec,omitempty"`
+	// LLMEndpoint is the user's choice of serving the notes model to other local apps: LLMEndpointOn or
+	// LLMEndpointOff; "" is "never chosen", which is OFF — the endpoint ships closed and only an explicit on
+	// opens it. The polarity is the reverse of AEC's on purpose.
+	LLMEndpoint string `json:"llm_endpoint,omitempty"`
+	// LLMEndpointCtx is the context the notes child is started with while the endpoint is on, in tokens;
+	// 0 is "never chosen" = LLMEndpointDefaultCtx. Values below NotesContextTokens are clamped up to it,
+	// never refused: a smaller stored number (an older daemon, a hand edit) still means "as large as asked".
+	LLMEndpointCtx int `json:"llm_endpoint_ctx,omitempty"`
+	// LLMEndpointMaxS is the longest one endpoint request may run, in seconds; 0 is "never chosen" =
+	// LLMEndpointDefaultMaxS. A stream that reaches it is ended cleanly so one agent cannot hold the
+	// notes model for the upstream's whole timeout.
+	LLMEndpointMaxS int `json:"llm_endpoint_max_s,omitempty"`
 	// CodeVocabulary is the enabled built-in code packs ("python", "go", "rust"); nil or empty is none. The
 	// setting lives here because this is the daemon's one settings file; it has nothing to do with meetings.
 	CodeVocabulary []string `json:"code_vocabulary,omitempty"`
@@ -43,11 +55,65 @@ const (
 	AECOff = "off"
 )
 
+// The values Settings.LLMEndpoint accepts ("" stands for never chosen = off).
+const (
+	LLMEndpointOn  = "on"
+	LLMEndpointOff = "off"
+)
+
+// LLMEndpointDefaultCtx is the notes child's context while the endpoint is on and nothing is stored.
+const LLMEndpointDefaultCtx = 131072
+
+// The bounds of llm_endpoint_ctx the settings route accepts: the notes context below, and above the
+// largest window any model in the catalog's class advertises (1 Mi tokens). A multiple of
+// LLMEndpointCtxStep, llama.cpp's KV allocation granularity.
+const (
+	LLMEndpointMaxCtx  = 1 << 20
+	LLMEndpointCtxStep = 4096
+)
+
+// The bounds of llm_endpoint_max_s the settings route accepts, and its default: ten minutes covers a
+// long agent turn, and the ceiling is the notes call's own 20-minute bound.
+const (
+	LLMEndpointDefaultMaxS = 600
+	LLMEndpointMinMaxS     = 10
+	LLMEndpointMaxMaxS     = 1200
+)
+
 func validRetention(days int) bool { return slices.Contains(RetentionChoices, days) }
+
+// validLLMEndpoint refuses a stored value that is none of on/off/never-chosen.
+func validLLMEndpoint(v string) error {
+	if v != "" && v != LLMEndpointOn && v != LLMEndpointOff {
+		return fmt.Errorf("llm_endpoint of %q is not %q or %q", v, LLMEndpointOff, LLMEndpointOn)
+	}
+	return nil
+}
 
 // AECEnabled is the effective choice behind Settings.AEC: off only when it says so — ox-aec ships in
 // every package, so echo cancellation is on unless the user turned it off.
 func (st Settings) AECEnabled() bool { return st.AEC != AECOff }
+
+// LLMEndpointEnabled is the effective choice behind Settings.LLMEndpoint: ON only when it says so —
+// the endpoint is opt-in and a settings file written before the option existed stays closed.
+func (st Settings) LLMEndpointEnabled() bool { return st.LLMEndpoint == LLMEndpointOn }
+
+// LLMEndpointCtxTokens is the effective context: the stored value, the default when unset, and never
+// below the context meeting notes are built for.
+func (st Settings) LLMEndpointCtxTokens() int {
+	if st.LLMEndpointCtx <= 0 {
+		return LLMEndpointDefaultCtx
+	}
+	return max(st.LLMEndpointCtx, NotesContextTokens())
+}
+
+// LLMEndpointMaxSeconds is the effective per-request cap: the stored value, the default when unset.
+func (st Settings) LLMEndpointMaxSeconds() int {
+	if st.LLMEndpointMaxS <= 0 {
+		return LLMEndpointDefaultMaxS
+	}
+	return st.LLMEndpointMaxS
+}
 
 // LoadSettings reads settings.json. A file that does not exist means the
 // default of DefaultRetention days; a file that exists but cannot be read,
@@ -71,6 +137,9 @@ func (s *Store) LoadSettings() (Settings, error) {
 	}
 	if got.AEC != "" && got.AEC != AECOn && got.AEC != AECOff {
 		return Settings{}, fmt.Errorf("meeting: %s: meeting_aec of %q is not %q or %q", SettingsFile, got.AEC, AECOff, AECOn)
+	}
+	if err := validLLMEndpoint(got.LLMEndpoint); err != nil {
+		return Settings{}, fmt.Errorf("meeting: %s: %w", SettingsFile, err)
 	}
 	return got, nil
 }
@@ -106,6 +175,15 @@ func (s *Store) SetSettings(st Settings) error {
 	}
 	if st.AEC != "" && st.AEC != AECOn && st.AEC != AECOff {
 		return fmt.Errorf("meeting: meeting_aec of %q is not %q or %q: %w", st.AEC, AECOff, AECOn, os.ErrInvalid)
+	}
+	if err := validLLMEndpoint(st.LLMEndpoint); err != nil {
+		return fmt.Errorf("meeting: %w: %w", err, os.ErrInvalid)
+	}
+	if st.LLMEndpointCtx < 0 {
+		return fmt.Errorf("meeting: llm_endpoint_ctx of %d is negative: %w", st.LLMEndpointCtx, os.ErrInvalid)
+	}
+	if st.LLMEndpointMaxS < 0 {
+		return fmt.Errorf("meeting: llm_endpoint_max_s of %d is negative: %w", st.LLMEndpointMaxS, os.ErrInvalid)
 	}
 	if err := os.MkdirAll(s.Root, 0o700); err != nil {
 		return err

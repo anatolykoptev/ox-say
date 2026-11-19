@@ -53,6 +53,23 @@ the installed agent. `GET /status` shows the path each engine resolved to
 under `config` (`engine_bin`, `stt_bin`, `voxcpm2_bin`, `notes_bin`,
 `diar_bin`).
 
+## Meeting settings file
+
+The Settings pane and `PUT /v1/meetings/settings` write
+`$OX_SAY_HOME/meetings/settings.json`. Keys that matter to the model endpoint:
+
+| Key | Default | Notes |
+|-----|---------|-------|
+| `llm_endpoint` | unset = `off` | `on` serves the notes model to other apps at `http://<OX_SAY_ADDR>/v1` (OpenAI-compatible: `GET /v1/models`, `POST /v1/chat/completions`). While unset or `off` both routes answer 404 |
+| `llm_endpoint_ctx` | unset = `131072` | Context the notes child is asked to run with while the endpoint is on: from the meeting-notes context to 1,048,576 tokens, stored rounded down to a multiple of 4096. When the asked value does not fit memory (the KV size is estimated from the model's own GGUF geometry) or the model's own limit, the daemon uses the largest multiple of 4096 that does and reports the effective value in `/status` (`llm_endpoint.context`) and the settings answer (`llm_endpoint_ctx_effective`) |
+| `llm_endpoint_max_s` | unset = `600` | The longest one endpoint request may run, 10–1200 s; a stream that reaches it is ended cleanly |
+
+The endpoint bearer is not in this file: it is generated per install at
+`$OX_SAY_HOME/run/llm-endpoint.key` (mode 0600, the file is the source of truth —
+the daemon authenticates without the app, so there is no Keychain copy), shown in
+Settings and read and rotated through `GET`/`POST /v1/meetings/llm-endpoint/key`, which need the
+owner token (`owner.token`) like turning the endpoint on does.
+
 
 ## Parakeet-ultra f16
 
