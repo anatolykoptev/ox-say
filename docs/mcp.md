@@ -4,9 +4,9 @@ The same server exposes MCP tools on `/mcp`: `speak`, `transcribe`,
 `engine_status`, the long-form voiceover tools `produce`, `produce_status`, `produce_edit`, `produce_control`,
 four read-only meeting tools: `meetings_list`, `meeting_get` (notes and/or transcript, paged),
 `meetings_search` and `meeting_live` (the live transcript of the call being recorded: `{meeting_id, recording, segments:[{seq, channel, start, end, text}], next, state}`;
-an agent polls with `after` = the last `next` and the call waits up to `wait_s` seconds, default 20, at most 60, answering as soon as a
+an agent polls with `after` = the last `next` and the call waits up to `wait_s` seconds, default 20, at most 45, answering as soon as a
 segment arrives or the recording stops; it reads the same captions as `GET /v1/meetings/<id>/live`, is text only, and is a preview that
-`meeting_get` replaces once `recording` is false; with live captions off in the settings it says so and how to turn them on), the offline voice-cleanup tool `voice_clean` (the same code as `POST /v1/audio/clean`: it refuses
+`meeting_get` replaces once `recording` is false (then do not poll again); a cursor ahead of the meeting's captions is clamped and noted; with live captions off in the settings it says so and how to turn them on), the offline voice-cleanup tool `voice_clean` (the same code as `POST /v1/audio/clean`: it refuses
 the meetings store, fetches the model on first use, and answers with the plain sentence and stable code when it is busy), and
 `glossary_add` — the filing end of the learning glossary: the same code path as `POST /v1/glossary` (the same
 validation, the same `candidate` → `active` promotion), answering `filed`, `sighting`, `conflict` or `invalid` as a

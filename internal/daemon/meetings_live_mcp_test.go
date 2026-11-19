@@ -162,8 +162,8 @@ func TestLiveWaitDefaultsAndCaps(t *testing.T) {
 		{"omitted is the default", nil, 20 * time.Second, false},
 		{"zero answers at once", ptr(0), 0, false},
 		{"within the cap", ptr(5), 5 * time.Second, false},
-		{"the cap itself", ptr(60), 60 * time.Second, false},
-		{"above the cap is cut", ptr(1000), 60 * time.Second, false},
+		{"the cap itself", ptr(45), 45 * time.Second, false},
+		{"above the cap is cut", ptr(1000), 45 * time.Second, false},
 		{"negative is an error", ptr(-1), 0, true},
 	} {
 		got, err := liveWait(tc.in)
@@ -243,5 +243,23 @@ func TestMeetingLiveToolRefusesBadInput(t *testing.T) {
 		if err == nil && !res.IsError {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// A cursor above every caption of the meeting (it came from another meeting) answers at once, clamped to the last
+// caption, instead of waiting out wait_s and handing the same cursor back.
+// Mutation: internal/daemon/meetings_live_mcp.go awaitLive, delete the `if after > ans.highest {...}` block -> RED
+// (the call waits its whole wait_s).
+func TestMeetingLiveToolClampsACursorAheadOfTheMeeting(t *testing.T) {
+	_, cs, _, l := recordingMeeting(t)
+	_, _ = l.Append(meeting.LiveMe, 0, 1, "one")
+	_, _ = l.Append(meeting.LiveThem, 1, 2, "two")
+	r := awaitLiveResult(t, callLive(t, cs, map[string]any{"after": 40, "wait_s": 30}), 5*time.Second)
+	note, _ := r.out["note"].(string)
+	if r.out["next"] != float64(2) || len(segTexts(r.out)) != 0 || !strings.Contains(note, "ahead") || r.out["recording"] != true {
+		t.Fatalf("cursor 40 over two captions = %v, want next 2 and the ahead note", r.out)
+	}
+	if r2 := callMCP(t, cs, "meeting_live", map[string]any{"after": 2, "wait_s": 0}); r2["note"] != nil || r2["next"] != float64(2) {
+		t.Fatalf("a cursor at the last caption is not ahead: %v", r2)
 	}
 }

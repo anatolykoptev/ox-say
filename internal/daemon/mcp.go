@@ -17,7 +17,8 @@ const MCPInstructions = `The user's messages are often dictated by voice through
 	`form as heard, the intended spelling, and the sentence that contains it. Filing only proposes a candidate ` +
 	`(the pair applies after a few sightings in different sentences) and never stores the sentence itself. ` +
 	`To follow a call as it happens, poll meeting_live with after set to the previous answer's next: it is a preview, ` +
-	`and the final transcript from meeting_get replaces it once the recording ends.`
+	`and the final transcript from meeting_get replaces it once the recording ends. When the answer says recording is false, ` +
+	`or that captions are off, do not poll again.`
 
 // NewMCPServer builds the /mcp server ox-say serve runs: the go-sdk server
 // carrying MCPInstructions with every tool registered. go-mcpserver's Config

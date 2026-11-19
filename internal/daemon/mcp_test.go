@@ -181,7 +181,7 @@ func TestMCPDescriptionsAreSelfSufficient(t *testing.T) {
 		"meetings_list":     {"meeting_get", "status", "notes_pending", "has_notes"},
 		"meeting_get":       {"meetings_list", "notes", "transcript", "next_offset", "max_chars", "language"},
 		"meetings_search":   {"meeting_get", "title", "snippet", "start", "speaker", "50", "truncated"},
-		"meeting_live":      {"after", "next", "wait_s", "preview", "meeting_get", "recording", "captions off", "lagging"},
+		"meeting_live":      {"after", "next", "wait_s", "preview", "meeting_get", "recording", "captions off", "lagging", "do not poll again", "in flight", "45"},
 		"glossary_add":      {"dictated", "misrecognition", "heard", "meant", "context", "hash", "Do NOT file", "candidate", "sighting", "conflict", "invalid"},
 	}
 	for tool, words := range need {
