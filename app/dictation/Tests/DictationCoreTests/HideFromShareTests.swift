@@ -186,7 +186,8 @@ final class HideFromShareTests: XCTestCase {
             XCTAssertFalse(title.hasPrefix("MISSING"), "\(lang): title missing")
             XCTAssertFalse(hint.hasPrefix("MISSING"), "\(lang): hint missing")
             XCTAssertTrue(hint.contains("15.4"), "\(lang): the hint must name the macOS 15.4 limit")
-            for word in ["invisible", "stealth", "undetectable", "невидим", "незаметн"] {
+            XCTAssertTrue(hint.contains(lang == "en" ? "main window" : "Главное окно"), "\(lang): the hint must say what is not covered")
+            for word in ["invisible", "stealth", "undetectable", "hidden", "невидим", "незаметн", "скрыт"] {
                 XCTAssertFalse((title + hint).lowercased().contains(word), "\(lang): promises too much: \(word)")
             }
         }
