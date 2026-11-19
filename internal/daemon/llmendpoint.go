@@ -335,6 +335,11 @@ func (d *Daemon) llmAdmit(ctx context.Context) (string, func(), error) {
 	if d.LLMSup == nil {
 		return "", nil, errors.New("the notes engine is not configured")
 	}
+	// The model's own memory floor, the engine binary and the model file gate the endpoint exactly as they gate a
+	// meeting's notes: an installed model this Mac cannot hold is never started for an agent.
+	if code, reason := d.notesBlock(); code != "" {
+		return "", nil, &llmUnavailableError{code: code, reason: reason}
+	}
 	deadline := time.Now().Add(llmWaitBudget)
 	wctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
@@ -382,6 +387,12 @@ func (d *Daemon) llmAdmit(ctx context.Context) (string, func(), error) {
 		d.recycleLargeCtxSoon()
 	}, nil
 }
+
+// llmUnavailableError is the notes engine's NotesBlock verdict for an endpoint request: nothing about it is
+// transient, so the refusal carries no Retry-After.
+type llmUnavailableError struct{ code, reason string }
+
+func (e *llmUnavailableError) Error() string { return e.reason }
 
 // errLLMNotesFirst refuses a request that reached the slot after a meeting's notes job began.
 var errLLMNotesFirst = errors.New("a meeting's notes are being written")
@@ -496,7 +507,10 @@ func writeLLMBusy(w http.ResponseWriter, msg string) {
 // retries either way.
 func (d *Daemon) writeLLMRefusal(w http.ResponseWriter, err error) {
 	var busy *engineBusyError
+	var unavailable *llmUnavailableError
 	switch {
+	case errors.As(err, &unavailable):
+		writeErr(w, http.StatusServiceUnavailable, unavailable.reason)
 	case errors.Is(err, errLLMNotesFirst):
 		writeLLMBusy(w, "the notes model is writing a meeting's notes; retry shortly")
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &busy):

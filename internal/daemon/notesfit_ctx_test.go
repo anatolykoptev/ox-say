@@ -73,6 +73,11 @@ func TestGGUFKVPerTokenKnownAnswers(t *testing.T) {
 			u32kv("qwen35.attention.value_length", 128),
 			{Key: "qwen35.attention.recurrent_layers", Type: ggufTypeArray, U32s: []uint32{1, 1, 1, 0, 1, 1, 1, 0}},
 		}, 2 * 4 * 256 * 34 / 32},
+		{"mixed: an interval marks the attention layers, a per-layer head_count_kv array sizes each", []ggufKV{
+			archKV("qwen35"), u32kv("qwen35.block_count", 8), u32kv("qwen35.full_attention_interval", 4),
+			u32kv("qwen35.attention.key_length", 128), u32kv("qwen35.attention.value_length", 128),
+			{Key: "qwen35.attention.head_count_kv", Type: ggufTypeArray, U32s: []uint32{2, 2, 2, 4, 2, 2, 2, 8}},
+		}, (4 + 8) * 256 * 34 / 32},
 		{"no geometry at all is unknown, not guessed", []ggufKV{archKV("llama")}, 0},
 		{"an absurd block_count is refused, not looped over", []ggufKV{
 			archKV("llama"), u32kv("llama.block_count", 4_000_000_000), u32kv("llama.attention.head_count_kv", 8),

@@ -798,6 +798,9 @@ type busySummary struct {
 	Meetings int `json:"meetings"`
 	// Cleaning is the voice cleanup in flight (0 or 1), including its wait for a quiet daemon.
 	Cleaning int `json:"cleaning"`
+	// LLMChats is the OpenAI-compatible endpoint's requests in the daemon —
+	// queued or streaming: a restart would cut an agent's answer off.
+	LLMChats int `json:"llm_chats"`
 }
 
 // idle reports whether every lane is empty — the version handshake's
@@ -817,6 +820,7 @@ func (d *Daemon) busy() busySummary {
 		Interactive:  int(d.inflight.Load()),
 		Meetings:     d.Meet.Active() + d.notesInstalling(),
 		Cleaning:     d.cleanBusyCount(),
+		LLMChats:     len(d.llmGate),
 	}
 }
 

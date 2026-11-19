@@ -402,6 +402,12 @@ func notesEngineConfig(cfg *config.Config, logger *slog.Logger, plan func() note
 // and sends the call.
 type llmChat struct{ d *Daemon }
 
+// SelfTimed marks llmChat's call deadline as its own (meeting.SelfTimed): the
+// composer's per-call timer would already be running while Complete waits for
+// the decode slot behind an agent's stream, and the generation would get only
+// what that wait left of it.
+func (llmChat) SelfTimed() {}
+
 func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error) {
 	if c.d.LLMSup == nil {
 		return "", errors.New("the notes engine is not configured")
@@ -464,7 +470,9 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 	// agent request can delay this call by the request's own remaining time.
 	// The call's own timer starts only once it holds the slot: time spent
 	// queued behind an agent is not the model's time, and must not read as an
-	// answer timeout.
+	// answer timeout. The composer does not start one of its own for llmChat
+	// (SelfTimed), so ctx here carries no deadline that the wait has been
+	// spending.
 	if err := c.d.takeNotesSlot(ctx, true); err != nil {
 		return "", err
 	}
