@@ -12,7 +12,7 @@ import AppKit
 ///
 /// «Hide OxSay overlays from screen sharing and recordings» is applied here too, so every panel that goes through
 /// `apply` honours it and a panel added later cannot forget it. It asks macOS to leave the window out of captures
-/// (`sharingType`); on macOS 15.4 and later that is not guaranteed, so it is best effort and off by default.
+/// (`sharingType`); on macOS 15.4 and later that is not guaranteed, so it is best effort and on by default.
 public enum PlateWindowSpec {
     public static let level: NSWindow.Level = .screenSaver
     public static let collectionBehavior: NSWindow.CollectionBehavior = [.canJoinAllSpaces, .canJoinAllApplications,

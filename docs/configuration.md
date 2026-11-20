@@ -58,7 +58,7 @@ under `config` (`engine_bin`, `stt_bin`, `voxcpm2_bin`, `notes_bin`,
 The app draws three panels over other apps: the meeting plate (the recording clock and the record prompt), the
 dictation pill, and the cue card (see [Meetings](meetings.md)). All three float over full-screen Spaces, never take
 the typing focus, and follow **Hide OxSay overlays from screen sharing and recordings** (Settings, General; app
-default `hideOverlaysFromShare`, off): best effort, since macOS 15.4 and later may still capture them. The cue card
+default `hideOverlaysFromShare`, on): best effort, since macOS 15.4 and later may still capture them. The cue card
 keeps its state in the app's defaults: `cuecard.text` (the notes), `cuecard.textStep` (0–3: 13, 15, 17 or 20 pt),
 `cuecard.backgroundAlpha` (0.4–1, the material behind the text) and `cuecard.frames` (its frame per display).
 

@@ -3,8 +3,10 @@ import XCTest
 @testable import DictationCore
 
 /// «Hide OxSay overlays from screen sharing and recordings»: every floating panel asks macOS to stay out of captures
-/// when the switch is on, a panel that is already up follows a flip at once, and off is the system default. A panel that
-/// misses the setting shows private notes during a screen share and nothing in the app says so, so the guard is here.
+/// when the switch is on — and on is the default, so a fresh install hides them, while a stored `false` still wins —
+/// a panel that is already up follows a flip at once, and with the switch off a window keeps the system default
+/// (`.readOnly`). A panel that misses the setting shows private notes during a screen share and nothing in the app
+/// says so, so the guard is here.
 /// The panels themselves (`MeetingBadge`, `Overlay`) are in the app target, which the shim does not compile: the tests
 /// build real `NSPanel`s through the one function both call, and read the app sources for what calls it.
 final class HideFromShareTests: XCTestCase {
@@ -30,10 +32,12 @@ final class HideFromShareTests: XCTestCase {
         body(d)
     }
 
-    /// Mutation: MeetingSettingsModel.hideFromShare, `?? false` -> `?? true` -> RED.
-    func testTheSwitchDefaultsToOffAndRoundTrips() {
+    /// Mutation: MeetingSettingsModel.hideFromShare, `?? true` -> `?? false` -> RED; `return true` -> RED (a stored
+    /// `false` must keep the panels shared); a write of the key inside the getter -> RED.
+    func testTheSwitchDefaultsToOnAndRoundTrips() {
         let d = suite()
-        XCTAssertFalse(DictationSettings.hideFromShare(d), "a missing key must read as off")
+        XCTAssertTrue(DictationSettings.hideFromShare(d), "a missing key must read as on")
+        XCTAssertNil(d.object(forKey: DictationSettings.hideFromShareKey), "the getter must not write the default")
         DictationSettings.setHideFromShare(true, d)
         XCTAssertTrue(DictationSettings.hideFromShare(d))
         XCTAssertEqual(d.object(forKey: DictationSettings.hideFromShareKey) as? Bool, true)
@@ -48,9 +52,9 @@ final class HideFromShareTests: XCTestCase {
     }
 
     /// Mutation: PlateWindowSpec.apply, delete the `panel.sharingType = ...` line -> RED ("on: ..."); an unset panel is
-    /// `.readOnly`, so the off case alone cannot see it.
+    /// `.readOnly`, so the stored-off case alone cannot see it.
     @MainActor
-    func testApplyHidesEveryPanelWhenOnAndLeavesTheDefaultWhenOff() {
+    func testApplyHidesEveryPanelUnlessTheUserTurnedItOff() {
         withSetting(true) { _ in
             let plate = panel(), pill = panel()
             PlateWindowSpec.apply(to: plate)
@@ -61,12 +65,12 @@ final class HideFromShareTests: XCTestCase {
         withSetting(false) { _ in
             let p = panel()
             PlateWindowSpec.apply(to: p)
-            XCTAssertEqual(p.sharingType, .readOnly, "off: the system default")
+            XCTAssertEqual(p.sharingType, .readOnly, "stored off: the system default")
         }
         withSetting(nil) { _ in
             let p = panel()
             PlateWindowSpec.apply(to: p)
-            XCTAssertEqual(p.sharingType, .readOnly, "no stored value: off")
+            XCTAssertEqual(p.sharingType, hidden, "no stored value: the default hides")
         }
     }
 
@@ -204,6 +208,7 @@ final class HideFromShareTests: XCTestCase {
             XCTAssertFalse(hint.hasPrefix("MISSING"), "\(lang): hint missing")
             XCTAssertTrue(hint.contains("15.4"), "\(lang): the hint must name the macOS 15.4 limit")
             XCTAssertTrue(hint.contains(lang == "en" ? "main window" : "Главное окно"), "\(lang): the hint must say what is not covered")
+            XCTAssertTrue(hint.contains(lang == "en" ? "default" : "умолчан"), "\(lang): the hint must say the switch is on by default")
             for word in ["invisible", "stealth", "undetectable", "hidden", "невидим", "незаметн", "скрыт"] {
                 XCTAssertFalse((title + hint).lowercased().contains(word), "\(lang): promises too much: \(word)")
             }

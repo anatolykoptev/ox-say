@@ -178,7 +178,7 @@ public struct MainWindowData: Equatable {
                 meetingSettings: MeetingSettingsValues, permissions: [PermissionItem],
                 dictation: DictationValues, voices: VoicesValues, about: AboutValues, speak: SpeakValues = SpeakValues(),
                 transcribe: TranscribeValues = TranscribeValues(), clean: CleanValues = CleanValues(),
-                live: [String: LiveFeed] = [:], codePacks: Set<CodePack> = [], hideOverlaysFromShare: Bool = false,
+                live: [String: LiveFeed] = [:], codePacks: Set<CodePack> = [], hideOverlaysFromShare: Bool = true,
                 cueCardText: String = "", cueCardKeyTitle: String? = nil, cueCardBackground: Double = 1) {
         self.meetings = meetings
         self.meetingsLoad = meetingsLoad
