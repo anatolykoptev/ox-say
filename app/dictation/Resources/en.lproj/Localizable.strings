@@ -315,7 +315,7 @@
 "settings.general" = "General";
 "settings.login" = "Start OxSay when I log in";
 "settings.hide_share" = "Hide OxSay overlays from screen sharing and recordings";
-"settings.hide_share.footer" = "Best effort: OxSay asks macOS to leave its floating panels (recording plate, dictation pill, cue card) out of screen shares and recordings. On macOS 15.4 and later screen capture can still include them, so test with your own call app before you rely on it. The main window, dialogs and system notifications are not covered.";
+"settings.hide_share.footer" = "On by default. Best effort: OxSay asks macOS to leave its floating panels (recording plate, dictation pill, cue card) out of screen shares and recordings. On macOS 15.4 and later screen capture can still include them, so test with your own call app before you rely on it. The main window, dialogs and system notifications are not covered.";
 "cuecard.section" = "Cue card";
 "cuecard.footer" = "Notes pinned over the call, rendered from Markdown. The key or the app's menu shows the card; it never takes focus.";
 "cuecard.hotkey" = "Hotkey";

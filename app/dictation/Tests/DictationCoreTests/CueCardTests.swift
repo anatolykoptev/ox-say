@@ -13,9 +13,9 @@ final class CueCardTests: XCTestCase {
     private func suite() -> UserDefaults { UserDefaults(suiteName: "cuecard-\(UUID().uuidString)")! }
 
     @MainActor
-    private func withHideFromShare(_ on: Bool, _ body: (UserDefaults) -> Void) {
+    private func withHideFromShare(_ on: Bool?, _ body: (UserDefaults) -> Void) {
         let d = suite()
-        DictationSettings.setHideFromShare(on, d)
+        if let on { DictationSettings.setHideFromShare(on, d) }
         let saved = PlateWindowSpec.defaults
         PlateWindowSpec.defaults = d
         defer { PlateWindowSpec.defaults = saved }
@@ -72,6 +72,10 @@ final class CueCardTests: XCTestCase {
             DictationSettings.setHideFromShare(true, d)
             PlateWindowSpec.hideFromShareChanged()
             XCTAssertEqual(panel.sharingType, hidden, "a flip while the card exists changes it without a re-show")
+        }
+        withHideFromShare(nil) { _ in
+            let panel = CueCardPanel()
+            XCTAssertEqual(panel.sharingType, hidden, "no stored value: the default hides the card")
         }
     }
 
