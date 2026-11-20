@@ -174,6 +174,14 @@ public final class CueCard: NSObject {
     }
 
     public func show() {
+        // Already up (Settings' «Показать шпаргалку» while it shows): the newest text and to the front; the place,
+        // the fold and the scroll position the user has stay as they are.
+        if isShown, let panel {
+            refresh()
+            PlateWindowSpec.apply(to: panel)
+            present(panel)
+            return
+        }
         let panel = self.panel ?? makePanel()
         self.panel = panel
         // A fold lasts until the card is hidden: every show opens the whole card, at the top of the notes.

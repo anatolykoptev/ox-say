@@ -232,6 +232,28 @@ final class CueCardTests: XCTestCase {
         XCTAssertTrue(CueCardFrames.load(h.defaults).isEmpty, "the card's own moves are not the user's frame")
     }
 
+    /// Show on a card that is already up brings it to the front with the newest text, and moves nothing: not its place,
+    /// not its fold, not the scroll position.
+    /// Mutation: CueCard.show, delete the `if isShown, let panel { ... return }` guard -> RED.
+    @MainActor
+    func testShowOnAShownCardKeepsItsPlaceAndScroll() throws {
+        let h = Harness(suite())
+        CueCardStore.setText(Array(repeating: "line", count: 200).joined(separator: "\n"), h.defaults)
+        h.card.show()
+        let panel = try XCTUnwrap(h.card.panel)
+        let moved = NSRect(x: 50, y: 60, width: 400, height: 300)
+        panel.setFrame(moved, display: false)
+        panel.card.layoutSubtreeIfNeeded()
+        panel.card.scroll.contentView.scroll(to: NSPoint(x: 0, y: 100))
+        CueCardStore.setText("new " + CueCardStore.text(h.defaults), h.defaults)
+        h.card.show()
+        XCTAssertTrue(h.card.isShown)
+        XCTAssertEqual(h.presented, 2, "brought to the front again")
+        XCTAssertEqual(panel.frame, moved, "a second show does not re-place the card")
+        XCTAssertEqual(panel.card.scroll.contentView.bounds.origin.y, 100, "nor scroll it to the top")
+        XCTAssertTrue(panel.card.text.string.hasPrefix("new "), "it shows the newest text")
+    }
+
     /// The user's drag or resize is remembered under the panel's display; a folded card is filed at its unfolded
     /// size under the strip's top-left corner, so the next show opens the whole card where the strip was left.
     /// Mutation: CueCard.makePanel, the didMove/didResize observer's `self?.rememberFrame()` -> `_ = self` -> RED.
