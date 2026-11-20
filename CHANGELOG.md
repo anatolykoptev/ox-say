@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.42](https://github.com/anatolykoptev/ox-say/compare/v0.1.41...v0.1.42) (2026-11-20)
+
+
+### Added
+
+* **app:** hide overlays from screen sharing by default ([#671](https://github.com/anatolykoptev/ox-say/issues/671)) ([c9f66d1](https://github.com/anatolykoptev/ox-say/commit/c9f66d155bbad43810825f0c3a8020722655cee2))
+
 ## [0.1.41](https://github.com/anatolykoptev/ox-say/compare/v0.1.40...v0.1.41) (2026-11-20)
 
 
