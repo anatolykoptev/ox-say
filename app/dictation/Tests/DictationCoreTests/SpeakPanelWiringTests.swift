@@ -250,6 +250,7 @@ final class SpeakPanelWiringTests: XCTestCase {
             ("var hideOverlaysFromShare: Binding<Bool> {", "self.actions.setHideOverlaysFromShare($0)"),
             ("func codePack(_ pack: CodePack) -> Binding<Bool> {", "self.actions.setCodePack(pack, $0)"),
             ("var cueCardText: Binding<String> {", "self.actions.setCueCardText(self.data.cueCardText)"),
+            ("var cueCardBackground: Binding<Double> {", "self.actions.setCueCardBackground($0)"),
         ]
         for (signature, setter) in bindings {
             let start = try XCTUnwrap(model.range(of: signature), "\(signature) not found")

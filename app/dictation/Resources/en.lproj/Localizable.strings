@@ -330,6 +330,7 @@
 "cuecard.collapse" = "Fold to the title";
 "cuecard.expand" = "Show the whole card";
 "cuecard.close" = "Hide the cue card";
+"cuecard.background" = "Card background";
 "menu.cuecard" = "Cue card";
 "notice.cuecard.key_unavailable" = "⌃⌥K is already used by macOS or another app — the cue card stays available in the app menu.";
 "settings.check_updates" = "Check for Updates…";

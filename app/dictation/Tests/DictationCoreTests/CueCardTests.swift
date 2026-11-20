@@ -409,8 +409,8 @@ final class CueCardTests: XCTestCase {
                       "an edit updates the card in place")
     }
 
-    /// The Settings section: the editor is bound to the notes, both buttons are wired to their actions
-    /// , and the hotkey row shows the key the app registered.
+    /// The Settings section: the editor is bound to the notes, both buttons and the background slider are wired to
+    /// their actions, and the hotkey row shows the key the app registered.
     /// Mutation: SettingsPage.cueCard, drop any of them -> RED on its line.
     func testTheSettingsSectionIsWired() throws {
         let page = try source("MainWindowUI/SettingsPage.swift")
@@ -418,11 +418,14 @@ final class CueCardTests: XCTestCase {
         XCTAssertTrue(page.contains("model.actions.insertCueConsent()"), "«Вставить строку о записи»")
         XCTAssertTrue(page.contains("model.actions.showCueCard()"), "«Показать шпаргалку»")
         XCTAssertTrue(page.contains("model.data.cueCardKeyTitle"), "the section shows the hotkey")
+        XCTAssertTrue(page.contains("Slider(value: model.cueCardBackground, in: CueCardStore.backgroundRange)"), "«Фон шпаргалки»")
         let source = try source("OxSayDictation/MainWindowSource.swift")
         XCTAssertTrue(source.contains("CueCardStore.setText(text, self.host.defaults)"), "edits persist to the defaults key")
         XCTAssertTrue(source.contains("CueCardStore.consentAppended(to: self.model.data.cueCardText, line: L10nKey.cueCardConsent.text)"),
                       "the notice line is the localized consent string")
         XCTAssertTrue(source.contains("host.showCueCard()"), "the button shows the card")
+        XCTAssertTrue(source.contains("CueCardStore.setBackground(value, self.host.defaults)"), "the slider persists")
+        XCTAssertTrue(source.contains("model.data.cueCardBackground = CueCardStore.background(d)"), "the page shows the stored value")
     }
 
     /// The empty card's button opens the main window on the Settings section (where «Шпаргалка» lives).

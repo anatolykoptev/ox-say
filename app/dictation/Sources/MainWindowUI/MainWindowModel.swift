@@ -187,6 +187,11 @@ public final class MainWindowModel: ObservableObject {
                 set: { self.data.cueCardText = CueCardStore.cap($0); self.actions.setCueCardText(self.data.cueCardText) })
     }
 
+    var cueCardBackground: Binding<Double> {
+        Binding(get: { self.data.cueCardBackground },
+                set: { self.data.cueCardBackground = $0; self.actions.setCueCardBackground($0) })
+    }
+
     var startAtLogin: Binding<Bool> {
         Binding(get: { self.data.about.startAtLogin }, set: { self.data.about.startAtLogin = $0; self.actions.setStartAtLogin($0) })
     }

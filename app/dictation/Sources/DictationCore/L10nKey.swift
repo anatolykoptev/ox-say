@@ -308,7 +308,7 @@ public enum L10nKey: String, CaseIterable {
     case settingsHideShare = "settings.hide_share"
     case settingsHideShareFooter = "settings.hide_share.footer"
     // The cue card («Шпаргалка»): the Settings section and its buttons, the hotkey row,
-    // the cap warning, the consent line the button inserts, the card's empty state, its header buttons,
+    // the cap warning, the consent line the button inserts, the card's empty state, its header buttons, the background slider,
     // the status-menu row and the notice when its key cannot be registered.
     case cueCardSection = "cuecard.section"
     case cueCardFooter = "cuecard.footer"
@@ -324,6 +324,7 @@ public enum L10nKey: String, CaseIterable {
     case cueCardCollapse = "cuecard.collapse"
     case cueCardExpand = "cuecard.expand"
     case cueCardClose = "cuecard.close"
+    case cueCardBackground = "cuecard.background"
     case menuCueCard = "menu.cuecard"
     case cueCardKeyUnavailable = "notice.cuecard.key_unavailable"
     case settingsCheckUpdates = "settings.check_updates"

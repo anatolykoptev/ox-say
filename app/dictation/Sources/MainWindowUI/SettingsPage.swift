@@ -148,6 +148,11 @@ struct SettingsPage: View {
             HintedRow(title: L10nKey.cueCardHotkey.text) {
                 Text(model.data.cueCardKeyTitle ?? "—").foregroundStyle(.secondary)
             }
+            HintedRow(title: L10nKey.cueCardBackground.text) {
+                Slider(value: model.cueCardBackground, in: CueCardStore.backgroundRange).frame(width: 160)
+                Text(model.data.cueCardBackground.formatted(.percent.precision(.fractionLength(0))))
+                    .monospacedDigit().foregroundStyle(.secondary).frame(minWidth: 40, alignment: .trailing)
+            }
             HStack {
                 Button(L10nKey.cueCardInsertConsent.text) { model.actions.insertCueConsent() }
                 Spacer()

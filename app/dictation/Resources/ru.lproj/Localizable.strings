@@ -324,6 +324,7 @@
 "cuecard.collapse" = "Свернуть до заголовка";
 "cuecard.expand" = "Показать шпаргалку целиком";
 "cuecard.close" = "Скрыть шпаргалку";
+"cuecard.background" = "Фон шпаргалки";
 "menu.cuecard" = "Шпаргалка";
 "notice.cuecard.key_unavailable" = "⌃⌥K уже занято macOS или другим приложением — шпаргалка остаётся в меню приложения.";
 "settings.check_updates" = "Проверить обновления…";

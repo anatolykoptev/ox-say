@@ -29,7 +29,7 @@ struct MainWindowHost {
     var cueCardKeyTitle: () -> String?
     /// «Показать шпаргалку» in Settings: the same controller the global key and the menu row toggle.
     var showCueCard: () -> Void
-    /// The editor wrote the cue-card text: a card that is up shows it in place.
+    /// The editor wrote the cue-card text or moved its background: a card that is up shows it in place.
     var cueCardChanged: () -> Void
     var pickVoice: (VoiceSlot, String?) -> Void
     /// The voice library changed (a voice was deleted or renamed, or the list was read): the menu's voice list and
@@ -464,6 +464,11 @@ final class MainWindowSource {
             self.host.cueCardChanged()
         }
         a.showCueCard = { [weak self] in self?.host.showCueCard() }
+        a.setCueCardBackground = { [weak self] value in
+            guard let self else { return }
+            CueCardStore.setBackground(value, self.host.defaults)
+            self.host.cueCardChanged()
+        }
     }
 
     /// Reads everything the window shows. The list and the settings come from the daemon, so they are awaited; a failed
@@ -617,6 +622,7 @@ final class MainWindowSource {
         model.data.hideOverlaysFromShare = DictationSettings.hideFromShare(d)
         model.data.cueCardText = CueCardStore.text(d)
         model.data.cueCardKeyTitle = host.cueCardKeyTitle()
+        model.data.cueCardBackground = CueCardStore.background(d)
         updateDesignAvailability()
     }
 
