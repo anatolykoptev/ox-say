@@ -165,6 +165,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The speak-selection hotkey and its menu state; mirrors the dictation
     /// key machinery with its own offered combinations.
     private var speakHotKey: HotKey?
+    /// The cue card («Шпаргалка»): panel, store and toggle live in DictationCore; the
+    /// app side holds the menu row, the global key and the empty card's way into the window.
+    private let cueCard = CueCard()
+    private var cueCardKey: HotKey?
+    /// The status menu's «Шпаргалка» row: shows and hides the card.
+    private let cueCardItem = NSMenuItem(title: L10nKey.menuCueCard.text,
+                                        action: #selector(toggleCueCard), keyEquivalent: "")
     private lazy var capture = SelectionCapture(slowClipboard: slowClipboard)
     private let speakShortcutKey = "speakShortcut"
     private let speakKeyInUseKey = "speakKeyInUse"
@@ -355,8 +362,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         buildMenu()
+        cueCard.onOpenEditor = { [weak self] in self?.mainWindow.show(MainRoute(section: .settings)) }
         registerShortcut(shortcutPlan())
         registerSpeakShortcut(speakShortcutPlan())
+        registerCueCardKey()
         show(.idle)
         refreshServiceStatus()
         // A wake is the other moment the app and the daemon can split, e.g.
@@ -458,6 +467,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// The status-menu row and the ⌃⌥K press land on the same toggle. «Показать шпаргалку» in Settings
+    /// calls the same controller's `show()` via `host.showCueCard`: a Show button never hides the card.
+    @objc private func toggleCueCard() {
+        cueCard.toggle()
+    }
+
+    /// The cue-card key is one fixed combination (⌃⌥K), not part of either offered-key
+    /// plan. Like those keys it is not taken while a macOS shortcut uses it (a Carbon hotkey
+    /// registers on top of one, so only `ShortcutConflict` can tell); a refused registration
+    /// means another app holds it exclusively. Either way it is said once, and the menu row
+    /// and Settings keep working.
+    private func registerCueCardKey() {
+        let taken = ShortcutConflict.taken(keyCode: Int(CueCardShortcut.keyCode), modifiers: Int(CueCardShortcut.modifiers),
+                                           by: Shortcut.systemShortcuts())
+        cueCardKey = taken ? nil : HotKey(keyCode: CueCardShortcut.keyCode, modifiers: CueCardShortcut.modifiers)
+        cueCardKey?.onDown = { [weak self] in self?.toggleCueCard() }
+        if cueCardKey == nil { notice(L10nKey.cueCardKeyUnavailable.text) }
+    }
+
     private func applySpeakShortcutItems(_ rows: [ShortcutMenu.Item]) {
         speakKeyRows = rows
         rebuildShortcutsMenu()
@@ -510,6 +538,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         speakHint.title = speakActive.map { L10nKey.menuSpeakHintKey.text($0.title) }
             ?? L10nKey.menuSpeakHintNone.text
+        cueCardItem.state = cueCard.isShown ? .on : .off
         // A grant recorded for a differently-signed build (an ad-hoc build's
         // cdhash, an older release) never matches again and the Settings
         // toggle cannot fix it; the repair item is offered only while the
@@ -549,6 +578,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         repairItem.target = self
         openItem.target = self
         updateItem.target = self
+        cueCardItem.target = self
         // Under the managed top rows (Repair, Allow pasting, Open OxSay…), which
         // syncTopRows inserts above this separator.
         menu.addItem(.separator())
@@ -565,6 +595,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             meetingsMenuItem = item
             menu.addItem(item)
         }
+        // «Шпаргалка»: shows and hides the cue card — the same toggle ⌃⌥K presses.
+        menu.addItem(cueCardItem)
         menu.addItem(.separator())
         menu.addItem(recentItem)
         pasteLastItem.target = self
@@ -886,6 +918,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             setHotkeyMode: { [unowned self] mode in self.applyHotkeyMode(mode) },
             soundChanged: { [unowned self] in self.syncSoundModeItems() },
             pillShownChanged: { [unowned self] in self.overlay.dictationPillSettingChanged() },
+            cueCardKeyTitle: { [unowned self] in self.cueCardKey != nil ? CueCardShortcut.title : nil },
+            showCueCard: { [unowned self] in self.cueCard.show() },
+            cueCardChanged: { [unowned self] in self.cueCard.refresh() },
             pickVoice: { [unowned self] slot, voice in
                 self.applyVoicePick(key: slot == .russian ? self.speakVoiceRUKey : self.speakVoiceENKey, voice: voice)
             },

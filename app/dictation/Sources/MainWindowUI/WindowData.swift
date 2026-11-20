@@ -166,6 +166,11 @@ public struct MainWindowData: Equatable {
     public var live: [String: LiveFeed]
     /// «Hide OxSay overlays from screen sharing and recordings» (Settings, General).
     public var hideOverlaysFromShare: Bool
+    /// The cue card's Markdown notes («Шпаргалка»), and the key the section shows.
+    public var cueCardText: String
+    public var cueCardKeyTitle: String?
+    /// «Фон шпаргалки»: how strongly the card's material is drawn, 0.4–1.
+    public var cueCardBackground: Double
 
     public init(meetings: [MeetingInfo], meetingsLoad: MeetingsLoad = .loaded, details: [String: MeetingDetail],
                 detailLoading: Set<String> = [], detailError: [String: String] = [:], recordingElapsed: TimeInterval? = nil,
@@ -173,7 +178,8 @@ public struct MainWindowData: Equatable {
                 meetingSettings: MeetingSettingsValues, permissions: [PermissionItem],
                 dictation: DictationValues, voices: VoicesValues, about: AboutValues, speak: SpeakValues = SpeakValues(),
                 transcribe: TranscribeValues = TranscribeValues(), clean: CleanValues = CleanValues(),
-                live: [String: LiveFeed] = [:], codePacks: Set<CodePack> = [], hideOverlaysFromShare: Bool = false) {
+                live: [String: LiveFeed] = [:], codePacks: Set<CodePack> = [], hideOverlaysFromShare: Bool = false,
+                cueCardText: String = "", cueCardKeyTitle: String? = nil, cueCardBackground: Double = 1) {
         self.meetings = meetings
         self.meetingsLoad = meetingsLoad
         self.details = details
@@ -194,6 +200,9 @@ public struct MainWindowData: Equatable {
         self.live = live
         self.codePacks = codePacks
         self.hideOverlaysFromShare = hideOverlaysFromShare
+        self.cueCardText = cueCardText
+        self.cueCardKeyTitle = cueCardKeyTitle
+        self.cueCardBackground = cueCardBackground
     }
 }
 
@@ -246,6 +255,13 @@ public struct MainWindowActions {
     public var setStartAtLogin: (Bool) -> Void = { _ in }
     /// «Hide OxSay overlays from screen sharing and recordings» moved: the app stores it and re-applies it to the panels on screen.
     public var setHideOverlaysFromShare: (Bool) -> Void = { _ in }
+    /// The cue card («Шпаргалка»): persist the edited notes, insert the recording-notice
+    /// line at the end of the text, and show the card.
+    public var setCueCardText: (String) -> Void = { _ in }
+    public var insertCueConsent: () -> Void = {}
+    public var showCueCard: () -> Void = {}
+    /// «Фон шпаргалки» moved: the app stores it and the card on screen redraws its material.
+    public var setCueCardBackground: (Double) -> Void = { _ in }
     /// A code vocabulary switch: the pack and whether it is now on (the app tells the daemon).
     public var setCodePack: (CodePack, Bool) -> Void = { _, _ in }
     public var dismissNotice: () -> Void = {}

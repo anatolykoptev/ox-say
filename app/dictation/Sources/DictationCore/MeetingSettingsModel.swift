@@ -343,8 +343,8 @@ public enum DictationSettings {
     public static func setShowPill(_ on: Bool, _ d: UserDefaults) { d.set(on, forKey: showPillKey) }
 
     /// «Hide OxSay overlays from screen sharing and recordings»: every floating panel (the recording plate, the
-    /// dictation pill) asks macOS to stay out of captures. Best effort, so a missing key reads as off: a default-on
-    /// switch would promise what macOS 15.4 and later does not guarantee.
+    /// dictation pill, the cue card) asks macOS to stay out of captures. Best effort, so a missing key reads as
+    /// off: a default-on switch would promise what macOS 15.4 and later does not guarantee.
     public static let hideFromShareKey = "hideOverlaysFromShare"
 
     public static func hideFromShare(_ d: UserDefaults) -> Bool { (d.object(forKey: hideFromShareKey) as? Bool) ?? false }

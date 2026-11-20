@@ -12,6 +12,7 @@ struct SettingsPage: View {
         Form {
             meetings
             if model.data.meetingSettings.enabled { callApps }
+            cueCard
             llmEndpoint
             permissions
             codeVocabulary
@@ -129,6 +130,39 @@ struct SettingsPage: View {
             }
         }
         .disabled(model.data.meetingSettings.callMode == .off)
+    }
+
+    // MARK: Cue card
+
+    /// «Шпаргалка» / "Cue card": the Markdown notes pinned over a call. The TextEditor is the
+    /// only editor — the card itself is read-only; the key and the menu row show it.
+    private var cueCard: some View {
+        Section {
+            TextEditor(text: model.cueCardText)
+                .font(.body)
+                .frame(minHeight: 140, maxHeight: 280)
+            // The cap says itself, so a paste or an insert cut at the limit is never silent.
+            if model.data.cueCardText.count >= CueCardStore.textLimit {
+                Text(L10nKey.cueCardLimit.text).font(.caption).foregroundStyle(.orange)
+            }
+            HintedRow(title: L10nKey.cueCardHotkey.text) {
+                Text(model.data.cueCardKeyTitle ?? "—").foregroundStyle(.secondary)
+            }
+            HintedRow(title: L10nKey.cueCardBackground.text) {
+                Slider(value: model.cueCardBackground, in: CueCardStore.backgroundRange).frame(width: 160)
+                Text(model.data.cueCardBackground.formatted(.percent.precision(.fractionLength(0))))
+                    .monospacedDigit().foregroundStyle(.secondary).frame(minWidth: 40, alignment: .trailing)
+            }
+            HStack {
+                Button(L10nKey.cueCardInsertConsent.text) { model.actions.insertCueConsent() }
+                Spacer()
+                Button(L10nKey.cueCardShow.text) { model.actions.showCueCard() }
+            }
+        } header: {
+            Text(L10nKey.cueCardSection.text)
+        } footer: {
+            Text(L10nKey.cueCardFooter.text)
+        }
     }
 
     // MARK: Model for other apps

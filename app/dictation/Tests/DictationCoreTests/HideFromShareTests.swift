@@ -154,6 +154,23 @@ final class HideFromShareTests: XCTestCase {
         XCTAssertEqual(windows, ["MainWindow.swift"], "a new NSWindow: is it an overlay? Then build it through PlateWindowSpec.apply")
     }
 
+    /// The panels DictationCore builds itself (the cue card): every `NSPanel` subclass there applies the spec in its
+    /// initializer. The inventory is classified on purpose, like the app's above.
+    /// Mutation: CueCardPanel.init, delete `PlateWindowSpec.apply(to: self)` -> RED.
+    func testEveryCorePanelSubclassAppliesThePlateWindowSpec() throws {
+        let dir = appSources.appendingPathComponent("DictationCore")
+        let files = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".swift") }.sorted()
+        var panels: [String] = []
+        for file in files {
+            let text = try source("DictationCore/\(file)")
+            guard let r = text.range(of: "class\\s+\\w+\\s*:\\s*NSPanel", options: .regularExpression) else { continue }
+            panels.append(file)
+            XCTAssertTrue(text[r.upperBound...].prefix(800).contains("PlateWindowSpec.apply(to: self)"),
+                          "\(file): a NSPanel subclass is built without PlateWindowSpec.apply")
+        }
+        XCTAssertEqual(panels, ["CueCardPanel.swift"], "the core's overlay panels changed: classify the new one")
+    }
+
     /// The re-show paths keep asserting the spec (and so the setting): the plate's layout and watchdog, the pill's
     /// show and watchdog. Mutation: delete any of the four `PlateWindowSpec.apply` there -> RED.
     func testTheReShowPathsApplyTheSpecAgain() throws {

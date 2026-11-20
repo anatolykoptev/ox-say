@@ -244,7 +244,9 @@ final class MeetingPlateWiringTests: XCTestCase {
         XCTAssertTrue(b.contains("panel.isMovableByWindowBackground = true"))
         XCTAssertTrue(b.contains("NSWindow.didMoveNotification"))
         XCTAssertTrue(b.contains("BadgePositions.save(key:"))
-        XCTAssertTrue(b.contains("CGDisplayCreateUUIDFromDisplayID"), "keyed by the display's UUID, not its numeric id")
+        XCTAssertTrue(b.contains("BadgePositions.save(key: PlateDisplay.key(screen)"), "keyed by the display's UUID, not its numeric id")
+        let display = try source("DictationCore/PlateControls.swift")
+        XCTAssertTrue(display.contains("CGDisplayCreateUUIDFromDisplayID"), "the shared display key is the UUID")
         XCTAssertTrue(b.contains("BadgePositions.load("))
         XCTAssertTrue(b.contains("saved: BadgePositions.load(defaults)"))
     }

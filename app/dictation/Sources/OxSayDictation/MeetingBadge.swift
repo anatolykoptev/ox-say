@@ -125,13 +125,11 @@ final class MeetingBadge {
         dot.setAccessibilityRole(.image)
         dot.setAccessibilityLabel(L10nKey.badgeA11yDot.text)
         // A click on the dot of a collapsed plate opens it again.
-        let dotClick = ActionTarget { [weak self] in
+        let dotClick = PlateControls.attach({ [weak self] in
             guard let self, self.userCollapsed else { return }
             self.setCollapsed(false)
-        }
-        let recognizer = NSClickGestureRecognizer(target: dotClick, action: #selector(ActionTarget.fire))
-        dot.addGestureRecognizer(recognizer)
-        objc_setAssociatedObject(dot, &Self.handlerKey, dotClick, .OBJC_ASSOCIATION_RETAIN)
+        }, to: dot)
+        dot.addGestureRecognizer(NSClickGestureRecognizer(target: dotClick, action: #selector(PlateControls.Action.fire)))
         meBar.setAccessibilityLabel(L10nKey.badgeA11yMe.text)
         themBar.setAccessibilityLabel(L10nKey.badgeA11yThem.text)
         stack.orientation = .horizontal
@@ -157,43 +155,6 @@ final class MeetingBadge {
     }
 
     var isVisible: Bool { panel.isVisible }
-
-    private func button(_ title: String, _ action: @escaping () -> Void) -> NSButton {
-        let b = NSButton(title: title, target: nil, action: nil)
-        b.bezelStyle = .rounded
-        b.controlSize = .small
-        let handler = ActionTarget(action)
-        b.target = handler
-        b.action = #selector(ActionTarget.fire)
-        objc_setAssociatedObject(b, &Self.handlerKey, handler, .OBJC_ASSOCIATION_RETAIN)
-        return b
-    }
-
-    /// The prompt's least loud action, drawn smaller than the real buttons.
-    private func quietButton(_ title: String, _ action: @escaping () -> Void) -> NSButton {
-        let b = button(title, action)
-        b.bezelStyle = .inline
-        return b
-    }
-
-    /// A small symbol-only button (the fold and unfold of the recording plate), named for VoiceOver and the tooltip.
-    private func iconButton(_ symbol: String, _ label: String, _ action: @escaping () -> Void) -> NSButton {
-        let b = button("", action)
-        b.bezelStyle = .inline
-        b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-        b.imagePosition = .imageOnly
-        b.toolTip = label
-        b.setAccessibilityLabel(label)
-        return b
-    }
-
-    private static var handlerKey = 0
-
-    private final class ActionTarget: NSObject {
-        let action: () -> Void
-        init(_ action: @escaping () -> Void) { self.action = action }
-        @objc func fire() { action() }
-    }
 
     private func layout(_ views: [NSView], keepingPlace: Bool = false, capLabel: Bool = false) {
         maxLabelWidth.isActive = capLabel
@@ -232,7 +193,7 @@ final class MeetingBadge {
     private func place(anchoredOffset: Double?, anchoredInset: Double? = nil, onScreen: UInt32?) {
         let screens = Self.placementScreens()
         // No screens (the lid closed, the display asleep): the badge stays where it is; the next change places it.
-        guard let spot = BadgePlacement.place(screens: screens, placedOn: onScreen, main: NSScreen.main.flatMap(Self.displayID),
+        guard let spot = BadgePlacement.place(screens: screens, placedOn: onScreen, main: NSScreen.main.flatMap(PlateDisplay.id),
                                               anchoredOffset: anchoredOffset, anchoredInset: anchoredInset,
                                               saved: BadgePositions.load(defaults), width: Double(panel.frame.width),
                                               height: Double(panel.frame.height)) else { return }
@@ -246,10 +207,10 @@ final class MeetingBadge {
 
     private static func placementScreens() -> [BadgePlacement.Screen] {
         NSScreen.screens.compactMap { screen -> BadgePlacement.Screen? in
-            guard let id = displayID(screen) else { return nil }
+            guard let id = PlateDisplay.id(screen) else { return nil }
             let frame = screen.visibleFrame
             return BadgePlacement.Screen(id: id, minX: Double(frame.minX), maxX: Double(frame.maxX), maxY: Double(frame.maxY),
-                                         minY: Double(frame.minY), key: displayKey(screen) ?? String(id))
+                                         minY: Double(frame.minY), key: PlateDisplay.key(screen) ?? String(id))
         }
     }
 
@@ -260,25 +221,14 @@ final class MeetingBadge {
         let frame = panel.frame
         let centre = NSPoint(x: frame.midX, y: frame.midY)
         guard let screen = NSScreen.screens.first(where: { NSMouseInRect(centre, $0.frame, false) }),
-              let id = Self.displayID(screen) else { return }
+              let id = PlateDisplay.id(screen) else { return }
         let visible = screen.visibleFrame
         let dx = Double(frame.minX - visible.minX)
         let inset = Double(visible.maxY - frame.height - frame.minY)
         placedOn = id
         placedOffset = dx
         placedInset = inset
-        BadgePositions.save(key: Self.displayKey(screen) ?? String(id), dx: dx, topInset: inset, defaults)
-    }
-
-    /// The display's UUID: what a remembered spot is filed under. The numeric id changes when a monitor reconnects.
-    private static func displayKey(_ screen: NSScreen) -> String? {
-        guard let id = displayID(screen), let uuid = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue(),
-              let text = CFUUIDCreateString(nil, uuid) else { return nil }
-        return text as String
-    }
-
-    private static func displayID(_ screen: NSScreen) -> UInt32? {
-        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        BadgePositions.save(key: PlateDisplay.key(screen) ?? String(id), dx: dx, topInset: inset, defaults)
     }
 
     /// A display was plugged, unplugged or changed its size: a badge that is up (prompt, consent question or recording)
@@ -315,24 +265,24 @@ final class MeetingBadge {
             label.stringValue = reminder
             labelWidth.isActive = false
             consentButton = nil
-            layout([dot, label, button(L10nKey.badgeStop.text) { [weak self] in self?.onStop?() },
-                    button(L10nKey.commonOk.text) { [weak self] in self?.acknowledgeReminder() }],
+            layout([dot, label, PlateControls.button(L10nKey.badgeStop.text) { [weak self] in self?.onStop?() },
+                    PlateControls.button(L10nKey.commonOk.text) { [weak self] in self?.acknowledgeReminder() }],
                    keepingPlace: panel.isVisible, capLabel: true)
             return
         }
         if collapsed {
-            views = [dot, label, iconButton("chevron.down", L10nKey.badgeExpand.text) { [weak self] in self?.setCollapsed(false) }]
+            views = [dot, label, PlateControls.iconButton("chevron.down", L10nKey.badgeExpand.text) { [weak self] in self?.setCollapsed(false) }]
             consentButton = nil
         } else {
             views = [dot, label, meBar, themBar,
-                     iconButton("text.bubble", L10nKey.badgeOpenLive.text) { [weak self] in self?.onOpenLive?() },
-                     button(L10nKey.badgeStop.text) { [weak self] in self?.onStop?() }]
-            if recordingAuto { views.append(button(L10nKey.badgeDontRecord.text) { [weak self] in self?.onDontRecord?() }) }
-            let consent = button(L10nKey.badgeCopyConsent.text) { [weak self] in self?.onCopyConsent?() }
+                     PlateControls.iconButton("text.bubble", L10nKey.badgeOpenLive.text) { [weak self] in self?.onOpenLive?() },
+                     PlateControls.button(L10nKey.badgeStop.text) { [weak self] in self?.onStop?() }]
+            if recordingAuto { views.append(PlateControls.button(L10nKey.badgeDontRecord.text) { [weak self] in self?.onDontRecord?() }) }
+            let consent = PlateControls.button(L10nKey.badgeCopyConsent.text) { [weak self] in self?.onCopyConsent?() }
             consent.isHidden = !MeetingBadgeModel.showsConsentHint(elapsed: elapsed)
             consentButton = consent
             views.append(consent)
-            views.append(iconButton("chevron.up", L10nKey.badgeCollapse.text) { [weak self] in self?.setCollapsed(true) })
+            views.append(PlateControls.iconButton("chevron.up", L10nKey.badgeCollapse.text) { [weak self] in self?.setCollapsed(true) })
         }
         // The panel is sized before the first clock draw: the label must already
         // hold text of its final width, or the stack measures an empty label.
@@ -389,7 +339,7 @@ final class MeetingBadge {
         label.stringValue = text
         label.font = .systemFont(ofSize: 13, weight: .semibold)
         label.lineBreakMode = .byTruncatingTail
-        layout([label, button(L10nKey.commonOk.text) { [weak self] in self?.hide() }], capLabel: true)
+        layout([label, PlateControls.button(L10nKey.commonOk.text) { [weak self] in self?.hide() }], capLabel: true)
     }
 
     /// The detected-call question, naming the app (or the site's app — a browser call says "Google Meet").
@@ -404,10 +354,10 @@ final class MeetingBadge {
         label.stringValue = source.isEmpty ? L10nKey.badgePrompt.text : L10nKey.badgePromptCall.text(app)
         label.font = .systemFont(ofSize: 13, weight: .semibold)
         var views: [NSView] = [label,
-                               button(L10nKey.badgeRecord.text) { [weak self] in self?.onRecord?() },
-                               button(L10nKey.badgeNotNow.text) { [weak self] in self?.onNotNow?() }]
+                               PlateControls.button(L10nKey.badgeRecord.text) { [weak self] in self?.onRecord?() },
+                               PlateControls.button(L10nKey.badgeNotNow.text) { [weak self] in self?.onNotNow?() }]
         if !source.isEmpty {
-            views.append(quietButton(L10nKey.badgeDontAsk.text(app)) { [weak self] in self?.onDontAsk?() })
+            views.append(PlateControls.quietButton(L10nKey.badgeDontAsk.text(app)) { [weak self] in self?.onDontAsk?() })
         }
         layout(views)
     }
@@ -422,8 +372,8 @@ final class MeetingBadge {
         let app = CallPolicy.name(for: source)
         label.stringValue = source.isEmpty ? L10nKey.badgePrompt.text : L10nKey.badgePromptCall.text(app)
         label.font = .systemFont(ofSize: 13, weight: .semibold)
-        let record = button(L10nKey.badgeRecord.text) {}
-        let notNow = button(L10nKey.badgeNotNow.text) {}
+        let record = PlateControls.button(L10nKey.badgeRecord.text) {}
+        let notNow = PlateControls.button(L10nKey.badgeNotNow.text) {}
         record.isEnabled = false
         notNow.isEnabled = false
         layout([label, record, notNow])
@@ -440,8 +390,8 @@ final class MeetingBadge {
         label.stringValue = L10nKey.meetingRecordMayHaveEnded.text
         label.font = .systemFont(ofSize: 13, weight: .semibold)
         layout([label,
-                button(L10nKey.badgeRecord.text) { [weak self] in self?.onConfirmRecord?() },
-                button(L10nKey.commonCancel.text) { [weak self] in self?.onConfirmCancel?() }])
+                PlateControls.button(L10nKey.badgeRecord.text) { [weak self] in self?.onConfirmRecord?() },
+                PlateControls.button(L10nKey.commonCancel.text) { [weak self] in self?.onConfirmCancel?() }])
     }
 
     /// The Automation-consent question before the first Apple Event to a browser (`browser` is its bundle id):
@@ -455,8 +405,8 @@ final class MeetingBadge {
         label.stringValue = L10nKey.badgeBrowserConsent.text(CallDetector.browserName(id))
         label.font = .systemFont(ofSize: 13, weight: .semibold)
         layout([label,
-                button(L10nKey.badgeBrowserAllow.text) { [weak self] in self?.onBrowserAllow?() },
-                button(L10nKey.badgeNotNow.text) { [weak self] in self?.onBrowserNotNow?() }])
+                PlateControls.button(L10nKey.badgeBrowserAllow.text) { [weak self] in self?.onBrowserAllow?() },
+                PlateControls.button(L10nKey.badgeNotNow.text) { [weak self] in self?.onBrowserNotNow?() }])
     }
 
     /// Redraws the clock and levels while recording.
