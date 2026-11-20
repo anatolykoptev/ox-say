@@ -136,6 +136,9 @@ public final class CueCard: NSObject {
     /// nothing is drawn on the screen of the person running it.
     private let present: (NSPanel) -> Void
     private let dismiss: (NSPanel) -> Void
+    /// The display a moved or resized panel is filed under: the UUID of the screen it is on. A test names one, so the
+    /// remembering runs the same with no screen attached.
+    private let displayKey: (NSPanel) -> String?
     private(set) var panel: CueCardPanel?
     private var observers: [NSObjectProtocol] = []
     /// True while the card itself moves or resizes the panel, so only the user's drags and resizes are remembered.
@@ -149,10 +152,12 @@ public final class CueCard: NSObject {
         self.init(defaults: defaults, present: { $0.orderFrontRegardless() }, dismiss: { $0.orderOut(nil) })
     }
 
-    init(defaults: UserDefaults, present: @escaping (NSPanel) -> Void, dismiss: @escaping (NSPanel) -> Void) {
+    init(defaults: UserDefaults, present: @escaping (NSPanel) -> Void, dismiss: @escaping (NSPanel) -> Void,
+         displayKey: @escaping (NSPanel) -> String? = { ($0.screen ?? NSScreen.main).flatMap(PlateDisplay.key) }) {
         self.defaults = defaults
         self.present = present
         self.dismiss = dismiss
+        self.displayKey = displayKey
         super.init()
     }
 
@@ -270,8 +275,7 @@ public final class CueCard: NSObject {
     /// The display under the panel after the user's drag or resize owns the remembered frame: moving the card to
     /// another screen files it under that screen's UUID. A folded card is filed at its unfolded size.
     private func rememberFrame() {
-        guard !isPlacing, let panel, let screen = panel.screen ?? NSScreen.main,
-              let key = PlateDisplay.key(screen) else { return }
+        guard !isPlacing, let panel, let key = displayKey(panel) else { return }
         let frame = unfoldedSize.map { CueCardPlacement.expanded(strip: panel.frame, size: $0) } ?? panel.frame
         CueCardFrames.save(frame, for: key, defaults)
     }

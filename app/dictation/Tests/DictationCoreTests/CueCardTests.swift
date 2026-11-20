@@ -30,10 +30,13 @@ final class CueCardTests: XCTestCase {
         let defaults: UserDefaults
         private(set) var card: CueCard!
 
+        /// The display every moved panel is filed under here.
+        static let display = "test-display"
+
         init(_ defaults: UserDefaults) {
             self.defaults = defaults
             card = CueCard(defaults: defaults, present: { [unowned self] _ in self.presented += 1 },
-                           dismiss: { [unowned self] _ in self.dismissed += 1 })
+                           dismiss: { [unowned self] _ in self.dismissed += 1 }, displayKey: { _ in Harness.display })
         }
     }
 
@@ -227,6 +230,27 @@ final class CueCardTests: XCTestCase {
         XCTAssertEqual(panel.frame, before)
         XCTAssertEqual(panel.card.scroll.contentView.bounds.origin.y, 100, "the scroll position survives the fold")
         XCTAssertTrue(CueCardFrames.load(h.defaults).isEmpty, "the card's own moves are not the user's frame")
+    }
+
+    /// The user's drag or resize is remembered under the panel's display; a folded card is filed at its unfolded
+    /// size under the strip's top-left corner, so the next show opens the whole card where the strip was left.
+    /// Mutation: CueCard.makePanel, the didMove/didResize observer's `self?.rememberFrame()` -> `_ = self` -> RED.
+    @MainActor
+    func testTheUsersMoveAndResizeAreRememberedPerDisplay() throws {
+        let h = Harness(suite())
+        CueCardStore.setText("notes", h.defaults)
+        h.card.show()
+        let panel = try XCTUnwrap(h.card.panel)
+        let moved = NSRect(x: 120, y: 340, width: 420, height: 300)
+        panel.setFrame(moved, display: false)
+        XCTAssertEqual(CueCardFrames.frame(for: Harness.display, h.defaults), moved, "a drag or resize is remembered")
+
+        h.card.setCollapsed(true)
+        let strip = panel.frame.offsetBy(dx: 30, dy: -50)
+        panel.setFrame(strip, display: false)
+        XCTAssertEqual(CueCardFrames.frame(for: Harness.display, h.defaults),
+                       NSRect(x: strip.minX, y: strip.maxY - moved.height, width: moved.width, height: moved.height),
+                       "a folded card is filed at its unfolded size, under the strip's corner")
     }
 
     // MARK: the text
