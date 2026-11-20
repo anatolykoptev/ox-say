@@ -99,12 +99,17 @@ public enum CueCardPlacement {
     }
 
     /// The remembered frame when it still overlaps the screen enough, else the default place: top-centre, under the
-    /// plate, so the reading eye line stays near the camera.
+    /// plate, so the reading eye line stays near the camera. A remembered size outside this display's limits (saved on
+    /// a taller display, or before a resolution change) is brought inside them, keeping its top-left corner.
     public static func frame(saved: NSRect?, on visible: NSRect) -> NSRect {
         guard let saved else { return topCentre(on: visible) }
-        let onScreen = saved.intersection(visible)
+        let limit = maxSize(on: visible)
+        let size = NSSize(width: min(max(saved.width, minSize.width), limit.width),
+                          height: min(max(saved.height, minSize.height), limit.height))
+        let clamped = NSRect(x: saved.minX, y: saved.maxY - size.height, width: size.width, height: size.height)
+        let onScreen = clamped.intersection(visible)
         guard onScreen.width >= minimumOverlap, onScreen.height >= minimumOverlap else { return topCentre(on: visible) }
-        return saved
+        return clamped
     }
 
     static func topCentre(on visible: NSRect) -> NSRect {

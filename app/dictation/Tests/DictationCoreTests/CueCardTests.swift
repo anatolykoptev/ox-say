@@ -418,6 +418,18 @@ final class CueCardTests: XCTestCase {
         XCTAssertEqual(CueCardPlacement.maxSize(on: visible), NSSize(width: 560, height: 560))
     }
 
+    /// A remembered frame bigger than this display allows (saved on a taller display) comes back inside the limits,
+    /// at its top-left corner; one smaller than the minimum is grown to it.
+    /// Mutation: CueCardPlacement.frame, return `saved` instead of `clamped` -> RED.
+    func testARememberedFrameIsClampedToTheDisplay() {
+        let visible = NSRect(x: 0, y: 0, width: 1000, height: 500)
+        let tall = NSRect(x: 100, y: 50, width: 700, height: 450)
+        XCTAssertEqual(CueCardPlacement.frame(saved: tall, on: visible), NSRect(x: 100, y: 150, width: 560, height: 350),
+                       "at most 560 wide and 70 % of the usable height, top-left kept")
+        let tiny = NSRect(x: 200, y: 300, width: 100, height: 50)
+        XCTAssertEqual(CueCardPlacement.frame(saved: tiny, on: visible), NSRect(x: 200, y: 230, width: 280, height: 120))
+    }
+
     // MARK: the app's side
 
     private var appSources: URL {
