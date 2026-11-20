@@ -474,10 +474,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// The cue-card key is one fixed combination (⌃⌥K), not part of either offered-key
-    /// plan: a registration failure means another app already holds it exclusively —
-    /// said once, and the menu row keeps working.
+    /// plan. Like those keys it is not taken while a macOS shortcut uses it (a Carbon hotkey
+    /// registers on top of one, so only `ShortcutConflict` can tell); a refused registration
+    /// means another app holds it exclusively. Either way it is said once, and the menu row
+    /// and Settings keep working.
     private func registerCueCardKey() {
-        cueCardKey = HotKey(keyCode: CueCardShortcut.keyCode, modifiers: CueCardShortcut.modifiers)
+        let taken = ShortcutConflict.taken(keyCode: Int(CueCardShortcut.keyCode), modifiers: Int(CueCardShortcut.modifiers),
+                                           by: Shortcut.systemShortcuts())
+        cueCardKey = taken ? nil : HotKey(keyCode: CueCardShortcut.keyCode, modifiers: CueCardShortcut.modifiers)
         cueCardKey?.onDown = { [weak self] in self?.toggleCueCard() }
         if cueCardKey == nil { notice(L10nKey.cueCardKeyUnavailable.text) }
     }

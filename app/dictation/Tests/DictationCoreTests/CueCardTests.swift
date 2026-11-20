@@ -509,6 +509,28 @@ final class CueCardTests: XCTestCase {
         XCTAssertTrue(source.contains("model.data.cueCardBackground = CueCardStore.background(d)"), "the page shows the stored value")
     }
 
+    /// ⌃⌥K is not registered while a macOS shortcut uses it, the check the other OxSay keys make; the notice names the
+    /// two ways that still work, by their real titles.
+    /// Mutation: AppDelegate.registerCueCardKey, `taken ? nil : HotKey(` -> `HotKey(` -> RED.
+    func testTheKeyIsNotTakenOverAMacOSShortcut() throws {
+        let app = try source("OxSayDictation/AppDelegate.swift")
+        let start = try XCTUnwrap(app.range(of: "private func registerCueCardKey() {"))
+        let rest = app[start.upperBound...]
+        let register = String(rest[..<(rest.range(of: "\n    }\n")?.lowerBound ?? rest.endIndex)])
+        XCTAssertTrue(register.contains("ShortcutConflict.taken(keyCode: Int(CueCardShortcut.keyCode), modifiers: Int(CueCardShortcut.modifiers),"),
+                      "the system shortcuts are checked for ⌃⌥K")
+        XCTAssertTrue(register.contains("by: Shortcut.systemShortcuts())"))
+        XCTAssertTrue(register.contains("cueCardKey = taken ? nil : HotKey(keyCode: CueCardShortcut.keyCode"),
+                      "a key macOS uses is not registered")
+        XCTAssertTrue(register.contains("if cueCardKey == nil { notice(L10nKey.cueCardKeyUnavailable.text) }"))
+        for lang in ["en", "ru"] {
+            let text = ShippedStrings.localizer(lang)
+            let notice = text(.cueCardKeyUnavailable)
+            XCTAssertTrue(notice.contains(text(.menuCueCard)), "\(lang): the notice names the menu row")
+            XCTAssertTrue(notice.contains(text(.cueCardShow)), "\(lang): the notice names the Settings button")
+        }
+    }
+
     /// The empty card's button opens the main window on the Settings section (where «Шпаргалка» lives).
     /// Mutation: the onOpenEditor wiring, point it at another section -> RED.
     func testTheEmptyCardOpensTheSettingsSection() throws {

@@ -332,7 +332,7 @@
 "cuecard.close" = "Hide the cue card";
 "cuecard.background" = "Card background";
 "menu.cuecard" = "Cue card";
-"notice.cuecard.key_unavailable" = "⌃⌥K is already used by macOS or another app — the cue card stays available in the app menu.";
+"notice.cuecard.key_unavailable" = "⌃⌥K is taken by a macOS shortcut or by another app, so it does not show the cue card. Use the Cue card row in the OxSay menu or Show cue card in Settings.";
 "settings.check_updates" = "Check for Updates…";
 "settings.version" = "Version %@";
 "settings.engine" = "Voice engine";

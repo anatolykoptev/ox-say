@@ -326,7 +326,7 @@
 "cuecard.close" = "Скрыть шпаргалку";
 "cuecard.background" = "Фон шпаргалки";
 "menu.cuecard" = "Шпаргалка";
-"notice.cuecard.key_unavailable" = "⌃⌥K уже занято macOS или другим приложением — шпаргалка остаётся в меню приложения.";
+"notice.cuecard.key_unavailable" = "⌃⌥K занято сочетанием macOS или другим приложением, поэтому шпаргалку оно не показывает. Откройте её строкой «Шпаргалка» в меню OxSay или кнопкой «Показать шпаргалку» в настройках.";
 "settings.check_updates" = "Проверить обновления…";
 "settings.version" = "Версия %@";
 "settings.engine" = "Голосовой движок";
