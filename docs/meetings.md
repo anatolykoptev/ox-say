@@ -60,7 +60,7 @@ app can copy a sentence for that to the clipboard (**Copy consent phrase**).
 - **The main window** (**Open OxSay…** in the menu): while a call records, its page shows the live captions ("You" and "Others"), following the newest line until you scroll up (**Jump to Latest** brings it back); the list of recordings, search over titles, notes and
   transcripts, find-in-transcript, and playing the audio from any line of the transcript.
 - **Cue card («Шпаргалка»).** Notes you want in front of you during a call: write them in Settings, **Cue card**
-  (inline Markdown: bold, italic, code, links; a line that starts with `#` is a heading; up to 20,000 characters), and
+  (inline Markdown: bold, italic, code; a link shows as its text; a line that starts with `#` is a heading; up to 20,000 characters), and
   show them with ⌃⌥K, the **Cue card** row of the menu, or **Show cue card**. The card floats over every app and
   full-screen Space, under the recording plate at the top of the screen; it never takes the typing focus, so you keep
   typing in the call app. Its header row makes the text smaller or larger, folds the card to that row, and hides it

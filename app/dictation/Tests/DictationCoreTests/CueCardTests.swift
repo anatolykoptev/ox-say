@@ -321,6 +321,19 @@ final class CueCardTests: XCTestCase {
         XCTAssertNotNil(out.attribute(.shadow, at: 0, effectiveRange: nil), "the text carries its shadow")
     }
 
+    /// A Markdown link shows as its words, with no link attribute or underline: the card cannot open it.
+    /// Mutation: CueCardText.inline, set `attributes[.link] = run.link` again -> RED.
+    func testALinkIsDrawnAsPlainWords() {
+        let out = CueCardText.render("see [the docs](https://example.com) now", size: 15)
+        XCTAssertEqual(out.string, "see the docs now")
+        let all = NSRange(location: 0, length: out.length)
+        var dead = 0
+        out.enumerateAttributes(in: all) { attributes, _, _ in
+            if attributes[.link] != nil || attributes[.underlineStyle] != nil { dead += 1 }
+        }
+        XCTAssertEqual(dead, 0, "no link styling the card cannot honour")
+    }
+
     // MARK: the store
 
     /// F7 — the notes, the text size and the frame per display round-trip: two displays keep their own frames.

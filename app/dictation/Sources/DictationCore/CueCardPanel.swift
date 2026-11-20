@@ -187,7 +187,7 @@ final class CueCardTextView: NSTextView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-/// The notes as the card draws them. Inline Markdown (bold, italic, code, links) through Foundation's own parser, line
+/// The notes as the card draws them. Inline Markdown (bold, italic, code; a link shows as its words) through Foundation's own parser, line
 /// breaks kept as typed; a line that starts with `#` is a heading, drawn semibold without its marker. Lists stay as
 /// typed. A line the parser refuses is shown as plain text.
 enum CueCardText {
@@ -234,10 +234,8 @@ enum CueCardText {
             let intent = run.inlinePresentationIntent ?? []
             var attributes: [NSAttributedString.Key: Any] = [.font: font(base, size: size, weight: weight, intent: intent)]
             if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
-            if let link = run.link {
-                attributes[.link] = link
-                attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
-            }
+            // A link is drawn as its words only: the body is not selectable or clickable, so a link style would be a
+            // control that does nothing.
             out.append(NSAttributedString(string: String(parsed[run.range].characters), attributes: attributes))
         }
         return out
