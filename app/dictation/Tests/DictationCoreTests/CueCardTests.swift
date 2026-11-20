@@ -344,6 +344,18 @@ final class CueCardTests: XCTestCase {
         XCTAssertEqual(CueCardFrames.frame(for: displayB, d), frameB, "the other display is not disturbed")
     }
 
+    /// A malformed entry is skipped on its own; the other displays' frames survive it and the next save.
+    /// Mutation: CueCardFrames.load, cast the whole dictionary to `[String: [Double]]` again -> RED.
+    func testOneBadFrameEntryDoesNotWipeTheOthers() {
+        let d = suite()
+        d.set(["good": [1.0, 2.0, 300.0, 200.0], "text": "x", "short": [1.0, 2.0]], forKey: CueCardFrames.key)
+        XCTAssertEqual(CueCardFrames.frame(for: "good", d), NSRect(x: 1, y: 2, width: 300, height: 200))
+        XCTAssertNil(CueCardFrames.frame(for: "short", d))
+        CueCardFrames.save(NSRect(x: 5, y: 6, width: 320, height: 220), for: "other", d)
+        XCTAssertEqual(CueCardFrames.frame(for: "good", d), NSRect(x: 1, y: 2, width: 300, height: 200),
+                       "saving another display's frame keeps this one")
+    }
+
     /// The text step defaults to 15 pt and stays inside 13–20 pt.
     /// Mutation: CueCardStore.setTextStep, store `step` unclamped -> RED.
     func testTheTextStepDefaultsAndClamps() {

@@ -64,8 +64,16 @@ public enum CueCardStore {
 public enum CueCardFrames {
     public static let key = "cuecard.frames"
 
+    /// Every well-formed entry. One entry that is not four numbers is skipped on its own: casting the whole dictionary
+    /// would read as empty, and the next save would then drop every other display's frame.
     public static func load(_ d: UserDefaults) -> [String: [Double]] {
-        (d.dictionary(forKey: key) as? [String: [Double]]) ?? [:]
+        guard let raw = d.dictionary(forKey: key) else { return [:] }
+        var frames: [String: [Double]] = [:]
+        for (display, value) in raw {
+            guard let numbers = value as? [Double], numbers.count == 4 else { continue }
+            frames[display] = numbers
+        }
+        return frames
     }
 
     public static func frame(for displayKey: String, _ d: UserDefaults) -> NSRect? {
