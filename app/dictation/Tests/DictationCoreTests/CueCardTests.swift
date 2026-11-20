@@ -125,6 +125,7 @@ final class CueCardTests: XCTestCase {
             XCTAssertNotNil(button.target, "\(button.toolTip ?? button.title): no target")
             XCTAssertEqual(button.action, #selector(PlateControls.Action.fire))
             XCTAssertFalse(button.mouseDownCanMoveWindow, "a drag from a button must not move the card")
+            XCTAssertTrue(button.acceptsFirstMouse(for: nil), "\(button.toolTip ?? button.title): takes the first click")
         }
 
         let step = CueCardStore.textStep(h.defaults)
@@ -150,7 +151,7 @@ final class CueCardTests: XCTestCase {
         XCTAssertFalse(h.card.isShown, "and hides the card")
     }
 
-    /// F5 — the toggle the hotkey, the menu row and Settings share: shown, hidden, shown; × then the toggle shows again.
+    /// F5 — the toggle the hotkey and the menu row share: shown, hidden, shown; × then the toggle shows again.
     /// Mutation: CueCard.toggle, make it always `show()` -> RED.
     @MainActor
     func testTheToggleShowsHidesAndShowsAgain() throws {
@@ -181,6 +182,10 @@ final class CueCardTests: XCTestCase {
         let view = try XCTUnwrap(h.card.panel).card
         view.layoutSubtreeIfNeeded()
         let buttons = [view.smaller, view.larger, view.collapse, view.close] as [NSButton]
+        let header = try XCTUnwrap(view.close.superview)
+        XCTAssertEqual(header.frame.width, view.bounds.width, "the header spans the card")
+        XCTAssertEqual(view.close.frame.maxX, header.bounds.width - 8, accuracy: 0.5, "× sits at the right edge")
+        XCTAssertLessThan(view.title.frame.maxX, view.smaller.frame.minX, "the title is left of the buttons")
         for (i, b) in buttons.enumerated() {
             XCTAssertGreaterThanOrEqual(b.frame.width, 24, "\(b.toolTip ?? "")")
             XCTAssertGreaterThanOrEqual(b.frame.height, 24, "\(b.toolTip ?? "")")
@@ -208,6 +213,10 @@ final class CueCardTests: XCTestCase {
         let panel = try XCTUnwrap(h.card.panel)
         let before = panel.frame
         panel.card.layoutSubtreeIfNeeded()
+        XCTAssertEqual(panel.card.text.frame.width, panel.card.scroll.contentSize.width, accuracy: 0.5,
+                       "the text is as wide as the body")
+        XCTAssertGreaterThan(panel.card.scroll.contentSize.width, 200)
+        XCTAssertGreaterThan(panel.card.text.frame.height, panel.card.scroll.contentSize.height, "200 lines overflow the body")
         panel.card.scroll.contentView.scroll(to: NSPoint(x: 0, y: 100))
         h.card.setCollapsed(true)
         XCTAssertEqual(panel.frame.height, CueCardPlacement.headerHeight)
@@ -407,6 +416,8 @@ final class CueCardTests: XCTestCase {
         XCTAssertTrue(app.contains("CueCardShortcut.keyCode"), "the registered key is the fixed ⌃⌥K")
         XCTAssertTrue(app.contains("cueCardChanged: { [unowned self] in self.cueCard.refresh() }"),
                       "an edit updates the card in place")
+        XCTAssertTrue(app.contains("showCueCard: { [unowned self] in self.cueCard.show() }"),
+                      "Settings' Show button shows the same card, never hides it")
     }
 
     /// The Settings section: the editor is bound to the notes, both buttons and the background slider are wired to

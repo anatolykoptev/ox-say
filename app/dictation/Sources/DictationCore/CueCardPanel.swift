@@ -100,7 +100,8 @@ final class CueCardView: NSView {
         title.font = .systemFont(ofSize: 11, weight: .medium)
         title.textColor = .secondaryLabelColor
         title.lineBreakMode = .byTruncatingTail
-        title.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        // The title takes the spare width, so the buttons sit at the right edge.
+        title.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         smaller = PlateControls.iconButton("textformat.size.smaller", L10nKey.cueCardSmaller.text) { [weak self] in self?.onSmaller?() }
         larger = PlateControls.iconButton("textformat.size.larger", L10nKey.cueCardLarger.text) { [weak self] in self?.onLarger?() }
@@ -108,6 +109,7 @@ final class CueCardView: NSView {
         close = PlateControls.iconButton("xmark", L10nKey.cueCardClose.text) { [weak self] in self?.onClose?() }
         let header = NSStackView(views: [title, smaller, larger, collapse, close])
         header.orientation = .horizontal
+        header.distribution = .fill
         header.spacing = 4
         // 24 pt targets in a 28 pt row leave 2 pt above and below.
         header.edgeInsets = NSEdgeInsets(top: 2, left: 12, bottom: 2, right: 8)

@@ -467,8 +467,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// The status-menu row and the ⌃⌥K press land on the same toggle, as does
-    /// «Показать шпаргалку» in Settings via `host.showCueCard`.
+    /// The status-menu row and the ⌃⌥K press land on the same toggle. «Показать шпаргалку» in Settings
+    /// calls the same controller's `show()` via `host.showCueCard`: a Show button never hides the card.
     @objc private func toggleCueCard() {
         cueCard.toggle()
     }

@@ -125,7 +125,8 @@ public enum CueCardPlacement {
     }
 }
 
-/// Owns the card's one panel and the toggle the global key, the status-menu row and Settings share.
+/// Owns the card's one panel: the toggle the global key and the status-menu row share, and the show that Settings'
+/// «Показать шпаргалку» calls.
 @MainActor
 public final class CueCard: NSObject {
     /// What the empty card's button runs; the app points it at the Settings section.
@@ -162,7 +163,7 @@ public final class CueCard: NSObject {
         }
     }
 
-    /// The global key, the status-menu row and Settings all call this — one method to mutate.
+    /// The global key and the status-menu row both call this — one method to mutate.
     public func toggle() {
         if isShown { hide() } else { show() }
     }
