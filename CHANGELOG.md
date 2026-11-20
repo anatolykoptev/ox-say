@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.41](https://github.com/anatolykoptev/ox-say/compare/v0.1.40...v0.1.41) (2026-11-20)
+
+
+### Added
+
+* **meetings:** cue card — your notes in a see-through panel during the call ([#668](https://github.com/anatolykoptev/ox-say/issues/668)) ([92c5023](https://github.com/anatolykoptev/ox-say/commit/92c50232426bd5800d6d999912b78277326f8ead))
+
 ## [0.1.40](https://github.com/anatolykoptev/ox-say/compare/v0.1.39...v0.1.40) (2026-11-19)
 
 
