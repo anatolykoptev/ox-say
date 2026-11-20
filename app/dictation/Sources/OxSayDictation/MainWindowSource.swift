@@ -25,6 +25,12 @@ struct MainWindowHost {
     var soundChanged: () -> Void
     /// «Показывать пилюлю при диктовке» was saved: the overlay takes a dictation pill that is up down or puts it back.
     var pillShownChanged: () -> Void
+    /// The cue card's key ("⌃⌥K") while it is registered, else nil.
+    var cueCardKeyTitle: () -> String?
+    /// «Показать шпаргалку» in Settings: the same controller the global key and the menu row toggle.
+    var showCueCard: () -> Void
+    /// The editor wrote the cue-card text: a card that is up shows it in place.
+    var cueCardChanged: () -> Void
     var pickVoice: (VoiceSlot, String?) -> Void
     /// The voice library changed (a voice was deleted or renamed, or the list was read): the menu's voice list and
     /// its read-aloud checkmarks follow.
@@ -373,6 +379,7 @@ final class MainWindowSource {
             Task { @MainActor in await self.codePackSync.choose(packs) }
         }
         a.dismissNotice = { [weak self] in self?.model.data.notice = nil }
+        cueCardActions(&a)
         a.searchTyped = { [weak self] text in self?.searchEvent(.typed(text)) }
         a.retrySearch = { [weak self] in self?.searchEvent(.retry) }
         a.playTurn = { [weak self] id, turn in self?.playTurn(id, turn) }
@@ -438,6 +445,25 @@ final class MainWindowSource {
             DictationSettings.setHideFromShare(on, self.host.defaults)
             PlateWindowSpec.hideFromShareChanged()
         }
+    }
+
+    /// The cue card's section: the editor writes through to the defaults key on every
+    /// keystroke (the store caps), the notice button appends the consent line at the end,
+    /// and «Показать шпаргалку» asks the app — the same controller the ⌃⌥K key toggles.
+    private func cueCardActions(_ a: inout MainWindowActions) {
+        a.setCueCardText = { [weak self] text in
+            guard let self else { return }
+            CueCardStore.setText(text, self.host.defaults)
+            self.host.cueCardChanged()
+        }
+        a.insertCueConsent = { [weak self] in
+            guard let self else { return }
+            let text = CueCardStore.consentAppended(to: self.model.data.cueCardText, line: L10nKey.cueCardConsent.text)
+            self.model.data.cueCardText = text
+            CueCardStore.setText(text, self.host.defaults)
+            self.host.cueCardChanged()
+        }
+        a.showCueCard = { [weak self] in self?.host.showCueCard() }
     }
 
     /// Reads everything the window shows. The list and the settings come from the daemon, so they are awaited; a failed
@@ -589,6 +615,8 @@ final class MainWindowSource {
         model.data.about = AboutValues(version: AboutPanel.appVersion, engineRunning: host.daemonStatus() != nil,
                                        startAtLogin: host.startAtLogin())
         model.data.hideOverlaysFromShare = DictationSettings.hideFromShare(d)
+        model.data.cueCardText = CueCardStore.text(d)
+        model.data.cueCardKeyTitle = host.cueCardKeyTitle()
         updateDesignAvailability()
     }
 

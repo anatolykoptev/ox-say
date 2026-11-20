@@ -119,3 +119,13 @@ enum SpeakShortcut: String, CaseIterable {
 
     var modifiers: UInt32 { UInt32(controlKey | optionKey) }
 }
+
+/// The cue-card («Шпаргалка») key: one fixed combination, not offered in the menu —
+/// ⌃⌥K shares no combination with the dictation (⌃Space, ⌥Space), speak (⌃⌥Space, ⌃⌥S)
+/// or transient Esc keys OxSay registers, so it is always free of an in-app conflict.
+enum CueCardShortcut {
+    static let keyCode = UInt32(kVK_ANSI_K)
+    static let modifiers = UInt32(controlKey | optionKey)
+    /// The key caps the Settings section shows.
+    static let title = "⌃⌥K"
+}
