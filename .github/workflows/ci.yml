@@ -2,11 +2,19 @@ name: ci
 
 # Pre-merge gate. Public repo → free GitHub-hosted ARM runner (arm64 also
 # matches the deploy target profile). Gate per job: gofmt, vet, race tests.
+#
+# macOS minutes are the scarce resource: GitHub caps an account at 5 concurrent macOS jobs, and this repo's
+# pull requests used to start 8 of them per push (macOS queue p90 41-72 min, owner decision 2026-11-25). So:
+#   - every macOS job waits for `gate` (the cheap Linux job): a red gate costs no macOS time;
+#   - macOS jobs do not run while the PR is a draft (`ready_for_review` starts them);
+#   - an ordinary PR runs the arm64 legs only; the Intel legs run on push to main and on the release PR
+#     (head ref `release-please--...`), the PR release-please rewrites on every push to main.
 
 on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -112,10 +120,13 @@ jobs:
   # per architecture ox-say ships for. The build step also assembles and
   # ad-hoc signs the .app, which catches a broken bundle, not just broken code.
   dictation:
+    needs: gate
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15-intel, macos-15]
+        # Intel leg: push to main and the release PR only (see the header). Same leg names as before.
+        runner: ${{ fromJSON(github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release-please--') && '["macos-15"]' || '["macos-15-intel","macos-15"]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
@@ -157,6 +168,8 @@ jobs:
   # get.sh refuses elsewhere), python3 (the stall test's local listener) and Go (test-lib-install builds ox-say).
   # Quick: about 2 minutes of test time on an arm64 runner, one runner, no matrix.
   installers:
+    needs: gate
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: macos-15
     timeout-minutes: 10
     steps:
@@ -180,6 +193,8 @@ jobs:
   # ox-diar (release.yml asserts that) and the daemon reports cpu_unsupported. Xcode 26 because the manifest asks for
   # Swift tools 6.2.
   diar:
+    needs: gate
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     strategy:
       fail-fast: false
       matrix:
@@ -261,10 +276,13 @@ jobs:
   # Mac by engine/clean/release_check.sh before a release. Every Swift step has its own timeout, so a hang costs
   # minutes, not the job.
   clean:
+    needs: gate
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15, macos-15-intel]
+        # Intel leg: push to main and the release PR only (see the header). Same leg names as before.
+        runner: ${{ fromJSON(github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release-please--') && '["macos-15"]' || '["macos-15","macos-15-intel"]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     env:

@@ -24,10 +24,12 @@ name: Release
 on:
   push:
     branches: [main]
-  # A PR that touches the engines or the packaging builds the package too, so a
-  # broken release build shows up before the release PR does. No paths: filter —
-  # the hand list kept missing inputs (scripts/fetch-models.sh, launchd/**,
-  # cmd/**, internal/**, go.mod, LICENSE, NOTICE, README.md).
+  # Only the release PR (head ref `release-please--...`, which release-please rewrites on every push to
+  # main) builds the packages, so a broken release build shows up there, before the tag. Ordinary PRs
+  # skip both builds: GitHub caps an account at 5 concurrent macOS jobs and two package builds per push
+  # were 135 of 282 macOS job-hours (owner decision 2026-11-25); ci.yml still builds and tests the app
+  # on arm64 for every PR. No paths: filter — the hand list kept missing inputs (scripts/fetch-models.sh,
+  # launchd/**, cmd/**, internal/**, go.mod, LICENSE, NOTICE, README.md).
   pull_request:
   workflow_dispatch: {}
 
@@ -66,7 +68,8 @@ jobs:
   macos-package:
     name: Build the macOS ${{ matrix.arch }} package
     needs: release-please
-    if: "!cancelled() && (github.event_name != 'push' || needs.release-please.outputs.release_created == 'true')"
+    # push: only when release-please cut a release; pull_request: only the release PR; workflow_dispatch: always
+    if: "!cancelled() && ((github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--')) || github.event_name == 'workflow_dispatch')"
     strategy:
       fail-fast: false
       matrix:
